@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,7 +17,7 @@ class Region(BaseModel):
     label: str
 
 
-class Operation(str, Enum):
+class Operation(StrEnum):
     IMPORT_CONCEPT = "import_concept"
     CREATE_NEUTRAL = "create_neutral"
     REFINE_EXPRESSION = "refine_expression"

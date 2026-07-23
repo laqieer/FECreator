@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fecreator.contracts.diagnostics import Diagnostic, Severity, error, has_errors, warning
+from fecreator.contracts.diagnostics import Severity, error, has_errors, warning
 
 
 def test_error_helper_sets_severity() -> None:

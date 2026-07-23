@@ -33,7 +33,10 @@ def test_manifest_is_frozen() -> None:
 
 
 def test_edit_spec_regions() -> None:
-    edit = EditSpec(mask_path="mask.png", protected_regions=(Region(x=0, y=0, w=96, h=80, label="face"),))
+    edit = EditSpec(
+        mask_path="mask.png",
+        protected_regions=(Region(x=0, y=0, w=96, h=80, label="face"),),
+    )
 
     assert edit.protected_regions[0].label == "face"
 

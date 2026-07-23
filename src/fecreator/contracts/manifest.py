@@ -28,7 +28,12 @@ class Manifest(BaseModel):
     version: Literal["1.0"] = "1.0"
     asset_type: Literal["portrait"]
     target_spec: Literal["fe-gba-portrait-standard"]
-    workflow: Literal["text_to_portrait", "concept_to_portrait", "expression_refine", "masked_variant"]
+    workflow: Literal[
+        "text_to_portrait",
+        "concept_to_portrait",
+        "expression_refine",
+        "masked_variant",
+    ]
     provider: str
     character_ref_pack: str | None = None
     sources: tuple[SourceSpec, ...] = ()
