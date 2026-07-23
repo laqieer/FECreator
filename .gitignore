@@ -10,3 +10,4 @@ src/fecreator/_web/
 .ruff_cache/
 data/
 .pytest-build-probe-*/
+.pytest-editable-probe-*/

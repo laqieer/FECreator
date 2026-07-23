@@ -6,10 +6,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from hatchling.builders.wheel import WheelBuilder
-
 import fecreator
-from hatch_build import FrontendBuildHook
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_NPM_REGISTRY = "https://registry.npmjs.org/"
@@ -90,25 +87,43 @@ def test_build_editable_succeeds_without_frontend_entrypoint() -> None:
         shutil.copy2(REPO_ROOT / "README.md", project_dir / "README.md")
         shutil.copytree(REPO_ROOT / "src", project_dir / "src")
 
-        frontend_entrypoint = project_dir / FRONTEND_ENTRYPOINT
-        if frontend_entrypoint.exists():
-            frontend_entrypoint.unlink()
+        build_hook = REPO_ROOT / "hatch_build.py"
+        if build_hook.exists():
+            shutil.copy2(build_hook, project_dir / "hatch_build.py")
 
-        builder = WheelBuilder(str(project_dir))
-        build_data = builder.get_default_build_data()
-        FrontendBuildHook(
-            root=str(project_dir),
-            config={},
-            build_config=builder.config,
-            metadata=builder.metadata,
-            directory=str(project_dir / "dist"),
-            target_name="wheel",
-        ).initialize("editable", build_data)
+        web_dir = project_dir / "src" / "fecreator" / "_web"
+        if web_dir.exists():
+            shutil.rmtree(web_dir)
 
-        forced_files = list(
-            builder.recurse_forced_files(builder.get_forced_inclusion_map(build_data))
+        venv_dir = project_dir / ".venv"
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(venv_dir)],
+            capture_output=True,
+            text=True,
+            check=True,
         )
+        python_dir = "Scripts" if sys.platform == "win32" else "bin"
+        python_name = "python.exe" if sys.platform == "win32" else "python"
+        venv_python = venv_dir / python_dir / python_name
 
-        assert forced_files == []
+        result = subprocess.run(
+            [
+                str(venv_python),
+                "-m",
+                "pip",
+                "install",
+                "--no-deps",
+                "-e",
+                str(project_dir),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        output = result.stdout + result.stderr
+
+        assert result.returncode == 0, output
+        assert web_dir.is_dir()
+        assert not (web_dir / "index.html").exists()
+        assert "Missing required frontend asset" not in output
     finally:
         shutil.rmtree(project_dir, ignore_errors=True)
