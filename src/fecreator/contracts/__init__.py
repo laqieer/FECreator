@@ -1,5 +1,6 @@
 from fecreator.contracts.capabilities import Capability, CapabilitySet
 from fecreator.contracts.diagnostics import Diagnostic, Severity, error, has_errors, warning
+from fecreator.contracts.lineage import LineageNode, Operation, Region
 from fecreator.contracts.result import Artifact, JobResult, StageResult
 
 __all__ = [
@@ -8,6 +9,9 @@ __all__ = [
     "CapabilitySet",
     "Diagnostic",
     "JobResult",
+    "LineageNode",
+    "Operation",
+    "Region",
     "Severity",
     "StageResult",
     "error",
