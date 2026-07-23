@@ -1622,7 +1622,7 @@ export default tseslint.config(
   { ignores: ["dist/"] },
 );
 ```
-Add `@eslint/js` to `web/package.json` devDependencies at `^10.7.0` and re-run `npm install`.
+Add `@eslint/js` to `web/package.json` devDependencies at `^10.0.1` and re-run `npm install`. `^10.0.1` is the verified available 10.x floor; `^10.7.0` is not published.
 
 - [ ] **Step 4: Verify locally**
 
