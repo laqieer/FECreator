@@ -9,3 +9,4 @@ src/fecreator/_web/
 .mypy_cache/
 .ruff_cache/
 data/
+.pytest-build-probe-*/
