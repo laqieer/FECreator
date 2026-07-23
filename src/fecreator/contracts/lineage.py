@@ -47,7 +47,7 @@ class LineageNode(BaseModel):
     metrics: Mapping[str, float] = Field(default_factory=freeze_mapping)
     approved_by: str | None = None
     output_hashes: tuple[str, ...] = ()
-    created_at: str
+    created_at: str = Field(json_schema_extra={"format": "date-time"})
 
     @field_validator("params", "metrics", mode="after")
     @classmethod

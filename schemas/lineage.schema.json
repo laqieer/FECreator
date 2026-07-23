@@ -69,6 +69,7 @@
       "type": "string"
     },
     "created_at": {
+      "format": "date-time",
       "title": "Created At",
       "type": "string"
     },
