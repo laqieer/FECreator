@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.egg-info/
+dist/
+build/
+node_modules/
+src/fecreator/_web/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/
