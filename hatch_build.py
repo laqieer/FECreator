@@ -9,6 +9,10 @@ from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 class FrontendBuildHook(BuildHookInterface):
     def initialize(self, version: str, build_data: dict[str, Any]) -> None:
         frontend_entrypoint = Path(self.root, "src", "fecreator", "_web", "index.html")
+        if version == "editable":
+            frontend_entrypoint.parent.mkdir(parents=True, exist_ok=True)
+            return
+
         if frontend_entrypoint.is_file():
             return
 

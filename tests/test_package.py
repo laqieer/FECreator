@@ -6,7 +6,10 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
+from hatchling.builders.wheel import WheelBuilder
+
 import fecreator
+from hatch_build import FrontendBuildHook
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_NPM_REGISTRY = "https://registry.npmjs.org/"
@@ -76,5 +79,36 @@ def test_build_fails_when_frontend_entrypoint_is_missing() -> None:
         assert result.returncode != 0
         assert "src/fecreator/_web/index.html" in output
         assert "npm run -w @laqieer/fecreator-web build" in output
+    finally:
+        shutil.rmtree(project_dir, ignore_errors=True)
+
+
+def test_build_editable_succeeds_without_frontend_entrypoint() -> None:
+    project_dir = Path(tempfile.mkdtemp(prefix=".pytest-editable-probe-", dir=REPO_ROOT))
+    try:
+        shutil.copy2(REPO_ROOT / "pyproject.toml", project_dir / "pyproject.toml")
+        shutil.copy2(REPO_ROOT / "README.md", project_dir / "README.md")
+        shutil.copytree(REPO_ROOT / "src", project_dir / "src")
+
+        frontend_entrypoint = project_dir / FRONTEND_ENTRYPOINT
+        if frontend_entrypoint.exists():
+            frontend_entrypoint.unlink()
+
+        builder = WheelBuilder(str(project_dir))
+        build_data = builder.get_default_build_data()
+        FrontendBuildHook(
+            root=str(project_dir),
+            config={},
+            build_config=builder.config,
+            metadata=builder.metadata,
+            directory=str(project_dir / "dist"),
+            target_name="wheel",
+        ).initialize("editable", build_data)
+
+        forced_files = list(
+            builder.recurse_forced_files(builder.get_forced_inclusion_map(build_data))
+        )
+
+        assert forced_files == []
     finally:
         shutil.rmtree(project_dir, ignore_errors=True)
