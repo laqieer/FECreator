@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fecreator.core.config import Settings, get_settings
+from fecreator.core.config import get_settings
 
 
 def test_defaults_bind_localhost(tmp_path: Path) -> None:

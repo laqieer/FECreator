@@ -35,7 +35,12 @@ fecreator = "fecreator.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fecreator"]
-artifacts = ["src/fecreator/_web/**"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/fecreator/_web" = "fecreator/_web"
+
+[tool.hatch.build.targets.sdist.force-include]
+"src/fecreator/_web" = "src/fecreator/_web"
 
 [tool.pytest.ini_options]
 addopts = "-q"

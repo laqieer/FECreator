@@ -10,9 +10,7 @@ class _M(BaseModel):
 
 
 def test_sha256_bytes_known_vector() -> None:
-    assert sha256_bytes(b"") == (
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    )
+    assert sha256_bytes(b"") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
 def test_sha256_file_matches_bytes(tmp_path) -> None:
