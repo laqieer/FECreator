@@ -1,0 +1,176 @@
+{
+  "$defs": {
+    "EditSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "mask_path": {
+          "title": "Mask Path",
+          "type": "string"
+        },
+        "protected_regions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Region"
+          },
+          "title": "Protected Regions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mask_path"
+      ],
+      "title": "EditSpec",
+      "type": "object"
+    },
+    "Region": {
+      "additionalProperties": false,
+      "properties": {
+        "h": {
+          "title": "H",
+          "type": "integer"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "w": {
+          "title": "W",
+          "type": "integer"
+        },
+        "x": {
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "w",
+        "h",
+        "label"
+      ],
+      "title": "Region",
+      "type": "object"
+    },
+    "SourceSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "text",
+            "concept_art",
+            "approved_portrait"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "title": "SourceSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "asset_type": {
+      "const": "portrait",
+      "title": "Asset Type",
+      "type": "string"
+    },
+    "character_ref_pack": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Character Ref Pack"
+    },
+    "edit": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EditSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "params": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "boolean"
+          }
+        ]
+      },
+      "title": "Params",
+      "type": "object"
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    },
+    "sources": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SourceSpec"
+      },
+      "title": "Sources",
+      "type": "array"
+    },
+    "target_spec": {
+      "const": "fe-gba-portrait-standard",
+      "title": "Target Spec",
+      "type": "string"
+    },
+    "version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Version",
+      "type": "string"
+    },
+    "workflow": {
+      "enum": [
+        "text_to_portrait",
+        "concept_to_portrait",
+        "expression_refine",
+        "masked_variant"
+      ],
+      "title": "Workflow",
+      "type": "string"
+    }
+  },
+  "required": [
+    "asset_type",
+    "target_spec",
+    "workflow",
+    "provider"
+  ],
+  "title": "Manifest",
+  "type": "object"
+}

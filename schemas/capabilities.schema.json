@@ -1,0 +1,39 @@
+{
+  "$defs": {
+    "Capability": {
+      "enum": [
+        "text_to_image",
+        "image_to_image",
+        "multi_reference",
+        "masked_edit",
+        "session_refinement",
+        "pose_control",
+        "lineart_control",
+        "identity_embedding",
+        "style_reference",
+        "seed_control",
+        "size_control",
+        "background_control",
+        "asynchronous_jobs"
+      ],
+      "title": "Capability",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "capabilities": {
+      "items": {
+        "$ref": "#/$defs/Capability"
+      },
+      "title": "Capabilities",
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "capabilities"
+  ],
+  "title": "CapabilitySet",
+  "type": "object"
+}

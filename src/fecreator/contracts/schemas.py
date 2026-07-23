@@ -1,0 +1,30 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from pydantic import BaseModel
+
+from fecreator.contracts.capabilities import CapabilitySet
+from fecreator.contracts.diagnostics import Diagnostic
+from fecreator.contracts.lineage import LineageNode
+from fecreator.contracts.manifest import Manifest
+from fecreator.contracts.result import JobResult
+
+SCHEMA_MODELS: dict[str, type[BaseModel]] = {
+    "manifest": Manifest,
+    "result": JobResult,
+    "diagnostics": Diagnostic,
+    "lineage": LineageNode,
+    "capabilities": CapabilitySet,
+}
+
+
+def export_schemas(out_dir: Path) -> list[Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for name, model in SCHEMA_MODELS.items():
+        output = out_dir / f"{name}.schema.json"
+        output.write_text(json.dumps(model.model_json_schema(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        written.append(output)
+    return written
