@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from fecreator.contracts._immutable import freeze_mapping
 from fecreator.contracts.lineage import Params, Region
 from fecreator.core.hashing import content_hash
 
@@ -38,7 +39,22 @@ class Manifest(BaseModel):
     character_ref_pack: str | None = None
     sources: tuple[SourceSpec, ...] = ()
     edit: EditSpec | None = None
-    params: Params = Field(default_factory=dict)
+    params: Params = Field(default_factory=freeze_mapping)
+
+    @field_validator("params", mode="after")
+    @classmethod
+    def _freeze_params(cls, value: Params) -> Params:
+        return freeze_mapping(value)
+
+    @model_validator(mode="after")
+    def _edit_requires_masked_variant(self) -> Manifest:
+        if self.edit is not None and self.workflow != "masked_variant":
+            message = (
+                "edit may only be set when workflow='masked_variant', "
+                f"got workflow={self.workflow!r}"
+            )
+            raise ValueError(message)
+        return self
 
     def content_hash(self) -> str:
         return content_hash(self)

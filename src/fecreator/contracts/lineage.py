@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
-Params = dict[str, str | int | float | bool]
+from fecreator.contracts._immutable import freeze_mapping
+
+Params = Mapping[str, str | int | float | bool]
+_AWARE_DATETIME = TypeAdapter(AwareDatetime)
 
 
 class Region(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    x: int
-    y: int
-    w: int
-    h: int
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
+    w: int = Field(gt=0)
+    h: int = Field(gt=0)
     label: str
 
 
@@ -37,10 +41,21 @@ class LineageNode(BaseModel):
     reference_pack: str | None = None
     reference_pack_rev: int | None = None
     seed: int | None = None
-    params: Params = Field(default_factory=dict)
+    params: Params = Field(default_factory=freeze_mapping)
     mask: str | None = None
     protected_regions: tuple[Region, ...] = ()
-    metrics: dict[str, float] = Field(default_factory=dict)
+    metrics: Mapping[str, float] = Field(default_factory=freeze_mapping)
     approved_by: str | None = None
     output_hashes: tuple[str, ...] = ()
     created_at: str
+
+    @field_validator("params", "metrics", mode="after")
+    @classmethod
+    def _freeze_mapping_fields(cls, value: Mapping[str, object]) -> Mapping[str, object]:
+        return freeze_mapping(value)
+
+    @field_validator("created_at")
+    @classmethod
+    def _validate_created_at(cls, value: str) -> str:
+        _AWARE_DATETIME.validate_python(value)
+        return value

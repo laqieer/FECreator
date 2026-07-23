@@ -26,6 +26,7 @@
       "additionalProperties": false,
       "properties": {
         "h": {
+          "exclusiveMinimum": 0,
           "title": "H",
           "type": "integer"
         },
@@ -34,14 +35,17 @@
           "type": "string"
         },
         "w": {
+          "exclusiveMinimum": 0,
           "title": "W",
           "type": "integer"
         },
         "x": {
+          "minimum": 0,
           "title": "X",
           "type": "integer"
         },
         "y": {
+          "minimum": 0,
           "title": "Y",
           "type": "integer"
         }

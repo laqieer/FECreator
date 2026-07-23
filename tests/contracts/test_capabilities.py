@@ -26,3 +26,8 @@ def test_frozen() -> None:
 
     with pytest.raises((ValidationError, TypeError)):
         capability_set.capabilities = frozenset({Capability.SEED_CONTROL})
+
+
+def test_capability_set_rejects_extra_fields() -> None:
+    with pytest.raises(ValidationError):
+        CapabilitySet(capabilities=frozenset(), unexpected="value")

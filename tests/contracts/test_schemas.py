@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import fecreator.contracts as contracts
 from fecreator.contracts.schemas import SCHEMA_MODELS, export_schemas
 
 REPO_SCHEMAS = Path(__file__).resolve().parents[2] / "schemas"
@@ -21,3 +22,18 @@ def test_committed_schemas_are_up_to_date(tmp_path: Path) -> None:
         fresh = json.loads((tmp_path / f"{name}.schema.json").read_text(encoding="utf-8"))
         committed = json.loads((REPO_SCHEMAS / f"{name}.schema.json").read_text(encoding="utf-8"))
         assert fresh == committed, f"{name}.schema.json is stale; regenerate"
+
+
+def test_top_level_contracts_module_does_not_export_schema_helpers() -> None:
+    assert not hasattr(contracts, "SCHEMA_MODELS")
+    assert not hasattr(contracts, "export_schemas")
+
+
+def test_mapping_field_schemas_remain_object_shaped(tmp_path: Path) -> None:
+    export_schemas(tmp_path)
+    manifest_schema = json.loads((tmp_path / "manifest.schema.json").read_text(encoding="utf-8"))
+    lineage_schema = json.loads((tmp_path / "lineage.schema.json").read_text(encoding="utf-8"))
+
+    assert manifest_schema["properties"]["params"]["type"] == "object"
+    assert lineage_schema["properties"]["params"]["type"] == "object"
+    assert lineage_schema["properties"]["metrics"]["type"] == "object"

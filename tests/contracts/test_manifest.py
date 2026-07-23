@@ -32,6 +32,19 @@ def test_manifest_is_frozen() -> None:
         manifest.provider = "manual"
 
 
+def test_manifest_params_are_immutable() -> None:
+    manifest = Manifest(
+        asset_type="portrait",
+        target_spec="fe-gba-portrait-standard",
+        workflow="text_to_portrait",
+        provider="fake",
+        params={"seed": 7},
+    )
+
+    with pytest.raises(TypeError):
+        manifest.params["seed"] = 8
+
+
 def test_edit_spec_regions() -> None:
     edit = EditSpec(
         mask_path="mask.png",
@@ -44,6 +57,29 @@ def test_edit_spec_regions() -> None:
 def test_invalid_source_kind_rejected() -> None:
     with pytest.raises(ValidationError):
         SourceSpec(kind="video", ref="x")
+
+
+def test_edit_only_valid_for_masked_variant() -> None:
+    with pytest.raises(ValidationError):
+        Manifest(
+            asset_type="portrait",
+            target_spec="fe-gba-portrait-standard",
+            workflow="text_to_portrait",
+            provider="fake",
+            edit=EditSpec(mask_path="m.png"),
+        )
+
+
+def test_edit_is_allowed_for_masked_variant() -> None:
+    manifest = Manifest(
+        asset_type="portrait",
+        target_spec="fe-gba-portrait-standard",
+        workflow="masked_variant",
+        provider="fake",
+        edit=EditSpec(mask_path="m.png"),
+    )
+
+    assert manifest.edit is not None
 
 
 @pytest.mark.parametrize(
@@ -61,3 +97,14 @@ def test_invalid_v1_identifiers_are_rejected(field: str, value: str) -> None:
 
     with pytest.raises(ValidationError):
         Manifest(**payload)
+
+
+def test_manifest_rejects_extra_fields() -> None:
+    with pytest.raises(ValidationError):
+        Manifest(
+            asset_type="portrait",
+            target_spec="fe-gba-portrait-standard",
+            workflow="text_to_portrait",
+            provider="fake",
+            unexpected="value",
+        )
