@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   python:
     strategy:
@@ -38,6 +41,12 @@ jobs:
       - run: npm run -w @laqieer/fecreator-web lint
       - run: npm run -w @laqieer/fecreator-web test
       - run: npm run -w @laqieer/fecreator-web build
+      - name: Verify the local build emits root-relative assets
+        run: |
+          grep -q '"/assets/' src/fecreator/_web/index.html
+          if grep -q '/FECreator/' src/fecreator/_web/index.html; then
+            echo "Local build must not use the demo base path"; exit 1
+          fi
 
   package:
     runs-on: ubuntu-latest
@@ -55,3 +64,38 @@ jobs:
       - run: pip install build twine
       - run: python -m build
       - run: twine check dist/*
+
+  deploy-pages:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: [python, web, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run -w @laqieer/fecreator-web build:demo
+      - name: Verify the demo build emits /FECreator/ assets
+        run: |
+          grep -q '"/FECreator/assets/' src/fecreator/_web/index.html
+          if grep -q '"/assets/' src/fecreator/_web/index.html; then
+            echo "Demo build must use the /FECreator/ base path"; exit 1
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: src/fecreator/_web
+      - id: deployment
+        uses: actions/deploy-pages@v4
