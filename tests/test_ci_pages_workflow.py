@@ -26,8 +26,16 @@ def test_pull_requests_can_never_deploy() -> None:
     assert "github.event_name == 'push'" in condition
 
 
+def _job(name: str) -> dict:
+    return _workflow()["jobs"][name]
+
+
 def test_deploy_pages_needs_all_build_and_test_jobs() -> None:
-    assert set(_deploy_job()["needs"]) == {"python", "web", "package"}
+    assert set(_deploy_job()["needs"]) == {"python", "web", "package", "secret-scan"}
+
+
+def test_deploy_pages_needs_secret_scan_so_leaks_block_deploy() -> None:
+    assert "secret-scan" in _deploy_job()["needs"]
 
 
 def test_deploy_pages_builds_demo_and_uploads_the_web_bundle() -> None:
@@ -66,3 +74,64 @@ def test_web_job_verifies_root_relative_assets() -> None:
     steps = _workflow()["jobs"]["web"]["steps"]
     run_text = " ".join(step.get("run", "") for step in steps)
     assert '"/assets/' in run_text
+
+
+PINNED_GGSHIELD_ACTION = "GitGuardian/ggshield-action@da20be06cafe5e8633dc24744efe1efe8d30f06b"
+
+
+def _secret_scan_job() -> dict:
+    return _job("secret-scan")
+
+
+def _ggshield_step() -> dict:
+    return next(
+        s
+        for s in _secret_scan_job()["steps"]
+        if str(s.get("uses", "")).startswith("GitGuardian/ggshield-action@")
+    )
+
+
+def test_secret_scan_uses_pinned_official_action_sha() -> None:
+    assert _ggshield_step()["uses"] == PINNED_GGSHIELD_ACTION
+
+
+def test_secret_scan_checks_out_full_history() -> None:
+    checkout = next(
+        s
+        for s in _secret_scan_job()["steps"]
+        if str(s.get("uses", "")).startswith("actions/checkout@")
+    )
+    assert checkout["with"]["fetch-depth"] == 0
+
+
+def test_secret_scan_passes_api_key_from_actions_secrets() -> None:
+    env = _ggshield_step()["env"]
+    assert env["GITGUARDIAN_API_KEY"] == "${{ secrets.GITGUARDIAN_API_KEY }}"
+
+
+def test_secret_scan_sets_official_ci_env_vars() -> None:
+    env = _ggshield_step()["env"]
+    for key in (
+        "GITHUB_PUSH_BEFORE_SHA",
+        "GITHUB_PUSH_BASE_SHA",
+        "GITHUB_PULL_BASE_SHA",
+        "GITHUB_DEFAULT_BRANCH",
+    ):
+        assert key in env
+
+
+def test_secret_scan_runs_on_push_and_internal_pull_requests() -> None:
+    condition = _secret_scan_job()["if"]
+    assert "github.event_name == 'push'" in condition
+    assert "github.event_name == 'pull_request'" in condition
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in condition
+
+
+def test_secret_scan_fails_clearly_when_key_absent() -> None:
+    guard = next(
+        s for s in _secret_scan_job()["steps"] if "GITGUARDIAN_API_KEY" in str(s.get("run", ""))
+    )
+    run_text = guard["run"]
+    assert 'if [ -z "$GITGUARDIAN_API_KEY" ]' in run_text
+    assert "exit 1" in run_text
+    assert guard["env"]["GITGUARDIAN_API_KEY"] == "${{ secrets.GITGUARDIAN_API_KEY }}"

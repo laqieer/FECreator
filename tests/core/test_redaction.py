@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fecreator.core.redaction import contains_secret_key, redact
+from tests.fixtures.synthetic_secrets import synthetic_aws_key, synthetic_jwt
 
 
 def test_redact_masks_tokens() -> None:
@@ -12,10 +13,12 @@ def test_redact_masks_tokens() -> None:
 
 
 def test_redact_masks_bare_tokens_and_embedded_absolute_paths() -> None:
+    aws_key = synthetic_aws_key()
+    jwt = synthetic_jwt()
     text = (
         "failed reading C:\\secret\\nested\\hero.png and /srv/private/out.png; "
         "retry with sk-live-abc123456789 ghp_abcdefghijklmnopqrstuvwxyz123456 "
-        "AKIAABCDEFGHIJKLMNOP eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.sigabcdefghi "
+        f"{aws_key} {jwt} "
         "while keeping ordinary words"
     )
 
@@ -25,8 +28,8 @@ def test_redact_masks_bare_tokens_and_embedded_absolute_paths() -> None:
     assert "/srv/private/out.png" not in redacted
     assert "sk-live-abc123456789" not in redacted
     assert "ghp_abcdefghijklmnopqrstuvwxyz123456" not in redacted
-    assert "AKIAABCDEFGHIJKLMNOP" not in redacted
-    assert "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.sigabcdefghi" not in redacted
+    assert aws_key not in redacted
+    assert jwt not in redacted
     assert "failed reading" in redacted
     assert "ordinary words" in redacted
     assert "***" in redacted

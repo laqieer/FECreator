@@ -1,0 +1,17 @@
+version: 2
+
+secret:
+  # Never print or persist matched secret values in ggshield output/logs.
+  show_secrets: false
+
+  # No paths or detectors are ignored: future secret detection stays at full
+  # strength.  Only the two exact synthetic historical matches below are
+  # ignored so full-history ggshield scans do not flag known false positives.
+  ignored_matches:
+    - name: "Synthetic JWT test fixture (tests/redaction, commit a997c53)"
+      match: 66c5e99a80784da68902affa0beae974f17f53c2112fc933137957ab8a92aa07
+    - name: "Synthetic AWS-key-shaped test fixture (tests/redaction, commit a997c53)"
+      match: 457643f44d19aed85fd756aa50cc0cd6b57376d4e8f5a72f9f85972a522002a3
+
+# Do not force a zero exit code when secrets are found.
+exit_zero: false

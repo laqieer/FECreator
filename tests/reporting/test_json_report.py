@@ -11,6 +11,7 @@ from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.contracts.result import Artifact, StageResult
 from fecreator.jobs.model import Job, JobState
 from fecreator.reporting.json_report import build_report, write_report
+from tests.fixtures.synthetic_secrets import synthetic_aws_key, synthetic_jwt
 
 
 def _job(*, params: dict[str, str | int | float | bool] | None = None) -> Job:
@@ -101,6 +102,9 @@ def test_build_report_contains_manifest_hash_stages_lineage_and_output_hashes() 
 
 
 def test_build_report_refuses_secret_key_names_and_redacts_nested_strings() -> None:
+    aws_key = synthetic_aws_key()
+    jwt = synthetic_jwt()
+
     with pytest.raises(ValueError, match="credential|secret"):
         build_report(_job(params={"api_key": "sk-xyz"}), [], [])
 
@@ -110,9 +114,7 @@ def test_build_report_refuses_secret_key_names_and_redacts_nested_strings() -> N
             _stage(
                 "export",
                 path="package\\hero.png",
-                secret_value=(
-                    "AKIAABCDEFGHIJKLMNOP eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.sigabcdefghi"
-                ),
+                secret_value=f"{aws_key} {jwt}",
             )
         ],
         [
@@ -130,8 +132,8 @@ def test_build_report_refuses_secret_key_names_and_redacts_nested_strings() -> N
     payload = json.dumps(report, sort_keys=True)
     assert "sk-live-abc123456789" not in payload
     assert "ghp_abcdefghijklmnopqrstuvwxyz123456" not in payload
-    assert "AKIAABCDEFGHIJKLMNOP" not in payload
-    assert "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.sigabcdefghi" not in payload
+    assert aws_key not in payload
+    assert jwt not in payload
     assert "signature=secret" not in payload
     assert "C:\\secret\\nested\\hero.png" not in payload
     assert "/srv/private/out.png" not in payload

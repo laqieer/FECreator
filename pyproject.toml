@@ -31,6 +31,8 @@ dev = [
   "hatchling>=1.25,<2",
   "pyyaml>=6,<7",
   "ruff>=0.11,<0.16",
+  "pre-commit>=4,<5",
+  "ggshield>=1.52,<2",
   # numpy 2.5+ bundles stubs using PEP 695 `type X = Y` syntax (Python 3.12+),
   # which mypy cannot parse under python_version = "3.11".  Pin to <2.5 in dev
   # so the installed stubs are Python-3.11-compatible without any shim.
