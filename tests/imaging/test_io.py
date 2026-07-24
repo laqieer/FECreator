@@ -45,3 +45,48 @@ def test_indexed_roundtrip_and_facts(tmp_path):
     assert is_indexed_png(p) is True
     assert has_trns(p) is False
     assert read_png_palette(p) == [(0, 128, 0), (255, 255, 255)]
+
+
+# --- I-2: load_indexed budget enforcement ---
+
+def test_load_indexed_budget_enforced(tmp_path):
+    indices = np.zeros((100, 100), dtype=np.uint8)
+    palette = np.array([(0, 0, 0)], dtype=np.uint8)
+    p = tmp_path / "big_idx.png"
+    save_indexed_png(p, indices, palette)
+    with pytest.raises(ImageBudgetError):
+        load_indexed(p, ResourceBudget(max_pixels=100))
+
+
+# --- I-7: save_indexed_png validation ---
+
+def test_save_indexed_palette_too_large_raises(tmp_path):
+    indices = np.zeros((2, 2), dtype=np.uint8)
+    palette = np.zeros((257, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match="palette"):
+        save_indexed_png(tmp_path / "bad.png", indices, palette)
+
+
+def test_save_indexed_index_out_of_range_raises(tmp_path):
+    indices = np.array([[0, 2]], dtype=np.uint8)  # index 2 but only 2 colours
+    palette = np.zeros((2, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match="index"):
+        save_indexed_png(tmp_path / "bad.png", indices, palette)
+
+
+def test_save_indexed_empty_palette_raises(tmp_path):
+    indices = np.zeros((2, 2), dtype=np.uint8)
+    palette = np.zeros((0, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match="palette"):
+        save_indexed_png(tmp_path / "bad.png", indices, palette)
+
+
+def test_atomic_write_preserves_original_on_bad_dtype(tmp_path):
+    """save_png with wrong dtype should not corrupt an existing file."""
+    p = tmp_path / "x.png"
+    rgb = np.zeros((2, 2, 3), dtype=np.uint8)
+    save_png(p, rgb)
+    original = p.read_bytes()
+    with pytest.raises(Exception):
+        save_png(p, np.zeros((2, 2, 4), dtype=np.uint8))  # wrong channels
+    assert p.read_bytes() == original  # file unchanged
