@@ -195,7 +195,7 @@ def test_submit_sources_rejects_hardlinks(tmp_path: Path) -> None:
 
 
 def test_submit_sources_rejects_windows_junction(tmp_path: Path) -> None:
-    """Windows-specific: junction/reparse points must be rejected."""
+    """Windows-specific: junction/reparse points in the source dir must be rejected."""
     import platform
 
     if platform.system() != "Windows":
@@ -208,16 +208,18 @@ def test_submit_sources_rejects_windows_junction(tmp_path: Path) -> None:
     target.mkdir()
     (target / "file.png").write_bytes(b"\x89PNG")
     src = tmp_path / "src"
-    # Create a directory junction using mklink
+    src.mkdir()
+    junc = src / "junc"
+    # Create a directory junction inside src pointing to target_dir
     result = subprocess.run(
-        ["cmd", "/c", f"mklink /J {src} {target}"],
+        ["cmd", "/c", f"mklink /J {junc} {target}"],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
         pytest.skip("Could not create junction")
     with pytest.raises(AppError):
-        app.submit_sources(job.id, tmp_path / "outer_src")
+        app.submit_sources(job.id, src)
 
 
 def test_submit_sources_no_overwrite(tmp_path: Path) -> None:
