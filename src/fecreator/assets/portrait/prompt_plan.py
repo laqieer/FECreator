@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from fecreator.assets.base import PromptPlan, SourcePlan
+from fecreator.assets.base import PromptPlan, SourcePlan, SubmissionSchema
 from fecreator.assets.portrait.manifest import REQUIRED_EXPRESSIONS
+from fecreator.assets.portrait.references import reference_roles as _reference_roles
 from fecreator.contracts.manifest import Manifest
 from fecreator.references.model import ReferencePack
 
@@ -29,8 +30,10 @@ def build_prompt_plan(manifest: Manifest, pack: ReferencePack | None) -> PromptP
 def plan_sources(manifest: Manifest, pack: ReferencePack | None) -> SourcePlan:
     plan = build_prompt_plan(manifest, pack)
     prompts = (plan.neutral_prompt, *plan.expression_prompts.values())
-    roles = {f"concept_{i}": art.role for i, art in enumerate(pack.concept_art)} if pack else {}
-    forbidden_colors = pack.swatches if pack else ()
+    # Delegate to references module so values are artifact paths, not role strings.
+    roles = _reference_roles(pack) if pack else {}
+    # swatches are the canonical reference palette to *preserve*, not to forbid.
+    # forbidden_colors is left empty unless a distinct forbidden-palette source exists.
     return SourcePlan(
         prompts=prompts,
         reference_roles=roles,
@@ -40,9 +43,13 @@ def plan_sources(manifest: Manifest, pack: ReferencePack | None) -> SourcePlan:
         ),
         required_expressions=REQUIRED_EXPRESSIONS,
         background_contract="green background at palette index 0, GBA 5-bit snapped",
-        forbidden_colors=forbidden_colors,
-        submission_schema={
-            "forbidden_changes": list(pack.forbidden_changes) if pack else [],
-            "files": "one indexed or RGB PNG per expected filename",
-        },
+        forbidden_colors=(),
+        submission_schema=SubmissionSchema(
+            forbidden_changes=pack.forbidden_changes if pack else (),
+            canonical_swatches=pack.swatches if pack else (),
+            traits=dict(pack.traits) if pack else {},
+            provenance=pack.provenance if pack else "",
+            rights=pack.rights if pack else "",
+            files="one indexed or RGB PNG per expected filename",
+        ),
     )
