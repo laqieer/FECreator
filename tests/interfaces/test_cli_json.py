@@ -20,18 +20,28 @@ def test_list_specs_json(tmp_path: Path) -> None:
 
 def test_validate_missing_sheet(tmp_path: Path) -> None:
     out = io.StringIO()
-    rc = run(_app(tmp_path), ["validate", "--spec", "fe-gba-portrait-standard",
-                              "--path", str(tmp_path)], out)
+    rc = run(
+        _app(tmp_path),
+        ["validate", "--spec", "fe-gba-portrait-standard", "--path", str(tmp_path)],
+        out,
+    )
     codes = {d["code"] for d in json.loads(out.getvalue())}
     assert rc == 2 and "MISSING_SHEET" in codes
 
 
 def test_job_create_and_status(tmp_path: Path) -> None:
     manifest = tmp_path / "m.json"
-    manifest.write_text(json.dumps({
-        "asset_type": "portrait", "target_spec": "fe-gba-portrait-standard",
-        "workflow": "text_to_portrait", "provider": "fake",
-        "sources": [{"kind": "text", "ref": "hero"}]}))
+    manifest.write_text(
+        json.dumps(
+            {
+                "asset_type": "portrait",
+                "target_spec": "fe-gba-portrait-standard",
+                "workflow": "text_to_portrait",
+                "provider": "fake",
+                "sources": [{"kind": "text", "ref": "hero"}],
+            }
+        )
+    )
     out = io.StringIO()
     run(_app(tmp_path), ["job", "create", "--manifest", str(manifest)], out)
     job_id = json.loads(out.getvalue())["id"]

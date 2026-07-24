@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from fecreator.app import FeCreatorApp
-from fecreator.assets.base import AssetPlugin, PromptPlan, SourcePlan
+from fecreator.assets.base import SourcePlan
 from fecreator.contracts.capabilities import Capability
 from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.contracts.result import JobResult
