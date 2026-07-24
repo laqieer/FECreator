@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useApiClient } from "../api/context";
 import { MaskEditor } from "../canvas/MaskEditor";
 import { JobTimeline } from "../jobs/JobTimeline";
+import { LineageView } from "../lineage/LineageView";
 import { PalettePreview } from "../palette/PalettePreview";
 import { ReferenceBoard } from "../references/ReferenceBoard";
 import { ReviewGallery } from "../review/ReviewGallery";
@@ -61,7 +62,11 @@ function ActiveView({ tab }: { tab: TabName }) {
     return <JobTimeline events={[]} connectionState="idle" />;
   }
 
-  return <p>{tab} workbench panel</p>;
+  if (tab === "Lineage") {
+    return <LineageView nodes={[]} onApprove={() => undefined} onReject={() => undefined} />;
+  }
+
+  return null;
 }
 
 export function App() {
