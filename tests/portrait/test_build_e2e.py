@@ -12,9 +12,10 @@ from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.contracts.result import Artifact
 from fecreator.core.pipeline import PipelineContext
 from fecreator.imaging.io import save_png
+from fecreator.jobs.events import EventLog
 from fecreator.jobs.store import JobStore
 from fecreator.lineage.store import LineageStore
-from fecreator.providers.base import GenRequest, GenResponse
+from fecreator.providers.base import GenRequest, GenResponse, ProviderRefusal
 from fecreator.specs.fire_emblem.gba.portrait_standard.spec import FeGbaPortraitStandard
 
 
@@ -143,6 +144,12 @@ def test_build_carries_provider_diagnostics_and_completed_report_state(
     assert result.ok is True
     assert {diag.code for diag in result.diagnostics} == {"PROVIDER_NOTE"}
     assert JobStore(data_root).load(job.id).state.value == "completed"
+    assert [event.message for event in EventLog(data_root).read(job.id)] == [
+        "created->planning",
+        "planning->processing",
+        "processing->validating",
+        "validating->completed",
+    ]
     assert report["state"] == "completed"
     assert {diag["code"] for diag in report["diagnostics"]} == {"PROVIDER_NOTE"}
 
@@ -223,6 +230,33 @@ def test_build_reports_provider_failure_without_falsely_claiming_missing_artifac
     assert JobStore(data_root).load(job.id).state.value == "failed"
 
 
+def test_build_appends_error_when_failed_provider_only_reports_warning(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    provider_diag = warning("PROVIDER_NOTE", "provider warning without success")
+
+    class _Provider:
+        id = "stub-provider-warning-fail"
+        capabilities = CapabilitySet(capabilities=frozenset(Capability))
+
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            del request, workspace
+            return GenResponse(ok=False, diagnostics=(provider_diag,))
+
+    job = JobStore(data_root).create(_manifest())
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
+
+    result = PortraitPlugin().build(ctx, job.manifest)
+
+    assert result.ok is False
+    assert {diag.code for diag in result.diagnostics} == {"PROVIDER_FAILED", "PROVIDER_NOTE"}
+    assert JobStore(data_root).load(job.id).state.value == "failed"
+
+
 def test_build_returns_structured_failure_for_invalid_neutral_artifact_path(
     data_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -255,4 +289,29 @@ def test_build_returns_structured_failure_for_invalid_neutral_artifact_path(
 
     assert result.ok is False
     assert {diag.code for diag in result.diagnostics} == {"PROVIDER_INVALID_RESPONSE"}
+    assert JobStore(data_root).load(job.id).state.value == "failed"
+
+
+def test_build_returns_structured_failure_for_provider_refusal(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    class _Provider:
+        id = "stub-provider-refusal"
+        capabilities = CapabilitySet(capabilities=frozenset(Capability))
+
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            del request, workspace
+            raise ProviderRefusal("provider refused request")
+
+    job = JobStore(data_root).create(_manifest())
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
+
+    result = PortraitPlugin().build(ctx, job.manifest)
+
+    assert result.ok is False
+    assert {diag.code for diag in result.diagnostics} == {"PROVIDER_FAILED"}
     assert JobStore(data_root).load(job.id).state.value == "failed"

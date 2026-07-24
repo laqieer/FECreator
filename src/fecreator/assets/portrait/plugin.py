@@ -29,10 +29,12 @@ from fecreator.core.registry import PROVIDER_REGISTRY
 from fecreator.imaging.io import ImageBudgetError, load_rgb, save_indexed_png
 from fecreator.imaging.quantize import quantize_median_cut
 from fecreator.imaging.resize import ResizeMode, resize
+from fecreator.jobs.events import EventLog
 from fecreator.jobs.model import Job, JobState
+from fecreator.jobs.service import JobService
 from fecreator.jobs.store import JobStore
 from fecreator.lineage.store import LineageStore
-from fecreator.providers.base import GenRequest, Provider, require_capabilities
+from fecreator.providers.base import GenRequest, Provider, ProviderRefusal, require_capabilities
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
 from fecreator.reporting.bundle import build_bundle
@@ -134,36 +136,46 @@ class PortraitPlugin:
         data_root = ctx.workspace.parents[1]
         pack = self._reference_pack(data_root, manifest)
         provider = cast(Provider, PROVIDER_REGISTRY.get(manifest.provider))
-        require_capabilities(provider, self.required_capabilities(manifest.workflow))
+        self._transition_job(data_root, ctx.job_id, JobState.PROCESSING)
+        try:
+            require_capabilities(provider, self.required_capabilities(manifest.workflow))
 
-        plan = prompt_plan.build_prompt_plan(manifest, pack)
-        response = provider.generate(
-            GenRequest(
-                workflow=manifest.workflow,
-                prompt=plan.neutral_prompt,
-                references=concept_art_artifacts(pack) if pack else (),
-                params=manifest.params,
-            ),
-            ctx.workspace,
-        )
+            plan = prompt_plan.build_prompt_plan(manifest, pack)
+            response = provider.generate(
+                GenRequest(
+                    workflow=manifest.workflow,
+                    prompt=plan.neutral_prompt,
+                    references=concept_art_artifacts(pack) if pack else (),
+                    params=manifest.params,
+                ),
+                ctx.workspace,
+            )
+        except ProviderRefusal as exc:
+            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
+            return JobResult(
+                job_id=ctx.job_id,
+                ok=False,
+                diagnostics=(error("PROVIDER_FAILED", str(exc)),),
+            )
+
         provider_diagnostics = tuple(response.diagnostics)
         if not response.ok:
-            diagnostics = provider_diagnostics or (
-                error("PROVIDER_FAILED", "provider reported failure"),
-            )
-            self._save_job_state(data_root, ctx.job_id, JobState.FAILED)
+            diagnostics = provider_diagnostics
+            if not has_errors(diagnostics):
+                diagnostics = diagnostics + (error("PROVIDER_FAILED", "provider reported failure"),)
+            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
             return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
 
         if not response.artifacts:
             diagnostics = provider_diagnostics + (
                 error("PROVIDER_NO_ARTIFACTS", "provider returned no artifacts"),
             )
-            self._save_job_state(data_root, ctx.job_id, JobState.FAILED)
+            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
             return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
 
         neutral_artifact = _select_neutral_artifact(response.artifacts)
         if neutral_artifact is None:
-            self._save_job_state(data_root, ctx.job_id, JobState.FAILED)
+            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
             return JobResult(
                 job_id=ctx.job_id,
                 ok=False,
@@ -179,7 +191,7 @@ class PortraitPlugin:
         try:
             neutral = load_rgb(_safe_artifact_path(ctx.workspace, neutral_artifact.path))
         except (ImageBudgetError, OSError, PathEscapeError, ValueError):
-            self._save_job_state(data_root, ctx.job_id, JobState.FAILED)
+            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
             return JobResult(
                 job_id=ctx.job_id,
                 ok=False,
@@ -194,11 +206,12 @@ class PortraitPlugin:
         main = align_to_main(neutral, GREEN_BG)
         package_dir = safe_join(ctx.workspace, "package")
         self._export_package(package_dir, main, GREEN_BG)
+        self._transition_job(data_root, ctx.job_id, JobState.VALIDATING)
 
         validation_diagnostics = tuple(FeGbaPortraitStandard().validate(package_dir))
         diagnostics = provider_diagnostics + validation_diagnostics
         if has_errors(validation_diagnostics):
-            self._save_job_state(data_root, ctx.job_id, JobState.FAILED)
+            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
             return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
 
         artifacts = self._package_artifacts(ctx.workspace, package_dir)
@@ -216,7 +229,9 @@ class PortraitPlugin:
             output_hashes=output_hashes,
             created_at=utc_now_iso(),
         )
-        report_job = self._save_job_state(data_root, ctx.job_id, JobState.COMPLETED)
+        report_job = self._load_job(data_root, ctx.job_id).model_copy(
+            update={"state": JobState.COMPLETED}
+        )
         report_path = safe_join(ctx.workspace, "report.json")
         lineage_path = safe_join(ctx.workspace, "lineage.json")
         bundle_path = safe_join(ctx.workspace, "bundle")
@@ -243,12 +258,13 @@ class PortraitPlugin:
             )
             build_bundle(report_job, ctx.workspace, bundle_path)
             LineageStore(data_root).add(lineage)
+            self._transition_job(data_root, ctx.job_id, JobState.COMPLETED)
         except Exception:
             report_path.unlink(missing_ok=True)
             lineage_path.unlink(missing_ok=True)
             if bundle_path.exists():
                 shutil.rmtree(bundle_path, ignore_errors=True)
-            self._save_job_state(data_root, ctx.job_id, JobState.FAILED)
+            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
             raise
 
         return JobResult(
@@ -264,15 +280,39 @@ class PortraitPlugin:
             return None
         return ReferencePackStore(data_root).latest(manifest.character_ref_pack)
 
-    def _save_job_state(self, data_root: Path, job_id: str, state: JobState) -> Job:
-        store = JobStore(data_root)
-        job = store.load(job_id)
+    def _load_job(self, data_root: Path, job_id: str) -> Job:
+        return JobStore(data_root).load(job_id)
+
+    def _transition_job(self, data_root: Path, job_id: str, state: JobState) -> Job:
+        service = JobService(JobStore(data_root), EventLog(data_root))
+        job = service.resume(job_id)
         if job.state is state:
             return job
-        expected_revision = job.revision
-        job.state = state
-        store.save(job, expected_revision=expected_revision)
+
+        for next_state in self._transition_steps(job.state, state):
+            if job.state is next_state:
+                continue
+            job = service.transition(job_id, next_state)
         return job
+
+    def _transition_steps(self, current: JobState, target: JobState) -> tuple[JobState, ...]:
+        if current is target:
+            return ()
+        if target is JobState.PROCESSING:
+            if current is JobState.CREATED:
+                return (JobState.PLANNING, JobState.PROCESSING)
+            if current is JobState.PLANNING:
+                return (JobState.PROCESSING,)
+            return (JobState.PROCESSING,)
+        if target is JobState.VALIDATING:
+            return self._transition_steps(current, JobState.PROCESSING) + (JobState.VALIDATING,)
+        if target is JobState.COMPLETED:
+            return self._transition_steps(current, JobState.VALIDATING) + (JobState.COMPLETED,)
+        if target is JobState.FAILED:
+            if current is JobState.CREATED:
+                return (JobState.PLANNING, JobState.FAILED)
+            return (JobState.FAILED,)
+        return (target,)
 
     def _package_artifacts(self, workspace: Path, package_dir: Path) -> tuple[Artifact, ...]:
         sheet = safe_join(package_dir, "hero.png")
