@@ -80,9 +80,6 @@ class ReferencePackStore:
     def _touch_staging_dir(self, staging_dir: Path) -> None:
         os.utime(staging_dir, None)
 
-    def _remove_staging_lock_file(self, staging_dir: Path) -> None:
-        self._staging_lock_file(staging_dir).unlink(missing_ok=True)
-
     def _cleanup_stale_staging_dirs(self) -> None:
         refs_dir = self._refs_dir()
         if not refs_dir.exists():
@@ -107,7 +104,6 @@ class ReferencePackStore:
                     shutil.rmtree(entry)
             except LockTimeoutError:
                 continue
-            self._remove_staging_lock_file(entry)
 
     def _read_pack_payload_locked(self, path: Path) -> dict[str, Any]:
         payload = _read_json_unlocked(path)
@@ -206,8 +202,6 @@ class ReferencePackStore:
             except Exception:
                 shutil.rmtree(final_dir if replaced else staging_dir, ignore_errors=True)
                 raise
-            finally:
-                self._remove_staging_lock_file(staging_dir)
         return first
 
     def new_revision(self, pack_id: str, **changes: object) -> ReferencePack:

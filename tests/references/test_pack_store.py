@@ -336,6 +336,23 @@ def test_init_prunes_only_stale_reference_staging_directories(data_root: Path) -
     assert fresh.exists()
 
 
+def test_init_keeps_reusable_staging_lock_file_after_cleanup(data_root: Path) -> None:
+    refs_dir = data_root / "refs"
+    locks_dir = refs_dir / ".locks"
+    stale = refs_dir / ".tmp-stale"
+    stale.mkdir(parents=True)
+    locks_dir.mkdir(parents=True)
+    lock_file = locks_dir / "staging-stale.lock"
+    lock_file.write_bytes(b"\0")
+    now = time.time() - 600
+    os.utime(stale, (now, now))
+
+    ReferencePackStore(data_root)
+
+    assert not stale.exists()
+    assert lock_file.exists()
+
+
 def test_init_keeps_stale_reference_staging_directory_with_active_lock(
     data_root: Path,
     tmp_path: Path,
@@ -435,6 +452,14 @@ def test_init_raises_for_real_reference_staging_cleanup_failure(
 
     with pytest.raises(PermissionError, match="busy"):
         ReferencePackStore(data_root)
+
+
+def test_create_keeps_reusable_staging_lock_file(data_root: Path) -> None:
+    store = ReferencePackStore(data_root)
+
+    store.create(_pack())
+
+    assert (data_root / "refs" / ".locks" / "staging-marth.lock").exists()
 
 
 def test_create_requires_explicit_non_empty_provenance_and_rights(data_root: Path) -> None:
