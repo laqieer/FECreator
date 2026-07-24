@@ -26,18 +26,24 @@ class JobStore:
     def _jobs_dir(self) -> Path:
         return safe_join(self._root, "jobs")
 
+    def _locks_dir(self) -> Path:
+        return safe_join(self._root, "jobs", ".locks")
+
     def _job_dir(self, job_id: str) -> Path:
         return safe_join(self._root, "jobs", job_id)
 
     def _job_path(self, job_id: str) -> Path:
         return self._job_dir(job_id) / "job.json"
 
+    def _lock_path(self, job_id: str) -> Path:
+        return self._locks_dir() / f"{job_id}.lock"
+
     def _staging_dir(self, job_id: str) -> Path:
         return safe_join(self._root, "jobs", f".tmp-{job_id}")
 
     @contextmanager
     def locked(self, job_id: str) -> Iterator[None]:
-        with _path_lock(self._job_path(job_id)):
+        with _path_lock(self._lock_path(job_id)):
             yield
 
     def _job_payload(
@@ -133,5 +139,9 @@ class JobStore:
         return sorted(
             entry.name
             for entry in jobs_dir.iterdir()
-            if entry.is_dir() and not entry.name.startswith(".tmp-")
+            if entry.is_dir()
+            and not entry.name.startswith(".tmp-")
+            and not entry.name.startswith(".")
+            and (entry / "job.json").exists()
+            and (entry / "manifest.json").exists()
         )

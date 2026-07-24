@@ -7,7 +7,7 @@ import pytest
 
 from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.jobs import store as store_module
-from fecreator.jobs.model import JobState
+from fecreator.jobs.model import Job, JobState
 from fecreator.jobs.store import JobStore, RevisionConflictError
 
 
@@ -63,6 +63,23 @@ def test_list_jobs_ignores_staging_directories(data_root) -> None:
     (staging_dir / "manifest.json").write_text("{}", encoding="utf-8")
 
     assert set(store.list_jobs()) == {job.id}
+
+
+def test_save_missing_job_does_not_create_visible_directory(data_root) -> None:
+    store = JobStore(data_root)
+    missing = Job(
+        id="ghost",
+        state=JobState.CREATED,
+        manifest=_manifest(),
+        revision=1,
+        created_at="2026-07-24T00:00:00+00:00",
+        updated_at="2026-07-24T00:00:00+00:00",
+    )
+
+    with pytest.raises(FileNotFoundError):
+        store.save(missing, expected_revision=1)
+
+    assert store.list_jobs() == []
 
 
 def test_resume_from_fresh_store_instance(data_root) -> None:
@@ -121,7 +138,7 @@ def test_save_serializes_concurrent_revision_checks(
                     raise TimeoutError("timed out waiting to release writer")
         return payload
 
-    def worker(job) -> None:
+    def worker(job: Job) -> None:
         try:
             store.save(job, expected_revision=1)
         except Exception as exc:  # pragma: no cover - assertion below captures failures
