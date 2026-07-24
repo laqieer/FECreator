@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -88,6 +89,59 @@ def test_save_rejects_stale_revision(data_root) -> None:
     stale.state = JobState.PROCESSING
     with pytest.raises(RevisionConflictError):
         store.save(stale, expected_revision=1)
+
+
+def test_save_serializes_concurrent_revision_checks(
+    data_root,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = JobStore(data_root)
+    first_job = store.create(_manifest())
+    second_job = store.load(first_job.id)
+    first_job.state = JobState.PLANNING
+    second_job.state = JobState.PROCESSING
+    first_read_started = threading.Event()
+    release_first_writer = threading.Event()
+    original_read_json = store_module.read_json
+    read_count = 0
+    count_lock = threading.Lock()
+    errors: list[Exception] = []
+    job_path = data_root / "jobs" / first_job.id / "job.json"
+
+    def fake_read_json(path):
+        nonlocal read_count
+        payload = original_read_json(path)
+        if path == job_path:
+            with count_lock:
+                read_count += 1
+                current_read = read_count
+            if current_read == 1:
+                first_read_started.set()
+                if not release_first_writer.wait(timeout=5):
+                    raise TimeoutError("timed out waiting to release writer")
+        return payload
+
+    def worker(job) -> None:
+        try:
+            store.save(job, expected_revision=1)
+        except Exception as exc:  # pragma: no cover - assertion below captures failures
+            errors.append(exc)
+
+    monkeypatch.setattr(store_module, "read_json", fake_read_json)
+
+    first = threading.Thread(target=worker, args=(first_job,))
+    second = threading.Thread(target=worker, args=(second_job,))
+    first.start()
+    assert first_read_started.wait(timeout=5)
+    second.start()
+    release_first_writer.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert sum(isinstance(exc, RevisionConflictError) for exc in errors) == 1
+    assert store.load(first_job.id).revision == 2
 
 
 def test_save_does_not_rewrite_manifest_snapshot(data_root) -> None:

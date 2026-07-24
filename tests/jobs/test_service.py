@@ -32,6 +32,24 @@ def test_create_logs_event(data_root) -> None:
     assert "created" in kinds
 
 
+def test_create_rolls_back_when_event_append_fails(
+    data_root,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(data_root)
+
+    def fail_append(*args, **kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(service._events, "append", fail_append)
+
+    with pytest.raises(OSError, match="boom"):
+        service.create_job(_manifest())
+
+    jobs_dir = data_root / "jobs"
+    assert not jobs_dir.exists() or list(jobs_dir.iterdir()) == []
+
+
 def test_valid_transition(data_root) -> None:
     service = _service(data_root)
     job = service.create_job(_manifest())
@@ -40,6 +58,29 @@ def test_valid_transition(data_root) -> None:
 
     assert updated.state is JobState.PLANNING
     assert updated.revision == 2
+
+
+def test_transition_rolls_back_when_event_append_fails(
+    data_root,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(data_root)
+    job = service.create_job(_manifest())
+    original_append = service._events.append
+
+    def fail_on_transition(job_id: str, kind: str, message: str, data=None):
+        if kind == "transition":
+            raise OSError("boom")
+        return original_append(job_id, kind, message, data)
+
+    monkeypatch.setattr(service._events, "append", fail_on_transition)
+
+    with pytest.raises(OSError, match="boom"):
+        service.transition(job.id, JobState.PLANNING)
+
+    reloaded = JobStore(data_root).load(job.id)
+    assert reloaded.state is JobState.CREATED
+    assert reloaded.revision == 1
 
 
 def test_invalid_transition_raises(data_root) -> None:

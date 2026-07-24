@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 import shutil
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from fecreator.contracts.manifest import Manifest
-from fecreator.core.atomicio import read_json, write_json_atomic
+from fecreator.core.atomicio import _path_lock, read_json, write_json_atomic
 from fecreator.core.clock import utc_now_iso
 from fecreator.core.paths import safe_join
 from fecreator.jobs.model import Job, JobState
@@ -27,8 +29,16 @@ class JobStore:
     def _job_dir(self, job_id: str) -> Path:
         return safe_join(self._root, "jobs", job_id)
 
+    def _job_path(self, job_id: str) -> Path:
+        return self._job_dir(job_id) / "job.json"
+
     def _staging_dir(self, job_id: str) -> Path:
         return safe_join(self._root, "jobs", f".tmp-{job_id}")
+
+    @contextmanager
+    def locked(self, job_id: str) -> Iterator[None]:
+        with _path_lock(self._job_path(job_id)):
+            yield
 
     def _job_payload(
         self,
@@ -46,10 +56,13 @@ class JobStore:
         }
 
     def _read_job_payload(self, job_id: str) -> dict[str, Any]:
-        payload = read_json(self._job_dir(job_id) / "job.json")
+        payload = read_json(self._job_path(job_id))
         if not isinstance(payload, dict):
             raise TypeError("job.json must contain an object")
         return payload
+
+    def _replace_locked(self, job: Job) -> None:
+        write_json_atomic(self._job_path(job.id), self._job_payload(job))
 
     def create(self, manifest: Manifest) -> Job:
         job_id = uuid.uuid4().hex
@@ -76,6 +89,9 @@ class JobStore:
             raise
         return job
 
+    def remove(self, job_id: str) -> None:
+        shutil.rmtree(self._job_dir(job_id), ignore_errors=True)
+
     def load(self, job_id: str) -> Job:
         payload = self._read_job_payload(job_id)
         manifest_payload = read_json(self._job_dir(job_id) / "manifest.json")
@@ -88,7 +104,7 @@ class JobStore:
             updated_at=str(payload["updated_at"]),
         )
 
-    def save(self, job: Job, *, expected_revision: int) -> None:
+    def _save_locked(self, job: Job, *, expected_revision: int) -> None:
         payload = self._read_job_payload(job.id)
         current_revision = int(payload["revision"])
         if current_revision != expected_revision or job.revision != expected_revision:
@@ -100,11 +116,15 @@ class JobStore:
         next_revision = current_revision + 1
         updated_at = utc_now_iso()
         write_json_atomic(
-            self._job_dir(job.id) / "job.json",
+            self._job_path(job.id),
             self._job_payload(job, revision=next_revision, updated_at=updated_at),
         )
         job.revision = next_revision
         job.updated_at = updated_at
+
+    def save(self, job: Job, *, expected_revision: int) -> None:
+        with self.locked(job.id):
+            self._save_locked(job, expected_revision=expected_revision)
 
     def list_jobs(self) -> list[str]:
         jobs_dir = self._jobs_dir()
