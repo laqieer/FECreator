@@ -62,11 +62,17 @@ fingerprints — never plaintext secrets — are stored in `.gitguardian.yaml`.
 
 ## Scanning layers
 
-| Layer                      | Where it runs            | Covers                         |
-| -------------------------- | ------------------------ | ------------------------------ |
-| `ggshield` pre-commit hook | Developer machines       | Staged changes before commit   |
-| `secret-scan` CI job       | Pushes & internal PRs    | Commit range in CI             |
-| GitGuardian GitHub App     | GitGuardian dashboard    | **Fork PRs** and full history  |
+| Layer                      | Where it runs               | Covers                         |
+| -------------------------- | --------------------------- | ------------------------------ |
+| `ggshield` pre-commit hook | Developer machines          | Staged changes before commit   |
+| `secret-scan` CI job       | Pushes (all branches) & internal PRs | Commit range in CI    |
+| GitGuardian GitHub App     | GitGuardian dashboard       | **Fork PRs** and full history  |
+
+The CI workflow's `on.push` trigger is intentionally unfiltered so secret
+scanning runs on pushes to **every branch**, not just `main`. This runs the full
+CI matrix on each branch push (a deliberate cost trade-off). Deployment stays
+gated to `main` pushes and depends on `secret-scan`, so a failed scan blocks
+deploys without weakening that gate.
 
 ### Fork pull requests
 

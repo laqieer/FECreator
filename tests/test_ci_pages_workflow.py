@@ -10,8 +10,36 @@ def _workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
+def _triggers() -> dict:
+    workflow = _workflow()
+    # PyYAML parses the bare ``on`` key as the boolean ``True`` (YAML 1.1).
+    triggers = workflow.get("on", workflow.get(True))
+    assert isinstance(triggers, dict)
+    return triggers
+
+
 def _deploy_job() -> dict:
     return _workflow()["jobs"]["deploy-pages"]
+
+
+def test_push_trigger_covers_all_branches_for_secret_scanning() -> None:
+    triggers = _triggers()
+    assert "push" in triggers
+    push = triggers["push"]
+    # An unfiltered push trigger runs the secret-scan job on every branch push.
+    assert push is None or "branches" not in push
+    if isinstance(push, dict) and "branches" in push:
+        assert push["branches"] != ["main"]
+
+
+def test_pull_request_trigger_is_present() -> None:
+    assert "pull_request" in _triggers()
+
+
+def test_widened_push_trigger_does_not_loosen_deploy_gate() -> None:
+    condition = _deploy_job()["if"]
+    assert "github.event_name == 'push'" in condition
+    assert "github.ref == 'refs/heads/main'" in condition
 
 
 def test_deploy_pages_is_gated_to_main_pushes() -> None:
@@ -93,6 +121,10 @@ def _ggshield_step() -> dict:
 
 def test_secret_scan_uses_pinned_official_action_sha() -> None:
     assert _ggshield_step()["uses"] == PINNED_GGSHIELD_ACTION
+
+
+def test_secret_scan_has_least_privilege_permissions() -> None:
+    assert _secret_scan_job()["permissions"] == {"contents": "read"}
 
 
 def test_secret_scan_checks_out_full_history() -> None:

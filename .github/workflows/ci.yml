@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Secret scanning must cover pushes to ALL branches, so the full CI matrix
+  # (including the secret-scan job) intentionally runs on every branch push.
+  # This is a deliberate cost trade-off; deploy-pages stays gated to main below.
   push:
-    branches: [main]
   pull_request:
 
 permissions:
@@ -75,6 +77,8 @@ jobs:
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Ensure GitGuardian API key is configured
         env:
