@@ -140,10 +140,11 @@ def test_build_carries_provider_diagnostics_and_completed_report_state(
 
     result = PortraitPlugin().build(ctx, job.manifest)
     report = json.loads((ctx.workspace / "report.json").read_text(encoding="utf-8"))
+    stored_job = JobStore(data_root).load(job.id)
 
     assert result.ok is True
     assert {diag.code for diag in result.diagnostics} == {"PROVIDER_NOTE"}
-    assert JobStore(data_root).load(job.id).state.value == "completed"
+    assert stored_job.state.value == "completed"
     assert [event.message for event in EventLog(data_root).read(job.id)] == [
         "created->planning",
         "planning->processing",
@@ -151,6 +152,8 @@ def test_build_carries_provider_diagnostics_and_completed_report_state(
         "validating->completed",
     ]
     assert report["state"] == "completed"
+    assert report["revision"] == stored_job.revision
+    assert report["updated_at"] == stored_job.updated_at
     assert {diag["code"] for diag in report["diagnostics"]} == {"PROVIDER_NOTE"}
 
 
@@ -193,6 +196,7 @@ def test_build_does_not_persist_lineage_when_bundle_fails(
 
     with pytest.raises(FileNotFoundError):
         LineageStore(data_root).get(job.id)
+    assert JobStore(data_root).load(job.id).state.value == "failed"
 
 
 def test_build_reports_provider_failure_without_falsely_claiming_missing_artifacts(
@@ -314,4 +318,28 @@ def test_build_returns_structured_failure_for_provider_refusal(
 
     assert result.ok is False
     assert {diag.code for diag in result.diagnostics} == {"PROVIDER_FAILED"}
+    assert JobStore(data_root).load(job.id).state.value == "failed"
+
+
+def test_build_marks_job_failed_on_unexpected_provider_exception(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    class _Provider:
+        id = "stub-provider-crash"
+        capabilities = CapabilitySet(capabilities=frozenset(Capability))
+
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            del request, workspace
+            raise RuntimeError("provider crash")
+
+    job = JobStore(data_root).create(_manifest())
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
+
+    with pytest.raises(RuntimeError, match="provider crash"):
+        PortraitPlugin().build(ctx, job.manifest)
+
     assert JobStore(data_root).load(job.id).state.value == "failed"

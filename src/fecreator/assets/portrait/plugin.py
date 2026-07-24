@@ -138,142 +138,146 @@ class PortraitPlugin:
         provider = cast(Provider, PROVIDER_REGISTRY.get(manifest.provider))
         self._transition_job(data_root, ctx.job_id, JobState.PROCESSING)
         try:
-            require_capabilities(provider, self.required_capabilities(manifest.workflow))
+            try:
+                require_capabilities(provider, self.required_capabilities(manifest.workflow))
 
-            plan = prompt_plan.build_prompt_plan(manifest, pack)
-            response = provider.generate(
-                GenRequest(
-                    workflow=manifest.workflow,
-                    prompt=plan.neutral_prompt,
-                    references=concept_art_artifacts(pack) if pack else (),
-                    params=manifest.params,
-                ),
-                ctx.workspace,
-            )
-        except ProviderRefusal as exc:
-            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
-            return JobResult(
-                job_id=ctx.job_id,
-                ok=False,
-                diagnostics=(error("PROVIDER_FAILED", str(exc)),),
-            )
-
-        provider_diagnostics = tuple(response.diagnostics)
-        if not response.ok:
-            diagnostics = provider_diagnostics
-            if not has_errors(diagnostics):
-                diagnostics = diagnostics + (error("PROVIDER_FAILED", "provider reported failure"),)
-            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
-            return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
-
-        if not response.artifacts:
-            diagnostics = provider_diagnostics + (
-                error("PROVIDER_NO_ARTIFACTS", "provider returned no artifacts"),
-            )
-            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
-            return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
-
-        neutral_artifact = _select_neutral_artifact(response.artifacts)
-        if neutral_artifact is None:
-            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
-            return JobResult(
-                job_id=ctx.job_id,
-                ok=False,
-                diagnostics=provider_diagnostics
-                + (
-                    error(
-                        "PROVIDER_INVALID_RESPONSE",
-                        "provider did not return exactly one usable neutral image artifact",
+                plan = prompt_plan.build_prompt_plan(manifest, pack)
+                response = provider.generate(
+                    GenRequest(
+                        workflow=manifest.workflow,
+                        prompt=plan.neutral_prompt,
+                        references=concept_art_artifacts(pack) if pack else (),
+                        params=manifest.params,
                     ),
-                ),
-            )
+                    ctx.workspace,
+                )
+            except ProviderRefusal as exc:
+                self._transition_job(data_root, ctx.job_id, JobState.FAILED)
+                return JobResult(
+                    job_id=ctx.job_id,
+                    ok=False,
+                    diagnostics=(error("PROVIDER_FAILED", str(exc)),),
+                )
 
-        try:
-            neutral = load_rgb(_safe_artifact_path(ctx.workspace, neutral_artifact.path))
-        except (ImageBudgetError, OSError, PathEscapeError, ValueError):
-            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
+            provider_diagnostics = tuple(response.diagnostics)
+            if not response.ok:
+                diagnostics = provider_diagnostics
+                if not has_errors(diagnostics):
+                    diagnostics = diagnostics + (
+                        error("PROVIDER_FAILED", "provider reported failure"),
+                    )
+                self._transition_job(data_root, ctx.job_id, JobState.FAILED)
+                return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
+
+            if not response.artifacts:
+                diagnostics = provider_diagnostics + (
+                    error("PROVIDER_NO_ARTIFACTS", "provider returned no artifacts"),
+                )
+                self._transition_job(data_root, ctx.job_id, JobState.FAILED)
+                return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
+
+            neutral_artifact = _select_neutral_artifact(response.artifacts)
+            if neutral_artifact is None:
+                self._transition_job(data_root, ctx.job_id, JobState.FAILED)
+                return JobResult(
+                    job_id=ctx.job_id,
+                    ok=False,
+                    diagnostics=provider_diagnostics
+                    + (
+                        error(
+                            "PROVIDER_INVALID_RESPONSE",
+                            "provider did not return exactly one usable neutral image artifact",
+                        ),
+                    ),
+                )
+
+            try:
+                neutral = load_rgb(_safe_artifact_path(ctx.workspace, neutral_artifact.path))
+            except (ImageBudgetError, OSError, PathEscapeError, ValueError):
+                self._transition_job(data_root, ctx.job_id, JobState.FAILED)
+                return JobResult(
+                    job_id=ctx.job_id,
+                    ok=False,
+                    diagnostics=provider_diagnostics
+                    + (
+                        error(
+                            "PROVIDER_INVALID_RESPONSE",
+                            "provider returned an invalid neutral artifact path or image payload",
+                        ),
+                    ),
+                )
+
+            main = align_to_main(neutral, GREEN_BG)
+            package_dir = safe_join(ctx.workspace, "package")
+            self._export_package(package_dir, main, GREEN_BG)
+            self._transition_job(data_root, ctx.job_id, JobState.VALIDATING)
+
+            validation_diagnostics = tuple(FeGbaPortraitStandard().validate(package_dir))
+            diagnostics = provider_diagnostics + validation_diagnostics
+            if has_errors(validation_diagnostics):
+                self._transition_job(data_root, ctx.job_id, JobState.FAILED)
+                return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
+
+            artifacts = self._package_artifacts(ctx.workspace, package_dir)
+            output_hashes = tuple(sorted(artifact.sha256 for artifact in artifacts))
+            lineage = LineageNode(
+                asset_id=ctx.job_id,
+                operation=Operation.EXPORT_SPEC,
+                provider=manifest.provider,
+                model=response.model,
+                prompt=plan.neutral_prompt,
+                reference_pack=pack.id if pack else None,
+                reference_pack_rev=pack.revision if pack else None,
+                seed=response.seed,
+                params=manifest.params,
+                output_hashes=output_hashes,
+                created_at=utc_now_iso(),
+            )
+            report_path = safe_join(ctx.workspace, "report.json")
+            lineage_path = safe_join(ctx.workspace, "lineage.json")
+            bundle_path = safe_join(ctx.workspace, "bundle")
+
+            completed_job = self._transition_job(data_root, ctx.job_id, JobState.COMPLETED)
+            try:
+                write_report(
+                    report_path,
+                    build_report(
+                        completed_job,
+                        [
+                            StageResult(
+                                stage="export",
+                                ok=True,
+                                artifacts=artifacts,
+                                diagnostics=provider_diagnostics,
+                            )
+                        ],
+                        [lineage],
+                    ),
+                )
+                write_json_atomic(
+                    lineage_path,
+                    [lineage.model_dump(mode="json")],
+                )
+                build_bundle(completed_job, ctx.workspace, bundle_path)
+                LineageStore(data_root).add(lineage)
+            except Exception:
+                report_path.unlink(missing_ok=True)
+                lineage_path.unlink(missing_ok=True)
+                if bundle_path.exists():
+                    shutil.rmtree(bundle_path, ignore_errors=True)
+                self._force_job_state(data_root, ctx.job_id, JobState.FAILED)
+                raise
+
             return JobResult(
                 job_id=ctx.job_id,
-                ok=False,
-                diagnostics=provider_diagnostics
-                + (
-                    error(
-                        "PROVIDER_INVALID_RESPONSE",
-                        "provider returned an invalid neutral artifact path or image payload",
-                    ),
-                ),
+                ok=True,
+                artifacts=artifacts,
+                diagnostics=diagnostics,
+                lineage_id=lineage.asset_id,
             )
-        main = align_to_main(neutral, GREEN_BG)
-        package_dir = safe_join(ctx.workspace, "package")
-        self._export_package(package_dir, main, GREEN_BG)
-        self._transition_job(data_root, ctx.job_id, JobState.VALIDATING)
-
-        validation_diagnostics = tuple(FeGbaPortraitStandard().validate(package_dir))
-        diagnostics = provider_diagnostics + validation_diagnostics
-        if has_errors(validation_diagnostics):
-            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
-            return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
-
-        artifacts = self._package_artifacts(ctx.workspace, package_dir)
-        output_hashes = tuple(sorted(artifact.sha256 for artifact in artifacts))
-        lineage = LineageNode(
-            asset_id=ctx.job_id,
-            operation=Operation.EXPORT_SPEC,
-            provider=manifest.provider,
-            model=response.model,
-            prompt=plan.neutral_prompt,
-            reference_pack=pack.id if pack else None,
-            reference_pack_rev=pack.revision if pack else None,
-            seed=response.seed,
-            params=manifest.params,
-            output_hashes=output_hashes,
-            created_at=utc_now_iso(),
-        )
-        report_job = self._load_job(data_root, ctx.job_id).model_copy(
-            update={"state": JobState.COMPLETED}
-        )
-        report_path = safe_join(ctx.workspace, "report.json")
-        lineage_path = safe_join(ctx.workspace, "lineage.json")
-        bundle_path = safe_join(ctx.workspace, "bundle")
-
-        try:
-            write_report(
-                report_path,
-                build_report(
-                    report_job,
-                    [
-                        StageResult(
-                            stage="export",
-                            ok=True,
-                            artifacts=artifacts,
-                            diagnostics=provider_diagnostics,
-                        )
-                    ],
-                    [lineage],
-                ),
-            )
-            write_json_atomic(
-                lineage_path,
-                [lineage.model_dump(mode="json")],
-            )
-            build_bundle(report_job, ctx.workspace, bundle_path)
-            LineageStore(data_root).add(lineage)
-            self._transition_job(data_root, ctx.job_id, JobState.COMPLETED)
         except Exception:
-            report_path.unlink(missing_ok=True)
-            lineage_path.unlink(missing_ok=True)
-            if bundle_path.exists():
-                shutil.rmtree(bundle_path, ignore_errors=True)
-            self._transition_job(data_root, ctx.job_id, JobState.FAILED)
+            self._force_job_state(data_root, ctx.job_id, JobState.FAILED)
             raise
-
-        return JobResult(
-            job_id=ctx.job_id,
-            ok=True,
-            artifacts=artifacts,
-            diagnostics=diagnostics,
-            lineage_id=lineage.asset_id,
-        )
 
     def _reference_pack(self, data_root: Path, manifest: Manifest) -> ReferencePack | None:
         if manifest.character_ref_pack is None:
@@ -282,6 +286,16 @@ class PortraitPlugin:
 
     def _load_job(self, data_root: Path, job_id: str) -> Job:
         return JobStore(data_root).load(job_id)
+
+    def _force_job_state(self, data_root: Path, job_id: str, state: JobState) -> Job:
+        store = JobStore(data_root)
+        job = store.load(job_id)
+        if job.state is state:
+            return job
+        expected_revision = job.revision
+        job.state = state
+        store.save(job, expected_revision=expected_revision)
+        return job
 
     def _transition_job(self, data_root: Path, job_id: str, state: JobState) -> Job:
         service = JobService(JobStore(data_root), EventLog(data_root))
