@@ -86,18 +86,23 @@ class ReferencePackStore:
             if entry.name.startswith(".") or entry.name.endswith(".tmp"):
                 continue
             if entry.is_dir():
-                raise ReferencePackCorruptionError(f"unexpected directory in reference pack: {entry}")
+                raise ReferencePackCorruptionError(
+                    f"unexpected directory in reference pack: {entry}"
+                )
             if entry.suffix != ".json" or not entry.stem.isdecimal():
                 raise ReferencePackCorruptionError(f"unexpected file in reference pack: {entry}")
             revisions.append(int(entry.stem))
 
         if not revisions:
-            raise ReferencePackCorruptionError(f"reference pack has no visible revisions: {pack_id}")
+            raise ReferencePackCorruptionError(
+                f"reference pack has no visible revisions: {pack_id}"
+            )
 
         expected = list(range(1, max(revisions) + 1))
         if revisions != expected:
             raise ReferencePackCorruptionError(
-                f"reference pack {pack_id} has missing revision(s): expected {expected}, found {revisions}"
+                "reference pack "
+                f"{pack_id} has missing revision(s): expected {expected}, found {revisions}"
             )
         return revisions
 

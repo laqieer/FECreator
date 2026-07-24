@@ -44,9 +44,7 @@ def _pack(pack_id: str = "marth", revision: int = 99, **changes: object) -> Refe
 def _worker_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = (
-        str(SRC_DIR)
-        if not env.get("PYTHONPATH")
-        else f"{SRC_DIR}{os.pathsep}{env['PYTHONPATH']}"
+        str(SRC_DIR) if not env.get("PYTHONPATH") else f"{SRC_DIR}{os.pathsep}{env['PYTHONPATH']}"
     )
     return env
 
