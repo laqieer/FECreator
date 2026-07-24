@@ -56,3 +56,11 @@ asyncio_mode = "auto"
 python_version = "3.11"
 strict = true
 files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["cv2", "cv2.*", "PIL", "PIL.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["fecreator.imaging.*", "fecreator.specs.*", "fecreator.assets.portrait.*"]
+warn_return_any = false
