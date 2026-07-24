@@ -50,3 +50,8 @@ SAFE_ZONES: tuple[Region, ...] = (
     Region(x=16, y=0, w=64, h=48, label="upper_content"),
     Region(x=0, y=48, w=96, h=32, label="lower_content"),
 )
+
+# Slots that must contain non-background content in a canonical package: every
+# slot except the always-background "unused" bottom-right cell. mouth4_status is
+# required (FEBuilder-interop research treats the status mouth frame as present).
+REQUIRED_SLOTS: tuple[str, ...] = tuple(s.name for s in SLOTS if s.name != "unused")
