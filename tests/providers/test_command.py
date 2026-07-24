@@ -7,7 +7,7 @@ import pytest
 
 from fecreator.contracts.capabilities import Capability, CapabilitySet
 from fecreator.providers.base import GenRequest, ProviderRefusal
-from fecreator.providers.command import CommandProvider
+from fecreator.providers.command import CommandProvider, _safe_subprocess_env
 
 PYTHON = sys.executable
 CAPABILITIES = CapabilitySet(capabilities=frozenset({Capability.TEXT_TO_IMAGE}))
@@ -97,6 +97,50 @@ def test_command_provider_reports_invalid_json(tmp_path) -> None:
     assert response.diagnostics[0].code == "PROVIDER_INVALID_RESPONSE"
 
 
+def test_command_provider_rejects_non_object_json(tmp_path) -> None:
+    script = tmp_path / "non_object.py"
+    _write_script(
+        script,
+        """
+        print("[]")
+        """,
+    )
+    provider = CommandProvider(argv=[PYTHON, str(script)], capabilities=CAPABILITIES)
+
+    response = provider.generate(GenRequest(workflow="text_to_portrait"), tmp_path)
+
+    assert response.ok is False
+    assert response.diagnostics[0].code == "PROVIDER_INVALID_RESPONSE"
+    assert "non-object" in response.diagnostics[0].message
+
+
+def test_command_provider_rejects_artifact_path_escape(tmp_path) -> None:
+    script = tmp_path / "escape.py"
+    outside = tmp_path.parent / "outside.png"
+    outside.write_bytes(b"outside")
+    _write_script(
+        script,
+        f"""
+        import json
+
+        print(json.dumps({{
+            "version": "fecreator-provider/v1",
+            "ok": True,
+            "artifacts": [
+                {{"role": "neutral", "path": "..\\\\{outside.name}", "media_type": "image/png"}}
+            ],
+        }}))
+        """,
+    )
+    provider = CommandProvider(argv=[PYTHON, str(script)], capabilities=CAPABILITIES)
+
+    response = provider.generate(GenRequest(workflow="text_to_portrait"), tmp_path)
+
+    assert response.ok is False
+    assert response.artifacts == ()
+    assert response.diagnostics[0].code == "PROVIDER_INVALID_RESPONSE"
+
+
 def test_command_provider_times_out(tmp_path) -> None:
     script = tmp_path / "sleep.py"
     _write_script(
@@ -104,14 +148,14 @@ def test_command_provider_times_out(tmp_path) -> None:
         """
         import time
 
-        time.sleep(0.25)
+        time.sleep(2.0)
         print("{}")
         """,
     )
     provider = CommandProvider(
         argv=[PYTHON, str(script)],
         capabilities=CAPABILITIES,
-        timeout=0.01,
+        timeout=0.05,
     )
 
     response = provider.generate(GenRequest(workflow="text_to_portrait"), tmp_path)
@@ -125,3 +169,41 @@ def test_command_provider_refuses_unconfigured_provider(tmp_path) -> None:
 
     with pytest.raises(ProviderRefusal):
         provider.generate(GenRequest(workflow="text_to_portrait"), tmp_path)
+
+
+def test_safe_subprocess_env_posix_keeps_path_but_drops_secret_keys() -> None:
+    env = _safe_subprocess_env(
+        {
+            "PATH": "/usr/bin",
+            "HOME": "/tmp/home",
+            "API_KEY": "secret",
+            "TOKEN": "secret",
+        },
+        os_name="posix",
+    )
+
+    assert env["PATH"] == "/usr/bin"
+    assert env["HOME"] == "/tmp/home"
+    assert "API_KEY" not in env
+    assert "TOKEN" not in env
+
+
+def test_safe_subprocess_env_windows_keeps_required_startup_keys() -> None:
+    env = _safe_subprocess_env(
+        {
+            "PATH": r"C:\Windows\System32",
+            "SYSTEMROOT": r"C:\Windows",
+            "WINDIR": r"C:\Windows",
+            "COMSPEC": r"C:\Windows\System32\cmd.exe",
+            "PATHEXT": ".EXE;.BAT",
+            "SECRET_TOKEN": "secret",
+        },
+        os_name="nt",
+    )
+
+    assert env["PATH"] == r"C:\Windows\System32"
+    assert env["SYSTEMROOT"] == r"C:\Windows"
+    assert env["WINDIR"] == r"C:\Windows"
+    assert env["COMSPEC"] == r"C:\Windows\System32\cmd.exe"
+    assert env["PATHEXT"] == ".EXE;.BAT"
+    assert "SECRET_TOKEN" not in env
