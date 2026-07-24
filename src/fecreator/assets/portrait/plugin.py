@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path, PurePosixPath
 from typing import cast
 
@@ -22,13 +23,13 @@ from fecreator.contracts.result import Artifact, JobResult, StageResult
 from fecreator.core.atomicio import write_json_atomic
 from fecreator.core.clock import utc_now_iso
 from fecreator.core.hashing import sha256_file
-from fecreator.core.paths import safe_join
+from fecreator.core.paths import PathEscapeError, safe_join
 from fecreator.core.pipeline import PipelineContext
 from fecreator.core.registry import PROVIDER_REGISTRY
-from fecreator.imaging.io import load_rgb, save_indexed_png
+from fecreator.imaging.io import ImageBudgetError, load_rgb, save_indexed_png
 from fecreator.imaging.quantize import quantize_median_cut
 from fecreator.imaging.resize import ResizeMode, resize
-from fecreator.jobs.model import JobState
+from fecreator.jobs.model import Job, JobState
 from fecreator.jobs.store import JobStore
 from fecreator.lineage.store import LineageStore
 from fecreator.providers.base import GenRequest, Provider, require_capabilities
@@ -146,14 +147,23 @@ class PortraitPlugin:
             ctx.workspace,
         )
         provider_diagnostics = tuple(response.diagnostics)
-        if not response.ok or not response.artifacts:
+        if not response.ok:
             diagnostics = provider_diagnostics or (
+                error("PROVIDER_FAILED", "provider reported failure"),
+            )
+            self._save_job_state(data_root, ctx.job_id, JobState.FAILED)
+            return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
+
+        if not response.artifacts:
+            diagnostics = provider_diagnostics + (
                 error("PROVIDER_NO_ARTIFACTS", "provider returned no artifacts"),
             )
+            self._save_job_state(data_root, ctx.job_id, JobState.FAILED)
             return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
 
         neutral_artifact = _select_neutral_artifact(response.artifacts)
         if neutral_artifact is None:
+            self._save_job_state(data_root, ctx.job_id, JobState.FAILED)
             return JobResult(
                 job_id=ctx.job_id,
                 ok=False,
@@ -166,7 +176,21 @@ class PortraitPlugin:
                 ),
             )
 
-        neutral = load_rgb(_safe_artifact_path(ctx.workspace, neutral_artifact.path))
+        try:
+            neutral = load_rgb(_safe_artifact_path(ctx.workspace, neutral_artifact.path))
+        except (ImageBudgetError, OSError, PathEscapeError, ValueError):
+            self._save_job_state(data_root, ctx.job_id, JobState.FAILED)
+            return JobResult(
+                job_id=ctx.job_id,
+                ok=False,
+                diagnostics=provider_diagnostics
+                + (
+                    error(
+                        "PROVIDER_INVALID_RESPONSE",
+                        "provider returned an invalid neutral artifact path or image payload",
+                    ),
+                ),
+            )
         main = align_to_main(neutral, GREEN_BG)
         package_dir = safe_join(ctx.workspace, "package")
         self._export_package(package_dir, main, GREEN_BG)
@@ -174,6 +198,7 @@ class PortraitPlugin:
         validation_diagnostics = tuple(FeGbaPortraitStandard().validate(package_dir))
         diagnostics = provider_diagnostics + validation_diagnostics
         if has_errors(validation_diagnostics):
+            self._save_job_state(data_root, ctx.job_id, JobState.FAILED)
             return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
 
         artifacts = self._package_artifacts(ctx.workspace, package_dir)
@@ -191,29 +216,41 @@ class PortraitPlugin:
             output_hashes=output_hashes,
             created_at=utc_now_iso(),
         )
-        job = JobStore(data_root).load(ctx.job_id)
-        report_job = job.model_copy(update={"state": JobState.COMPLETED})
-        write_report(
-            safe_join(ctx.workspace, "report.json"),
-            build_report(
-                report_job,
-                [
-                    StageResult(
-                        stage="export",
-                        ok=True,
-                        artifacts=artifacts,
-                        diagnostics=provider_diagnostics,
-                    )
-                ],
-                [lineage],
-            ),
-        )
-        write_json_atomic(
-            safe_join(ctx.workspace, "lineage.json"),
-            [lineage.model_dump(mode="json")],
-        )
-        build_bundle(report_job, ctx.workspace, safe_join(ctx.workspace, "bundle"))
-        LineageStore(data_root).add(lineage)
+        report_job = self._save_job_state(data_root, ctx.job_id, JobState.COMPLETED)
+        report_path = safe_join(ctx.workspace, "report.json")
+        lineage_path = safe_join(ctx.workspace, "lineage.json")
+        bundle_path = safe_join(ctx.workspace, "bundle")
+
+        try:
+            write_report(
+                report_path,
+                build_report(
+                    report_job,
+                    [
+                        StageResult(
+                            stage="export",
+                            ok=True,
+                            artifacts=artifacts,
+                            diagnostics=provider_diagnostics,
+                        )
+                    ],
+                    [lineage],
+                ),
+            )
+            write_json_atomic(
+                lineage_path,
+                [lineage.model_dump(mode="json")],
+            )
+            build_bundle(report_job, ctx.workspace, bundle_path)
+            LineageStore(data_root).add(lineage)
+        except Exception:
+            report_path.unlink(missing_ok=True)
+            lineage_path.unlink(missing_ok=True)
+            if bundle_path.exists():
+                shutil.rmtree(bundle_path, ignore_errors=True)
+            self._save_job_state(data_root, ctx.job_id, JobState.FAILED)
+            raise
+
         return JobResult(
             job_id=ctx.job_id,
             ok=True,
@@ -226,6 +263,16 @@ class PortraitPlugin:
         if manifest.character_ref_pack is None:
             return None
         return ReferencePackStore(data_root).latest(manifest.character_ref_pack)
+
+    def _save_job_state(self, data_root: Path, job_id: str, state: JobState) -> Job:
+        store = JobStore(data_root)
+        job = store.load(job_id)
+        if job.state is state:
+            return job
+        expected_revision = job.revision
+        job.state = state
+        store.save(job, expected_revision=expected_revision)
+        return job
 
     def _package_artifacts(self, workspace: Path, package_dir: Path) -> tuple[Artifact, ...]:
         sheet = safe_join(package_dir, "hero.png")

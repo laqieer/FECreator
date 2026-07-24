@@ -142,6 +142,7 @@ def test_build_carries_provider_diagnostics_and_completed_report_state(
 
     assert result.ok is True
     assert {diag.code for diag in result.diagnostics} == {"PROVIDER_NOTE"}
+    assert JobStore(data_root).load(job.id).state.value == "completed"
     assert report["state"] == "completed"
     assert {diag["code"] for diag in report["diagnostics"]} == {"PROVIDER_NOTE"}
 
@@ -185,3 +186,73 @@ def test_build_does_not_persist_lineage_when_bundle_fails(
 
     with pytest.raises(FileNotFoundError):
         LineageStore(data_root).get(job.id)
+
+
+def test_build_reports_provider_failure_without_falsely_claiming_missing_artifacts(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    class _Provider:
+        id = "stub-provider-fail"
+        capabilities = CapabilitySet(capabilities=frozenset(Capability))
+
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            del request, workspace
+            return GenResponse(
+                ok=False,
+                artifacts=(
+                    Artifact(
+                        role="neutral",
+                        path="generated/neutral.png",
+                        sha256="4" * 64,
+                        media_type="image/png",
+                    ),
+                ),
+            )
+
+    job = JobStore(data_root).create(_manifest())
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
+
+    result = PortraitPlugin().build(ctx, job.manifest)
+
+    assert result.ok is False
+    assert {diag.code for diag in result.diagnostics} == {"PROVIDER_FAILED"}
+    assert JobStore(data_root).load(job.id).state.value == "failed"
+
+
+def test_build_returns_structured_failure_for_invalid_neutral_artifact_path(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    class _Provider:
+        id = "stub-invalid-path"
+        capabilities = CapabilitySet(capabilities=frozenset(Capability))
+
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            del request, workspace
+            return GenResponse(
+                ok=True,
+                artifacts=(
+                    Artifact(
+                        role="neutral",
+                        path="../escape.png",
+                        sha256="5" * 64,
+                        media_type="image/png",
+                    ),
+                ),
+            )
+
+    job = JobStore(data_root).create(_manifest())
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
+
+    result = PortraitPlugin().build(ctx, job.manifest)
+
+    assert result.ok is False
+    assert {diag.code for diag in result.diagnostics} == {"PROVIDER_INVALID_RESPONSE"}
+    assert JobStore(data_root).load(job.id).state.value == "failed"
