@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
+import time
 
 import pytest
 
 from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.jobs import store as store_module
 from fecreator.jobs.model import Job, JobState
-from fecreator.jobs.store import JobStore, RevisionConflictError
+from fecreator.jobs.store import JobCorruptionError, JobStore, RevisionConflictError
 
 
 def _manifest() -> Manifest:
@@ -37,7 +39,7 @@ def test_create_rolls_back_failed_job_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
-    original = store_module.write_json_atomic
+    original = store_module._write_json_atomic_unlocked
 
     def fake_write_json_atomic(path, obj) -> None:
         nonlocal calls
@@ -46,7 +48,7 @@ def test_create_rolls_back_failed_job_write(
             raise OSError("boom")
         original(path, obj)
 
-    monkeypatch.setattr(store_module, "write_json_atomic", fake_write_json_atomic)
+    monkeypatch.setattr(store_module, "_write_json_atomic_unlocked", fake_write_json_atomic)
 
     with pytest.raises(OSError, match="boom"):
         JobStore(data_root).create(_manifest())
@@ -65,6 +67,23 @@ def test_list_jobs_ignores_staging_directories(data_root) -> None:
     assert set(store.list_jobs()) == {job.id}
 
 
+def test_init_prunes_only_stale_staging_directories(data_root) -> None:
+    jobs_dir = data_root / "jobs"
+    jobs_dir.mkdir()
+    stale = jobs_dir / ".tmp-stale"
+    fresh = jobs_dir / ".tmp-fresh"
+    stale.mkdir()
+    fresh.mkdir()
+    now = time.time()
+    os.utime(stale, (now - 600, now - 600))
+    os.utime(fresh, (now, now))
+
+    JobStore(data_root)
+
+    assert not stale.exists()
+    assert fresh.exists()
+
+
 def test_save_missing_job_does_not_create_visible_directory(data_root) -> None:
     store = JobStore(data_root)
     missing = Job(
@@ -80,6 +99,16 @@ def test_save_missing_job_does_not_create_visible_directory(data_root) -> None:
         store.save(missing, expected_revision=1)
 
     assert store.list_jobs() == []
+
+
+def test_list_jobs_raises_for_visible_corruption(data_root) -> None:
+    jobs_dir = data_root / "jobs"
+    broken = jobs_dir / "broken"
+    broken.mkdir(parents=True)
+    (broken / "manifest.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(JobCorruptionError):
+        JobStore(data_root).list_jobs()
 
 
 def test_resume_from_fresh_store_instance(data_root) -> None:
@@ -119,7 +148,7 @@ def test_save_serializes_concurrent_revision_checks(
     second_job.state = JobState.PROCESSING
     first_read_started = threading.Event()
     release_first_writer = threading.Event()
-    original_read_json = store_module.read_json
+    original_read_json = store_module._read_json_unlocked
     read_count = 0
     count_lock = threading.Lock()
     errors: list[Exception] = []
@@ -144,7 +173,7 @@ def test_save_serializes_concurrent_revision_checks(
         except Exception as exc:  # pragma: no cover - assertion below captures failures
             errors.append(exc)
 
-    monkeypatch.setattr(store_module, "read_json", fake_read_json)
+    monkeypatch.setattr(store_module, "_read_json_unlocked", fake_read_json)
 
     first = threading.Thread(target=worker, args=(first_job,))
     second = threading.Thread(target=worker, args=(second_job,))

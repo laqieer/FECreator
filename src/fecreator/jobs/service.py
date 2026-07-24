@@ -26,7 +26,7 @@ class JobService:
 
     def transition(self, job_id: str, to: JobState) -> Job:
         with self._store.locked(job_id):
-            job = self._store.load(job_id)
+            job = self._store._load_locked(job_id)
             if to not in ALLOWED_TRANSITIONS[job.state]:
                 raise InvalidTransitionError(f"{job.state} -> {to} is not allowed")
 

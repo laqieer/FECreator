@@ -80,3 +80,8 @@ def test_read_returns_all_events(data_root) -> None:
 
 def test_read_missing_job_is_empty(data_root) -> None:
     assert EventLog(data_root).read("nope") == []
+
+
+def test_read_rejects_blank_job_id(data_root) -> None:
+    with pytest.raises(ValueError):
+        EventLog(data_root).read(" ")

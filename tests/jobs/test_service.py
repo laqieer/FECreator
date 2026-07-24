@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from fecreator.contracts.manifest import Manifest, SourceSpec
@@ -115,3 +117,9 @@ def test_resume_reloads_from_disk(data_root) -> None:
     resumed = service.resume(job.id)
     assert resumed.state is JobState.PLANNING
     assert resumed.revision == 2
+
+
+def test_save_requires_expected_revision_keyword(data_root) -> None:
+    signature = inspect.signature(JobStore.save)
+
+    assert signature.parameters["expected_revision"].kind is inspect.Parameter.KEYWORD_ONLY

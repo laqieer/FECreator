@@ -1,15 +1,31 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from fecreator.contracts._immutable import freeze_mapping
 from fecreator.contracts.manifest import Manifest
 
 JsonScalar = str | int | float | bool
 JsonObject = dict[str, JsonScalar]
+
+
+def ensure_non_empty_text(value: str, *, field_name: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return normalized
+
+
+def ensure_aware_iso_timestamp(value: str, *, field_name: str) -> str:
+    normalized = ensure_non_empty_text(value, field_name=field_name)
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{field_name} must be a timezone-aware ISO timestamp")
+    return normalized
 
 
 class JobState(StrEnum):
@@ -54,19 +70,41 @@ class Job(BaseModel):
     id: str
     state: JobState
     manifest: Manifest
-    revision: int
+    revision: int = Field(ge=1)
     created_at: str
     updated_at: str
+
+    @field_validator("id", mode="after")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        return ensure_non_empty_text(value, field_name="id")
+
+    @field_validator("created_at", "updated_at", mode="after")
+    @classmethod
+    def _validate_timestamps(cls, value: str, info: ValidationInfo) -> str:
+        field_name = info.field_name or "timestamp"
+        return ensure_aware_iso_timestamp(value, field_name=field_name)
 
 
 class JobEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    seq: int
+    seq: int = Field(ge=0)
     at: str
     kind: str
     message: str
     data: JsonObject = Field(default_factory=dict)
+
+    @field_validator("at", mode="after")
+    @classmethod
+    def _validate_at(cls, value: str) -> str:
+        return ensure_aware_iso_timestamp(value, field_name="at")
+
+    @field_validator("kind", "message", mode="after")
+    @classmethod
+    def _validate_text_fields(cls, value: str, info: ValidationInfo) -> str:
+        field_name = info.field_name or "text"
+        return ensure_non_empty_text(value, field_name=field_name)
 
     @field_validator("data", mode="after")
     @classmethod

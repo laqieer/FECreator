@@ -10,7 +10,7 @@ from fecreator.jobs.approvals import ApprovalError, ApprovalStore
 def test_approve_and_read(data_root) -> None:
     store = ApprovalStore(data_root)
 
-    record = store.approve("j1", "neutral", "alice")
+    record = store.approve(" j1 ", " neutral ", " alice ")
 
     assert record.decision == "approved"
     assert record.actor == "alice"
@@ -94,3 +94,30 @@ def test_decisions_are_persisted(data_root) -> None:
     ApprovalStore(data_root).approve("j1", "neutral", "alice")
 
     assert len(ApprovalStore(data_root).decisions("j1")) == 1
+
+
+@pytest.mark.parametrize(
+    ("job_id", "stage", "actor"),
+    [
+        (" ", "neutral", "alice"),
+        ("j1", " ", "alice"),
+        ("j1", "neutral", " "),
+    ],
+)
+def test_approval_rejects_blank_identifiers(
+    data_root,
+    job_id: str,
+    stage: str,
+    actor: str,
+) -> None:
+    store = ApprovalStore(data_root)
+
+    with pytest.raises(ValueError):
+        store.approve(job_id, stage, actor)
+
+
+def test_reject_requires_non_empty_reason(data_root) -> None:
+    store = ApprovalStore(data_root)
+
+    with pytest.raises(ValueError):
+        store.reject("j1", "neutral", "alice", " \t ")

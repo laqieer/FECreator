@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.jobs.model import ALLOWED_TRANSITIONS, Job, JobEvent, JobState
 
@@ -50,3 +53,43 @@ def test_job_and_event_shapes() -> None:
     )
 
     assert event.data == {}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("id", " "),
+        ("created_at", "2026-07-24T00:00:00"),
+        ("updated_at", "not-a-timestamp"),
+    ],
+)
+def test_job_rejects_invalid_identity_and_timestamps(field: str, value: str) -> None:
+    payload = {
+        "id": "j1",
+        "state": JobState.CREATED,
+        "manifest": _manifest(),
+        "revision": 1,
+        "created_at": "2026-07-24T00:00:00+00:00",
+        "updated_at": "2026-07-24T00:00:00+00:00",
+    }
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        Job(**payload)
+
+
+def test_job_rejects_non_positive_revision() -> None:
+    with pytest.raises(ValidationError):
+        Job(
+            id="j1",
+            state=JobState.CREATED,
+            manifest=_manifest(),
+            revision=0,
+            created_at="2026-07-24T00:00:00+00:00",
+            updated_at="2026-07-24T00:00:00+00:00",
+        )
+
+
+def test_job_event_rejects_naive_timestamp() -> None:
+    with pytest.raises(ValidationError):
+        JobEvent(seq=0, at="2026-07-24T00:00:00", kind="created", message="job created")
