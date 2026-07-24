@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useApiClient } from "../api/context";
 import { MaskEditor } from "../canvas/MaskEditor";
 import { JobTimeline } from "../jobs/JobTimeline";
+import { PalettePreview } from "../palette/PalettePreview";
 import { ReferenceBoard } from "../references/ReferenceBoard";
 import { ReviewGallery } from "../review/ReviewGallery";
 
@@ -50,6 +51,10 @@ function ActiveView({ tab }: { tab: TabName }) {
 
   if (tab === "Mask") {
     return <MaskEditor width={96} height={80} protectedRegions={[]} />;
+  }
+
+  if (tab === "Palette") {
+    return <PalettePreview palette={[]} scale={2} />;
   }
 
   if (tab === "Timeline") {
