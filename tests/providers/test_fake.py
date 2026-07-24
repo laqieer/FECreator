@@ -9,6 +9,7 @@ import pytest
 from PIL import Image
 
 import fecreator.providers.fake as fake_module
+from fecreator.imaging.io import load_rgb, png_dimensions
 from fecreator.providers.base import GenRequest, ProviderRefusal
 from fecreator.providers.fake import FakeProvider
 
@@ -74,6 +75,39 @@ def test_generate_refuses_requests_over_pixel_budget(
             GenRequest(workflow="w", prompt="a", params={"width": 5000, "height": 5000}),
             tmp_path / "huge",
         )
+
+
+def test_generate_integrates_with_real_save_png(tmp_path) -> None:
+    request = GenRequest(
+        workflow="text_to_portrait",
+        prompt="brave knight",
+        params={"width": 96, "height": 80},
+    )
+
+    first = FakeProvider().generate(request, tmp_path / "real-a")
+    second = FakeProvider().generate(request, tmp_path / "real-b")
+
+    first_path = (tmp_path / "real-a" / first.artifacts[0].path).resolve()
+    second_path = (tmp_path / "real-b" / second.artifacts[0].path).resolve()
+
+    assert first.ok is True
+    assert first_path.read_bytes() == second_path.read_bytes()
+    assert first_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert first.artifacts[0].sha256 == second.artifacts[0].sha256
+    assert png_dimensions(first_path) == (96, 80)
+    assert load_rgb(first_path).shape == (80, 96, 3)
+
+
+def test_generate_refusal_happens_before_file_write_with_real_save_png(tmp_path) -> None:
+    workspace = tmp_path / "real-bad"
+
+    with pytest.raises(ProviderRefusal):
+        FakeProvider().generate(
+            GenRequest(workflow="w", prompt="a", params={"width": 0, "height": 80}),
+            workspace,
+        )
+
+    assert workspace.exists() is False
 
 
 def test_load_save_png_refuses_missing_imaging_module(
