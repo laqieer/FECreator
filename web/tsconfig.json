@@ -7,7 +7,7 @@
     "jsx": "react-jsx",
     "strict": true,
     "noEmit": true,
-    "types": ["@testing-library/jest-dom/vitest"]
+    "types": ["@testing-library/jest-dom/vitest", "node"]
   },
   "include": ["src"]
 }

@@ -4,6 +4,7 @@ __pycache__/
 dist/
 build/
 node_modules/
+.playwright-mcp/
 src/fecreator/_web/
 .pytest_cache/
 .mypy_cache/
