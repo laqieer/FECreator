@@ -22,3 +22,35 @@ def test_unknown_mode_type_rejected():
     src = np.zeros((2, 2, 3), dtype=np.uint8)
     with pytest.raises(ValueError):
         resize(src, (4, 4), "bilinear")  # type: ignore[arg-type]
+
+
+# --- I-4: grid modes fail closed; size validation ---
+
+def test_pseudo_pixel_grid_mode_raises_not_implemented():
+    src = np.zeros((8, 8, 3), dtype=np.uint8)
+    with pytest.raises(NotImplementedError):
+        resize(src, (4, 4), ResizeMode.PSEUDO_PIXEL_GRID)
+
+
+def test_manual_grid_mode_raises_not_implemented():
+    src = np.zeros((8, 8, 3), dtype=np.uint8)
+    with pytest.raises(NotImplementedError):
+        resize(src, (4, 4), ResizeMode.MANUAL_GRID)
+
+
+def test_zero_width_raises():
+    src = np.zeros((4, 4, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match="size"):
+        resize(src, (0, 4), ResizeMode.ILLUSTRATION_FIT)
+
+
+def test_zero_height_raises():
+    src = np.zeros((4, 4, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match="size"):
+        resize(src, (4, 0), ResizeMode.ILLUSTRATION_FIT)
+
+
+def test_negative_size_raises():
+    src = np.zeros((4, 4, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match="size"):
+        resize(src, (-1, 4), ResizeMode.PIXEL_PRESERVE)
