@@ -58,7 +58,8 @@ export function JobTimeline({
           {events.map((event) => (
             <li key={event.seq}>
               <strong>{event.kind}</strong>
-              <span> — {event.message}</span>
+              {" — "}
+              <span>{event.message}</span>
             </li>
           ))}
         </ol>
