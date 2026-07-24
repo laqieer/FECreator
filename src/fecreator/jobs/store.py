@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -20,8 +21,14 @@ class JobStore:
     def __init__(self, root: Path) -> None:
         self._root = root
 
+    def _jobs_dir(self) -> Path:
+        return safe_join(self._root, "jobs")
+
     def _job_dir(self, job_id: str) -> Path:
         return safe_join(self._root, "jobs", job_id)
+
+    def _staging_dir(self, job_id: str) -> Path:
+        return safe_join(self._root, "jobs", f".tmp-{job_id}")
 
     def _job_payload(
         self,
@@ -55,13 +62,17 @@ class JobStore:
             created_at=now,
             updated_at=now,
         )
-        job_dir = self._job_dir(job_id)
-        job_dir.mkdir(parents=True, exist_ok=True)
+        jobs_dir = self._jobs_dir()
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir = self._staging_dir(job_id)
+        final_dir = self._job_dir(job_id)
+        staging_dir.mkdir(parents=True, exist_ok=True)
         try:
-            write_json_atomic(job_dir / "manifest.json", manifest.model_dump(mode="json"))
-            write_json_atomic(job_dir / "job.json", self._job_payload(job))
+            write_json_atomic(staging_dir / "manifest.json", manifest.model_dump(mode="json"))
+            write_json_atomic(staging_dir / "job.json", self._job_payload(job))
+            os.replace(staging_dir, final_dir)
         except Exception:
-            shutil.rmtree(job_dir, ignore_errors=True)
+            shutil.rmtree(staging_dir, ignore_errors=True)
             raise
         return job
 
@@ -96,7 +107,11 @@ class JobStore:
         job.updated_at = updated_at
 
     def list_jobs(self) -> list[str]:
-        jobs_dir = self._root / "jobs"
+        jobs_dir = self._jobs_dir()
         if not jobs_dir.exists():
             return []
-        return sorted(entry.name for entry in jobs_dir.iterdir() if entry.is_dir())
+        return sorted(
+            entry.name
+            for entry in jobs_dir.iterdir()
+            if entry.is_dir() and not entry.name.startswith(".tmp-")
+        )

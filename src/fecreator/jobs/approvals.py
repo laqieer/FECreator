@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from fecreator.core.atomicio import append_jsonl, read_jsonl
+from fecreator.core.atomicio import _update_jsonl_atomic, read_jsonl
 from fecreator.core.clock import utc_now_iso
 from fecreator.core.paths import safe_join
 
@@ -40,19 +40,23 @@ class ApprovalStore:
         actor: str,
         reason: str | None,
     ) -> ApprovalRecord:
-        if any(existing.stage == stage for existing in self.decisions(job_id)):
-            raise ApprovalError(f"stage already decided: {stage}")
+        def add_decision(records: list[object]) -> ApprovalRecord:
+            existing = [ApprovalRecord.model_validate(row) for row in records]
+            if any(record.stage == stage for record in existing):
+                raise ApprovalError(f"stage already decided: {stage}")
 
-        record = ApprovalRecord(
-            job_id=job_id,
-            stage=stage,
-            decision=decision,
-            actor=actor,
-            reason=reason,
-            at=utc_now_iso(),
-        )
-        append_jsonl(self._path(job_id), record.model_dump(mode="json"))
-        return record
+            record = ApprovalRecord(
+                job_id=job_id,
+                stage=stage,
+                decision=decision,
+                actor=actor,
+                reason=reason,
+                at=utc_now_iso(),
+            )
+            records.append(record.model_dump(mode="json"))
+            return record
+
+        return _update_jsonl_atomic(self._path(job_id), add_decision)
 
     def approve(self, job_id: str, stage: str, actor: str) -> ApprovalRecord:
         return self._record(job_id, stage, "approved", actor, None)

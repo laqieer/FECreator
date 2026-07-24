@@ -54,6 +54,16 @@ def test_create_rolls_back_failed_job_write(
     assert not jobs_dir.exists() or list(jobs_dir.iterdir()) == []
 
 
+def test_list_jobs_ignores_staging_directories(data_root) -> None:
+    store = JobStore(data_root)
+    job = store.create(_manifest())
+    staging_dir = data_root / "jobs" / ".tmp-orphan"
+    staging_dir.mkdir(parents=True)
+    (staging_dir / "manifest.json").write_text("{}", encoding="utf-8")
+
+    assert set(store.list_jobs()) == {job.id}
+
+
 def test_resume_from_fresh_store_instance(data_root) -> None:
     first = JobStore(data_root)
     job = first.create(_manifest())

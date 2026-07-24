@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from fecreator.jobs.approvals import ApprovalError, ApprovalStore
@@ -13,6 +15,62 @@ def test_approve_and_read(data_root) -> None:
     assert record.decision == "approved"
     assert record.actor == "alice"
     assert [decision.stage for decision in store.decisions("j1")] == ["neutral"]
+
+
+def test_concurrent_decisions_do_not_allow_duplicates(
+    data_root,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ApprovalStore(data_root)
+    first_check_started = threading.Event()
+    release_first_writer = threading.Event()
+    original_decisions = ApprovalStore.decisions
+    errors: list[Exception] = []
+    call_count = 0
+    count_lock = threading.Lock()
+
+    def fake_decisions(self: ApprovalStore, job_id: str):
+        nonlocal call_count
+        rows = original_decisions(self, job_id)
+        with count_lock:
+            call_count += 1
+            current_call = call_count
+        if current_call == 1:
+            first_check_started.set()
+            if not release_first_writer.wait(timeout=5):
+                raise TimeoutError("timed out waiting to release writer")
+        return rows
+
+    def approve() -> None:
+        try:
+            store.approve("j1", "neutral", "alice")
+        except Exception as exc:  # pragma: no cover - assertion below captures failures
+            errors.append(exc)
+
+    def reject() -> None:
+        try:
+            store.reject("j1", "neutral", "bob", "changed my mind")
+        except Exception as exc:  # pragma: no cover - assertion below captures failures
+            errors.append(exc)
+
+    monkeypatch.setattr(ApprovalStore, "decisions", fake_decisions)
+
+    first = threading.Thread(target=approve)
+    second = threading.Thread(target=reject)
+    first.start()
+    if first_check_started.wait(timeout=1):
+        second.start()
+        release_first_writer.set()
+    else:
+        second.start()
+    first.join(timeout=5)
+    second.join(timeout=5)
+    release_first_writer.set()
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert len(store.decisions("j1")) == 1
+    assert sum(isinstance(exc, ApprovalError) for exc in errors) == 1
 
 
 def test_reject_records_reason(data_root) -> None:
