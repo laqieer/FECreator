@@ -134,10 +134,10 @@ class PortraitPlugin:
 
         ctx.workspace.mkdir(parents=True, exist_ok=True)
         data_root = ctx.workspace.parents[1]
-        pack = self._reference_pack(data_root, manifest)
-        provider = cast(Provider, PROVIDER_REGISTRY.get(manifest.provider))
-        self._transition_job(data_root, ctx.job_id, JobState.PROCESSING)
         try:
+            pack = self._reference_pack(data_root, manifest)
+            provider = cast(Provider, PROVIDER_REGISTRY.get(manifest.provider))
+            self._transition_job(data_root, ctx.job_id, JobState.PROCESSING)
             try:
                 require_capabilities(provider, self.required_capabilities(manifest.workflow))
 
