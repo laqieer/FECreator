@@ -11,8 +11,12 @@ from fecreator.contracts.capabilities import Capability
 
 
 def test_workflows():
-    assert WORKFLOWS == frozenset({
-        "text_to_portrait", "concept_to_portrait", "expression_refine", "masked_variant"})
+    assert (
+        frozenset(
+            {"text_to_portrait", "concept_to_portrait", "expression_refine", "masked_variant"}
+        )
+        == WORKFLOWS
+    )
 
 
 def test_required_caps_per_workflow():
