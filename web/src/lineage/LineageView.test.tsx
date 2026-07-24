@@ -8,7 +8,14 @@ test("reject fires with asset id", async () => {
   const onReject = vi.fn();
   render(
     <LineageView
-      nodes={[{ asset_id: "a1", operation: "create_neutral", parents: [] }]}
+      nodes={[
+        {
+          asset_id: "a1",
+          operation: "create_neutral",
+          parents: [],
+          created_at: "2026-07-24T00:00:00+00:00",
+        },
+      ]}
       onApprove={vi.fn()}
       onReject={onReject}
     />,
@@ -20,7 +27,14 @@ test("reject fires with asset id", async () => {
 test("shows parent lineage and explicit empty state", () => {
   const { rerender } = render(
     <LineageView
-      nodes={[{ asset_id: "v2", operation: "variant_masked_edit", parents: ["root", "mask-1"] }]}
+      nodes={[
+        {
+          asset_id: "v2",
+          operation: "variant_masked_edit",
+          parents: ["root", "mask-1"],
+          created_at: "2026-07-24T00:00:00+00:00",
+        },
+      ]}
       onApprove={vi.fn()}
       onReject={vi.fn()}
     />,

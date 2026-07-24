@@ -111,7 +111,7 @@ export interface SourcePlan {
 export interface LineageNode {
   asset_id: string;
   operation: Operation;
-  parents: string[];
+  parents?: string[];
   provider?: string | null;
   model?: string | null;
   prompt?: string | null;
@@ -124,5 +124,17 @@ export interface LineageNode {
   metrics?: Record<string, number>;
   approved_by?: string | null;
   output_hashes?: string[];
-  created_at?: string;
+  created_at: string;
+}
+
+export interface ReferencePack {
+  id: string;
+  revision: number;
+  source?: string;
+  concept_art?: Artifact[];
+  traits?: Record<string, string>;
+  swatches?: string[];
+  forbidden_changes?: string[];
+  provenance?: string;
+  rights?: string;
 }

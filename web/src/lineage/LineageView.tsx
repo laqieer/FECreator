@@ -17,7 +17,7 @@ export function LineageView({ nodes, onApprove, onReject }: LineageViewProps) {
           {nodes.map((node) => (
             <li key={node.asset_id}>
               <p>
-                <strong>{node.asset_id}</strong> · {node.operation} · parents: {node.parents.join(", ") || "none"}
+                <strong>{node.asset_id}</strong> · {node.operation} · parents: {(node.parents ?? []).join(", ") || "none"}
               </p>
               <div>
                 <button type="button" onClick={() => onApprove(node.asset_id)}>
