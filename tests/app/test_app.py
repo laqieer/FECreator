@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from fecreator.app import AppError, FeCreatorApp, InvalidStateError
-from fecreator.assets.base import SourcePlan
+from fecreator.assets.base import SourcePlan, SubmissionSchema
 from fecreator.contracts.capabilities import Capability
 from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.contracts.result import JobResult
@@ -30,7 +30,7 @@ class _StubPortrait:
             required_expressions=("neutral",),
             background_contract="green",
             forbidden_colors=(),
-            submission_schema={},
+            submission_schema=SubmissionSchema(),
         )
 
     def build(self, ctx: PipelineContext, manifest: Manifest) -> JobResult:
@@ -176,7 +176,48 @@ def test_submit_sources_rejects_symlinks(tmp_path: Path) -> None:
     link = src / "link.png"
     link.symlink_to(real)
     with pytest.raises(AppError):
-        app.submit_sources(job.id, src)  # no files (symlink skipped → 0 files)
+        app.submit_sources(job.id, src)
+
+
+def test_submit_sources_rejects_hardlinks(tmp_path: Path) -> None:
+    import os
+
+    app = _app(tmp_path)
+    job = app.create_job(_manifest())
+    real = tmp_path / "real.png"
+    real.write_bytes(b"\x89PNG")
+    src = tmp_path / "src"
+    src.mkdir()
+    hard = src / "hard.png"
+    os.link(real, hard)  # create hardlink
+    with pytest.raises(AppError):
+        app.submit_sources(job.id, src)
+
+
+def test_submit_sources_rejects_windows_junction(tmp_path: Path) -> None:
+    """Windows-specific: junction/reparse points must be rejected."""
+    import platform
+
+    if platform.system() != "Windows":
+        pytest.skip("Windows-only junction test")
+    import subprocess
+
+    app = _app(tmp_path)
+    job = app.create_job(_manifest())
+    target = tmp_path / "target_dir"
+    target.mkdir()
+    (target / "file.png").write_bytes(b"\x89PNG")
+    src = tmp_path / "src"
+    # Create a directory junction using mklink
+    result = subprocess.run(
+        ["cmd", "/c", f"mklink /J {src} {target}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip("Could not create junction")
+    with pytest.raises(AppError):
+        app.submit_sources(job.id, tmp_path / "outer_src")
 
 
 def test_submit_sources_no_overwrite(tmp_path: Path) -> None:
@@ -207,3 +248,69 @@ def test_cancel_and_resume(tmp_path: Path) -> None:
     assert cancelled.state == JobState.CANCELLED
     resumed = app.resume(job.id)
     assert resumed.state == JobState.CANCELLED  # resume returns current state
+
+
+def test_build_ok_false_transitions_to_failed(tmp_path: Path) -> None:
+    """If plugin.build() returns ok=False, job transitions to FAILED."""
+
+    class _FailPortrait(_StubPortrait):
+        def build(self, ctx: PipelineContext, manifest: Manifest) -> JobResult:
+            return JobResult(job_id=ctx.job_id, ok=False)
+
+    asset_reg: Registry[object] = Registry()
+    asset_reg.register("portrait", _FailPortrait())
+    app = FeCreatorApp(Settings(data_root=tmp_path), asset_registry=asset_reg)
+    job = app.create_job(_manifest())
+    result = app.build(job.id)
+    assert not result.ok
+    assert app.get_job(job.id).state == JobState.FAILED
+
+
+def test_build_exception_transitions_to_failed(tmp_path: Path) -> None:
+    """If plugin.build() raises, job transitions to FAILED."""
+
+    class _ExcPortrait(_StubPortrait):
+        def build(self, ctx: PipelineContext, manifest: Manifest) -> JobResult:
+            raise RuntimeError("plugin error")
+
+    asset_reg: Registry[object] = Registry()
+    asset_reg.register("portrait", _ExcPortrait())
+    app = FeCreatorApp(Settings(data_root=tmp_path), asset_registry=asset_reg)
+    job = app.create_job(_manifest())
+    with pytest.raises(RuntimeError):
+        app.build(job.id)
+    assert app.get_job(job.id).state == JobState.FAILED
+
+
+def test_generate_refuses_insufficient_capabilities(tmp_path: Path) -> None:
+    """generate() checks provider capabilities; refuses with ProviderRefusal."""
+    from fecreator.contracts.capabilities import CapabilitySet
+    from fecreator.providers.base import ProviderRefusal
+
+    class _NoCap:
+        id = "nocap"
+        capabilities = CapabilitySet(capabilities=frozenset())
+
+        def generate(self, request: object, workspace: object) -> object:
+            raise ProviderRefusal("no capabilities")
+
+    provider_reg: Registry[object] = Registry()
+    provider_reg.register("nocap", _NoCap())
+    asset_reg: Registry[object] = Registry()
+    asset_reg.register("portrait", _StubPortrait())
+
+    manifest = Manifest(
+        asset_type="portrait",
+        target_spec="fe-gba-portrait-standard",
+        workflow="text_to_portrait",
+        provider="nocap",
+        sources=(),
+    )
+    app = FeCreatorApp(
+        Settings(data_root=tmp_path),
+        asset_registry=asset_reg,
+        provider_registry=provider_reg,
+    )
+    job = app.create_job(manifest)
+    with pytest.raises(ProviderRefusal):
+        app.generate(job.id)

@@ -2,6 +2,8 @@ import io
 import json
 from pathlib import Path
 
+import pytest
+
 from fecreator.app import FeCreatorApp
 from fecreator.core.config import Settings
 from fecreator.interfaces.cli_json import run
@@ -115,3 +117,36 @@ def test_serve_rejects_non_loopback(tmp_path: Path) -> None:
     rc = run(_app(tmp_path), ["serve", "--host", "0.0.0.0"], out, err)
     assert rc != 0
     assert "UNSAFE_HOST" in err.getvalue()
+
+
+def test_serve_binds_exactly_loopback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """serve command must call uvicorn.run with host='127.0.0.1'."""
+    import uvicorn
+
+    captured: list[dict[str, object]] = []
+
+    def fake_run(app: object, *, host: str, port: int, **kwargs: object) -> None:
+        captured.append({"host": host, "port": port})
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    out = io.StringIO()
+    err = io.StringIO()
+    rc = run(_app(tmp_path), ["serve"], out, err)
+    assert rc == 0, f"serve returned {rc}, stderr: {err.getvalue()}"
+    assert len(captured) == 1
+    assert captured[0]["host"] == "127.0.0.1"
+
+
+def test_error_messages_do_not_contain_absolute_paths(tmp_path: Path) -> None:
+    """Errors on CLI must not echo absolute filesystem paths in stderr."""
+    import re
+
+    out = io.StringIO()
+    err = io.StringIO()
+    # Trigger a NOT_FOUND error (missing job)
+    run(_app(tmp_path), ["job", "status", "nonexistent"], out, err)
+    err_text = err.getvalue()
+    # Should have an error in stderr
+    assert err_text.strip()
+    # Must NOT contain a Windows-style absolute path
+    assert not re.search(r"[A-Za-z]:\\", err_text), f"path leaked: {err_text!r}"

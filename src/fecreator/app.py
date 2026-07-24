@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,6 +30,24 @@ _REVIEW_STATES = frozenset({JobState.WAITING_FOR_REVIEW, JobState.VALIDATING})
 _BUILD_BLOCKED_STATES = _TERMINAL_STATES | _REVIEW_STATES
 _MAX_SOURCE_FILES = 64
 _MAX_SOURCE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
+def _is_junction_or_reparse(path: Path) -> bool:
+    """Return True if path is a Windows junction or reparse point."""
+    if sys.platform != "win32":
+        return False
+    try:
+        return bool(getattr(path, "is_junction", lambda: False)())
+    except OSError:
+        return False
+
+
+def _is_hardlink(path: Path) -> bool:
+    """Return True if path has more than one hard link (i.e. is a hardlink)."""
+    try:
+        return os.stat(path).st_nlink > 1
+    except OSError:
+        return False
 
 
 class AppError(Exception):
@@ -170,7 +190,8 @@ class FeCreatorApp:
     def submit_sources(self, job_id: str, sources_dir: Path) -> Job:
         """Copy sources into the job workspace.
 
-        Rejects symlinks/junctions, enforces no-overwrite and file count/byte limits.
+        Rejects symlinks, junctions, and hardlinks; enforces no-overwrite and
+        file count/byte limits.
         """
         job = self._jobs.load(job_id)
         if job.state in _TERMINAL_STATES:
@@ -179,12 +200,23 @@ class FeCreatorApp:
             )
         src = Path(sources_dir)
         if not src.exists():
-            raise AppError(f"sources directory not found: {src}", "NOT_FOUND")
-        items = [item for item in sorted(src.iterdir()) if item.is_file() and not item.is_symlink()]
-        # Explicitly reject any symlinks found in the source directory
+            raise AppError("sources directory not found", "NOT_FOUND")
+        # Reject unsafe entries before collecting items
         for entry in src.iterdir():
             if entry.is_symlink():
                 raise AppError(f"symlink not allowed in sources: {entry.name!r}", "UNSAFE_PATH")
+            if _is_junction_or_reparse(entry):
+                raise AppError(
+                    f"junction/reparse point not allowed in sources: {entry.name!r}", "UNSAFE_PATH"
+                )
+        items = [
+            item
+            for item in sorted(src.iterdir())
+            if item.is_file() and not item.is_symlink() and not _is_junction_or_reparse(item)
+        ]
+        for item in items:
+            if _is_hardlink(item):
+                raise AppError(f"hardlink not allowed in sources: {item.name!r}", "UNSAFE_PATH")
         if len(items) > _MAX_SOURCE_FILES:
             raise AppError(
                 f"too many source files: {len(items)} > {_MAX_SOURCE_FILES}", "TOO_MANY_FILES"
@@ -217,25 +249,54 @@ class FeCreatorApp:
         }:
             self._service.transition(job_id, JobState.PROCESSING)
 
+    def _check_provider_capabilities(self, plugin: AssetPlugin, manifest: Manifest) -> None:
+        """Verify the manifest's provider supports the plugin's required capabilities."""
+        from fecreator.core.registry import UnknownIdError
+        from fecreator.providers.base import Provider, require_capabilities
+
+        try:
+            provider = cast(Provider, self._provider_reg.get(manifest.provider))
+        except UnknownIdError as exc:
+            raise AppError(
+                f"unknown provider: {manifest.provider!r}", "PROVIDER_NOT_FOUND"
+            ) from exc
+        required = plugin.required_capabilities(manifest.workflow)
+        require_capabilities(provider, required)
+
     def generate(self, job_id: str) -> JobResult:
         """Run generation pipeline step (provider → images)."""
+        import contextlib
+
         job = self._jobs.load(job_id)
         if job.state in _BUILD_BLOCKED_STATES:
             raise InvalidStateError(
                 f"generate not allowed: job {job_id} is in state {job.state.value}"
             )
-        self._to_processing(job_id, job)
         plugin = self._get_asset_plugin(job.manifest.asset_type)
+        self._check_provider_capabilities(plugin, job.manifest)
+        self._to_processing(job_id, job)
         workspace = safe_join(self._settings.data_root, "jobs", job_id)
         ctx = PipelineContext(job_id=job_id, workspace=workspace)
-        result = plugin.build(ctx, job.manifest)
+        try:
+            result = plugin.build(ctx, job.manifest)
+        except Exception:
+            with contextlib.suppress(Exception):
+                self._service.transition(job_id, JobState.FAILED)
+                self._events.append(job_id, "generate_exception", "generate raised an exception")
+            raise
         workspace.mkdir(parents=True, exist_ok=True)
         write_json_atomic(workspace / "generate_result.json", result.model_dump(mode="json"))
-        self._events.append(job_id, "generated", "generation step complete")
+        if result.ok:
+            self._events.append(job_id, "generated", "generation step complete")
+        else:
+            self._events.append(job_id, "generate_failed", "generate returned ok=False")
+            self._service.transition(job_id, JobState.FAILED)
         return result
 
     def build(self, job_id: str) -> JobResult:
         """Run build/packaging step and gate on review approval."""
+        import contextlib
+
         job = self._jobs.load(job_id)
         if job.state in _BUILD_BLOCKED_STATES:
             raise InvalidStateError(
@@ -245,11 +306,21 @@ class FeCreatorApp:
         plugin = self._get_asset_plugin(job.manifest.asset_type)
         workspace = safe_join(self._settings.data_root, "jobs", job_id)
         ctx = PipelineContext(job_id=job_id, workspace=workspace)
-        result = plugin.build(ctx, job.manifest)
+        try:
+            result = plugin.build(ctx, job.manifest)
+        except Exception:
+            with contextlib.suppress(Exception):
+                self._service.transition(job_id, JobState.FAILED)
+                self._events.append(job_id, "build_exception", "build raised an exception")
+            raise
         workspace.mkdir(parents=True, exist_ok=True)
         write_json_atomic(workspace / "result.json", result.model_dump(mode="json"))
-        self._events.append(job_id, "built", "build step complete")
-        self._service.transition(job_id, JobState.WAITING_FOR_REVIEW)
+        if result.ok:
+            self._events.append(job_id, "built", "build step complete")
+            self._service.transition(job_id, JobState.WAITING_FOR_REVIEW)
+        else:
+            self._events.append(job_id, "build_failed", "build returned ok=False")
+            self._service.transition(job_id, JobState.FAILED)
         return result
 
     # ── validation ─────────────────────────────────────────────────────────────

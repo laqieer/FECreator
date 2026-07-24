@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import functools
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
 from fecreator.app import AppError, FeCreatorApp, InvalidStateError
 from fecreator.contracts.manifest import Manifest
+from fecreator.core.redaction import redact
 
 TOOL_NAMES: list[str] = [
     "list_assets",
@@ -26,20 +29,20 @@ TOOL_NAMES: list[str] = [
 
 
 def _wrap(fn: Any) -> Any:
+    """Wrap a named handler so domain errors become ToolError (redacted)."""
+
+    @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return fn(*args, **kwargs)
-        except InvalidStateError as exc:
-            return {"error": "INVALID_STATE", "message": str(exc)}
         except FileNotFoundError:
-            return {"error": "NOT_FOUND", "message": "resource not found"}
-        except AppError as exc:
-            return {"error": exc.code, "message": str(exc)}
+            # Never echo path from FileNotFoundError — use fixed safe message
+            raise ToolError("not found") from None
+        except (InvalidStateError, AppError) as exc:
+            raise ToolError(redact(str(exc))) from exc
         except Exception:
-            return {"error": "INTERNAL_ERROR", "message": "an internal error occurred"}
+            raise ToolError("internal error") from None
 
-    wrapper.__name__ = getattr(fn, "__name__", "handler")
-    wrapper.__doc__ = getattr(fn, "__doc__", None)
     return wrapper
 
 
@@ -57,7 +60,7 @@ def make_handlers(app: FeCreatorApp) -> dict[str, Any]:
         return app.list_providers()
 
     def create_job(manifest: dict[str, Any]) -> dict[str, Any]:
-        """Create a new job from a manifest dict."""
+        """Create a new job from a manifest dict. Returns the created Job."""
         return app.create_job(Manifest.model_validate(manifest)).model_dump(mode="json")
 
     def get_job(job_id: str) -> dict[str, Any]:
