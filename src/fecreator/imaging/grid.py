@@ -7,6 +7,7 @@ from pydantic import BaseModel
 class GridEstimate(BaseModel):
     cell_w: int
     cell_h: int
+    # NOTE: origin detection not implemented; always returns 0.
     origin_x: int
     origin_y: int
     confidence: float
@@ -14,6 +15,13 @@ class GridEstimate(BaseModel):
 
 class LowConfidenceGridError(Exception):
     """Raised when grid periodicity cannot be detected confidently."""
+
+
+def _require_rgb(rgb: np.ndarray) -> None:
+    if rgb.ndim != 3 or rgb.shape[2] != 3:
+        raise ValueError(
+            f"expected (H, W, 3) 3-channel RGB array, got shape {rgb.shape}"
+        )
 
 
 def _axis_period(gray: np.ndarray, axis: int) -> tuple[int, float]:
@@ -29,6 +37,7 @@ def _axis_period(gray: np.ndarray, axis: int) -> tuple[int, float]:
 
 
 def detect_grid(rgb: np.ndarray, min_confidence: float = 0.6) -> GridEstimate:
+    _require_rgb(rgb)
     gray = rgb.mean(axis=2)
     cell_w, conf_w = _axis_period(gray, axis=1)
     cell_h, conf_h = _axis_period(gray, axis=0)

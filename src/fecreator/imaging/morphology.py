@@ -5,6 +5,8 @@ import numpy as np
 
 
 def _kernel(radius: int) -> np.ndarray:
+    if radius < 1:
+        raise ValueError(f"morphology radius must be >= 1, got {radius}")
     size = 2 * radius + 1
     return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
 

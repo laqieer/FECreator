@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from fecreator.imaging.masks import background_mask, chroma_key
 from fecreator.imaging.morphology import (
@@ -47,3 +48,31 @@ def test_fill_and_morph_shapes():
     assert fill_holes(mask)[3, 3]
     assert close_mask(mask).shape == mask.shape
     assert open_mask(mask).shape == mask.shape
+
+
+# --- M-2: channel validation ---
+
+def test_chroma_key_non_rgb_raises():
+    rgba = np.zeros((4, 4, 4), dtype=np.uint8)
+    with pytest.raises(ValueError, match="channel"):
+        chroma_key(rgba, GREEN)
+
+
+def test_background_mask_non_rgb_raises():
+    gray = np.zeros((4, 4), dtype=np.uint8)
+    with pytest.raises(ValueError, match="channel"):
+        background_mask(gray, GREEN)  # type: ignore[arg-type]
+
+
+# --- M-4: morphology radius validation ---
+
+def test_close_mask_zero_radius_raises():
+    mask = np.zeros((4, 4), dtype=bool)
+    with pytest.raises(ValueError, match="radius"):
+        close_mask(mask, radius=0)
+
+
+def test_open_mask_negative_radius_raises():
+    mask = np.zeros((4, 4), dtype=bool)
+    with pytest.raises(ValueError, match="radius"):
+        open_mask(mask, radius=-1)
