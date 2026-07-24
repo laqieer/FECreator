@@ -64,9 +64,7 @@ def test_canonical_swatches_in_submission_schema() -> None:
 
 def test_reference_roles_use_artifact_paths() -> None:
     """reference_roles values are artifact paths, not role strings."""
-    art = Artifact(
-        role="concept", path="refs/hero.png", sha256="a" * 64, media_type="image/png"
-    )
+    art = Artifact(role="concept", path="refs/hero.png", sha256="a" * 64, media_type="image/png")
     pack = ReferencePack(id="knight", revision=1, concept_art=(art,))
     plan = plan_sources(_manifest("concept_to_portrait"), pack)
     assert "refs/hero.png" in plan.reference_roles.values()

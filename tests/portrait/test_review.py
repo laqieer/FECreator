@@ -1,5 +1,3 @@
-import math
-
 from fecreator.assets.portrait.review import ReviewThresholds, review_gate
 from fecreator.contracts.diagnostics import has_errors
 
@@ -115,7 +113,9 @@ def test_nan_palette_distance_fails_closed() -> None:
 
 
 def test_all_nan_fails_closed() -> None:
-    nan_metrics = {k: float("nan") for k in ["identity", "silhouette", "protected_diff", "palette_distance"]}
+    nan_metrics = {
+        k: float("nan") for k in ["identity", "silhouette", "protected_diff", "palette_distance"]
+    }
     diags = review_gate(nan_metrics)
     assert has_errors(diags)
     assert len(diags) == 4  # all four metrics triggered

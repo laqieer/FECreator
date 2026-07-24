@@ -27,9 +27,7 @@ def apply_masked_edit(
         )
     expected_hw = base_rgb.shape[:2]
     if mask.shape != expected_hw:
-        raise ValueError(
-            f"mask shape {mask.shape} does not match image H×W {expected_hw}"
-        )
+        raise ValueError(f"mask shape {mask.shape} does not match image H×W {expected_hw}")
     return np.where(mask[:, :, None], edited_rgb, base_rgb).astype(np.uint8)
 
 
@@ -53,8 +51,7 @@ def check_protected_regions(
             diags.append(
                 error(
                     "REGION_OUT_OF_BOUNDS",
-                    f"protected region {region.label!r} is out of bounds "
-                    f"for {h}×{w} image",
+                    f"protected region {region.label!r} is out of bounds for {h}×{w} image",
                     where=region.label,
                 )
             )

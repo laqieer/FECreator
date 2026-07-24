@@ -10,7 +10,6 @@ from pydantic import ValidationError
 
 from fecreator.assets.base import PromptPlan, SourcePlan, SubmissionSchema
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
