@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from fecreator.specs.fire_emblem.gba.portrait_standard.palette import (
     read_jasc,
     snap_gba_5bit,
@@ -49,3 +51,45 @@ def test_read_jasc_rejects_channel_out_of_range(tmp_path: Path) -> None:
         pass
     else:  # pragma: no cover - failure path
         raise AssertionError("expected ValueError for out-of-range channel")
+
+
+def test_write_jasc_leaves_no_temp_file(tmp_path: Path) -> None:
+    p = tmp_path / "x.pal"
+    write_jasc(p, [(0, 0, 0), (248, 128, 0)])
+    assert {c.name for c in tmp_path.iterdir()} == {"x.pal"}
+
+
+def test_write_jasc_rejects_empty_palette(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="1..16"):
+        write_jasc(tmp_path / "e.pal", [])
+
+
+def test_write_jasc_rejects_palette_gt16(tmp_path: Path) -> None:
+    palette = [(i, i, i) for i in range(0, 17)]
+    with pytest.raises(ValueError, match="1..16"):
+        write_jasc(tmp_path / "big.pal", palette)
+
+
+def test_write_jasc_rejects_channel_out_of_range(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="channel"):
+        write_jasc(tmp_path / "oor.pal", [(0, 0, 0), (256, 0, 0)])
+
+
+def test_read_jasc_rejects_trailing_data(tmp_path: Path) -> None:
+    p = tmp_path / "trail.pal"
+    p.write_bytes(b"JASC-PAL\r\n0100\r\n1\r\n0 0 0\r\n9 9 9\r\n")
+    with pytest.raises(ValueError, match="trailing"):
+        read_jasc(p)
+
+
+def test_read_jasc_allows_trailing_blank_line(tmp_path: Path) -> None:
+    p = tmp_path / "blank.pal"
+    p.write_bytes(b"JASC-PAL\r\n0100\r\n1\r\n0 0 0\r\n\r\n")
+    assert read_jasc(p) == [(0, 0, 0)]
+
+
+def test_read_jasc_numeric_error_has_context(tmp_path: Path) -> None:
+    p = tmp_path / "nan.pal"
+    p.write_bytes(b"JASC-PAL\r\n0100\r\n1\r\nxx 0 0\r\n")
+    with pytest.raises(ValueError, match="nan.pal"):
+        read_jasc(p)
