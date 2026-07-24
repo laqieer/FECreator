@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useApiClient } from "../api/context";
+import { MaskEditor } from "../canvas/MaskEditor";
 import { JobTimeline } from "../jobs/JobTimeline";
 import { ReferenceBoard } from "../references/ReferenceBoard";
 import { ReviewGallery } from "../review/ReviewGallery";
@@ -45,6 +46,10 @@ function ActiveView({ tab }: { tab: TabName }) {
 
   if (tab === "References") {
     return <ReferenceBoard swatches={[]} manifestText={manifestText} onManifestChange={setManifestText} />;
+  }
+
+  if (tab === "Mask") {
+    return <MaskEditor width={96} height={80} protectedRegions={[]} />;
   }
 
   if (tab === "Timeline") {
