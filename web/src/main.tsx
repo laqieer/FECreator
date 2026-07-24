@@ -1,15 +1,21 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { App } from "./app/App";
+import { httpClient } from "./api/client";
+import { ApiClientProvider } from "./api/context";
 
-export function App() {
-  return <h1>FECreator</h1>;
-}
+const queryClient = new QueryClient();
+const rootElement = document.getElementById("root");
 
-const el = document.getElementById("root");
-if (el) {
-  createRoot(el).render(
+if (rootElement) {
+  createRoot(rootElement).render(
     <StrictMode>
-      <App />
+      <QueryClientProvider client={queryClient}>
+        <ApiClientProvider client={httpClient()}>
+          <App />
+        </ApiClientProvider>
+      </QueryClientProvider>
     </StrictMode>,
   );
 }

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 RESERVED_STORAGE_IDS = frozenset({"locks", ".locks"})
+
+_WIN_EXTENDED_UNC_PREFIX = "\\\\?\\UNC\\"
+_WIN_EXTENDED_PREFIX = "\\\\?\\"
 
 
 class PathEscapeError(Exception):
@@ -18,20 +22,68 @@ def _has_absolute_part(parts: tuple[str, ...]) -> bool:
     return False
 
 
+def _strip_windows_extended_prefix(text: str) -> str:
+    """Collapse Windows extended-length prefixes to their ordinary equivalent.
+
+    ``\\\\?\\C:\\x`` becomes ``C:\\x`` and ``\\\\?\\UNC\\srv\\share\\x`` becomes
+    ``\\\\srv\\share\\x`` so that a path resolved with the extended prefix compares
+    equal to the same path resolved without it.
+    """
+
+    if text.startswith(_WIN_EXTENDED_UNC_PREFIX):
+        return "\\\\" + text[len(_WIN_EXTENDED_UNC_PREFIX) :]
+    if text.startswith(_WIN_EXTENDED_PREFIX):
+        return text[len(_WIN_EXTENDED_PREFIX) :]
+    return text
+
+
+def _canonical_parts(path: Path) -> tuple[str, ...]:
+    """Return canonical, comparable path components for an absolute resolved path.
+
+    On Windows the extended-length prefix is normalised away and components are
+    case-folded to match the platform's case-insensitive semantics.  On POSIX the
+    components are returned verbatim to preserve case-sensitive behaviour.
+    """
+
+    if os.name == "nt":
+        normalized = _strip_windows_extended_prefix(str(path))
+        return tuple(part.casefold() for part in PureWindowsPath(normalized).parts)
+    return path.parts
+
+
+def _is_contained_resolved(root: Path, target: Path) -> bool:
+    """Component-aware containment check for already-resolved paths.
+
+    Both arguments must already be resolved; this performs no further resolution,
+    so it is safe to call with a single canonical resolution per path.  Different
+    drives / anchors and any error fail closed (return ``False``).  Containment is
+    determined by matching whole path components, never a naive string prefix, so
+    ``C:\\root2`` is not treated as inside ``C:\\root``.
+    """
+
+    try:
+        root_parts = _canonical_parts(root)
+        target_parts = _canonical_parts(target)
+    except ValueError:
+        return False
+    prefix_len = len(root_parts)
+    if len(target_parts) < prefix_len:
+        return False
+    return target_parts[:prefix_len] == root_parts
+
+
 def safe_join(root: Path, *parts: str) -> Path:
     if _has_absolute_part(parts):
         raise PathEscapeError(f"absolute segment not allowed: {parts!r}")
-    root = root.resolve()
-    candidate = root.joinpath(*parts).resolve()
-    if not is_contained(root, candidate):
-        raise PathEscapeError(f"{candidate} escapes {root}")
+    resolved_root = root.resolve()
+    candidate = resolved_root.joinpath(*parts).resolve()
+    if not _is_contained_resolved(resolved_root, candidate):
+        raise PathEscapeError(f"{candidate} escapes {resolved_root}")
     return candidate
 
 
 def is_contained(root: Path, target: Path) -> bool:
-    root = root.resolve()
-    target = target.resolve()
-    return root == target or root in target.parents
+    return _is_contained_resolved(root.resolve(), target.resolve())
 
 
 def normalize_storage_id(value: str, *, field_name: str) -> str:

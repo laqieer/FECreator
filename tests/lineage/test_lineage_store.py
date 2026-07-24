@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -271,6 +272,45 @@ except Exception as exc:
     ]
     assert all(result["ok"] for result in results)
     assert [node.asset_id for node in LineageStore(data_root).children("a")] == ["b", "c"]
+
+
+def test_concurrent_adds_never_spuriously_reject_contained_paths(
+    data_root: Path,
+    tmp_path: Path,
+) -> None:
+    """Bounded in-process regression for the Windows extended-prefix containment race.
+
+    Many threads add distinct children while the ``.locks`` directory tree is being
+    created concurrently.  Every add targets a path that is legitimately contained
+    in the store root, so a ``PathEscapeError`` here indicates the resolve-time
+    ``\\\\?\\`` prefix/case race has regressed.
+    """
+    store = LineageStore(data_root)
+    store.add(_node("root"))
+    escape_errors: list[str] = []
+    lock = threading.Lock()
+    workers = 8
+
+    def worker(index: int) -> None:
+        try:
+            store.add(_node(f"child{index:03d}", parents=("root",)))
+        except PathEscapeError as exc:
+            with lock:
+                escape_errors.append(str(exc))
+        except Exception:  # pragma: no cover - other domain errors are irrelevant here
+            pass
+
+    for _round in range(6):
+        threads = [
+            threading.Thread(target=worker, args=(_round * workers + i,)) for i in range(workers)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    assert escape_errors == [], f"contained lineage path spuriously rejected: {escape_errors[:3]}"
+    assert len(LineageStore(data_root).children("root")) == 6 * workers
 
 
 def test_concurrent_mutual_parent_adds_fail_promptly_with_domain_error(
