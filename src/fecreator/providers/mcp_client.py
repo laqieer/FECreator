@@ -19,6 +19,8 @@ from fecreator.providers.base import (
     require_capabilities,
 )
 
+MCP_INLINE_ARTIFACT_MAX_BYTES = 50 * 1024 * 1024
+
 
 class McpTransport(Protocol):
     def call_tool(self, name: str, args: Mapping[str, object]) -> dict[str, object]: ...
@@ -99,10 +101,14 @@ class McpClientProvider:
         artifact_path = _safe_artifact_path(workspace, raw_path)
         inline_data = artifact.get("data_base64")
         if inline_data is not None:
+            if len(inline_data) > _max_inline_base64_chars(MCP_INLINE_ARTIFACT_MAX_BYTES):
+                raise _InvalidMcpResponseError("returned artifact payload exceeds size limit")
             try:
                 decoded = base64.b64decode(inline_data, validate=True)
             except (binascii.Error, ValueError) as exc:
                 raise _InvalidMcpResponseError("returned invalid artifact payload") from exc
+            if len(decoded) > MCP_INLINE_ARTIFACT_MAX_BYTES:
+                raise _InvalidMcpResponseError("returned artifact payload exceeds size limit")
             artifact_path.parent.mkdir(parents=True, exist_ok=True)
             artifact_path.write_bytes(decoded)
         if not artifact_path.is_file():
@@ -166,3 +172,7 @@ def _artifacts_from_response(data: Mapping[str, Any]) -> tuple[Mapping[str, str]
 
 def _optional_string(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _max_inline_base64_chars(max_bytes: int) -> int:
+    return ((max_bytes + 2) // 3) * 4

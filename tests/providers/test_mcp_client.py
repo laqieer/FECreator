@@ -8,6 +8,7 @@ import pytest
 
 from fecreator.contracts.capabilities import Capability, CapabilitySet
 from fecreator.core.registry import PROVIDER_REGISTRY
+from fecreator.providers import mcp_client as mcp_client_module
 from fecreator.providers.base import GenRequest, ProviderRefusal
 from fecreator.providers.mcp_client import McpClientProvider
 
@@ -147,6 +148,110 @@ def test_generate_rejects_invalid_artifact_base64(tmp_path) -> None:
 
     assert response.ok is False
     assert response.diagnostics[0].code == "MCP_INVALID_RESPONSE"
+
+
+def test_generate_accepts_inline_payload_at_size_boundary(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_client_module, "MCP_INLINE_ARTIFACT_MAX_BYTES", 4)
+
+    class _BoundaryTransport:
+        def call_tool(self, name: str, args: Mapping[str, object]) -> dict[str, object]:
+            del name, args
+            return {
+                "ok": True,
+                "artifacts": [
+                    {
+                        "role": "neutral",
+                        "path": "generated/n.bin",
+                        "media_type": "application/octet-stream",
+                        "data_base64": base64.b64encode(b"1234").decode("ascii"),
+                    }
+                ],
+            }
+
+    provider = McpClientProvider(
+        transport=_BoundaryTransport(),
+        capabilities=CapabilitySet(capabilities=frozenset({Capability.TEXT_TO_IMAGE})),
+        tool_map={"text_to_portrait": "generate_image"},
+        workflow_capabilities={"text_to_portrait": {Capability.TEXT_TO_IMAGE}},
+    )
+
+    response = provider.generate(GenRequest(workflow="text_to_portrait", prompt="x"), tmp_path)
+
+    assert response.ok is True
+    assert response.artifacts[0].path == "generated/n.bin"
+
+
+def test_generate_rejects_inline_payload_when_base64_text_exceeds_limit(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_client_module, "MCP_INLINE_ARTIFACT_MAX_BYTES", 4)
+
+    class _OversizeEncodedTransport:
+        def call_tool(self, name: str, args: Mapping[str, object]) -> dict[str, object]:
+            del name, args
+            return {
+                "ok": True,
+                "artifacts": [
+                    {
+                        "role": "neutral",
+                        "path": "generated/n.bin",
+                        "media_type": "application/octet-stream",
+                        "data_base64": base64.b64encode(b"1234567").decode("ascii"),
+                    }
+                ],
+            }
+
+    provider = McpClientProvider(
+        transport=_OversizeEncodedTransport(),
+        capabilities=CapabilitySet(capabilities=frozenset({Capability.TEXT_TO_IMAGE})),
+        tool_map={"text_to_portrait": "generate_image"},
+        workflow_capabilities={"text_to_portrait": {Capability.TEXT_TO_IMAGE}},
+    )
+
+    response = provider.generate(GenRequest(workflow="text_to_portrait", prompt="x"), tmp_path)
+
+    assert response.ok is False
+    assert response.diagnostics[0].code == "MCP_INVALID_RESPONSE"
+    assert "size limit" in response.diagnostics[0].message
+
+
+def test_generate_rejects_inline_payload_when_decoded_bytes_exceed_limit(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_client_module, "MCP_INLINE_ARTIFACT_MAX_BYTES", 4)
+
+    class _OversizeDecodedTransport:
+        def call_tool(self, name: str, args: Mapping[str, object]) -> dict[str, object]:
+            del name, args
+            return {
+                "ok": True,
+                "artifacts": [
+                    {
+                        "role": "neutral",
+                        "path": "generated/n.bin",
+                        "media_type": "application/octet-stream",
+                        "data_base64": base64.b64encode(b"12345").decode("ascii"),
+                    }
+                ],
+            }
+
+    provider = McpClientProvider(
+        transport=_OversizeDecodedTransport(),
+        capabilities=CapabilitySet(capabilities=frozenset({Capability.TEXT_TO_IMAGE})),
+        tool_map={"text_to_portrait": "generate_image"},
+        workflow_capabilities={"text_to_portrait": {Capability.TEXT_TO_IMAGE}},
+    )
+
+    response = provider.generate(GenRequest(workflow="text_to_portrait", prompt="x"), tmp_path)
+
+    assert response.ok is False
+    assert response.diagnostics[0].code == "MCP_INVALID_RESPONSE"
+    assert "size limit" in response.diagnostics[0].message
 
 
 def test_generate_rejects_invalid_artifact_schema(tmp_path) -> None:

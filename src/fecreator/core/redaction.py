@@ -8,7 +8,7 @@ SECRET_PATTERN = re.compile(
     r"\b\s*[:=]\s*([^\s&]+)"
 )
 _SECRET_KEY_PATTERN = re.compile(
-    r"(?i)^(authorization|bearer|token|api[_-]?key|secret|password|credential|sig|signature)$"
+    r"(?i)(^|[_-])(authorization|bearer|token|api[_-]?key|secret|password|credential|sig|signature)([_-]|$)"
 )
 
 

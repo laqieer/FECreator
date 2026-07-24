@@ -76,8 +76,15 @@ def _coerce_positive_dimension(
 
 
 def _load_save_png() -> _SavePng:
-    module = import_module("fecreator.imaging.io")
+    try:
+        module = import_module("fecreator.imaging.io")
+    except ModuleNotFoundError as exc:
+        raise ProviderRefusal("fake provider requires fecreator.imaging.io.save_png") from exc
     save_png = getattr(module, "save_png", None)
     if not callable(save_png):
-        raise ProviderRefusal("fake provider requires fecreator.imaging.io.save_png")
+        raise ProviderRefusal(
+            "fake provider requires fecreator.imaging.io.save_png"
+        ) from TypeError(
+            "save_png is missing or not callable",
+        )
     return cast(_SavePng, save_png)

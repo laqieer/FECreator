@@ -14,4 +14,8 @@ def test_redact_masks_tokens() -> None:
 def test_contains_secret_key() -> None:
     assert contains_secret_key("api_key") is True
     assert contains_secret_key("authorization") is True
+    assert contains_secret_key("MY_API_KEY") is True
+    assert contains_secret_key("OPENAI_SECRET") is True
+    assert contains_secret_key("X_TOKEN") is True
     assert contains_secret_key("width") is False
+    assert contains_secret_key("bandwidth") is False
