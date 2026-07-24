@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+import os
+import shutil
+from pathlib import Path
+from typing import Any
+
+from fecreator.core.atomicio import (
+    _fsync_directory,
+    _path_lock,
+    _read_json_unlocked,
+    _write_json_atomic_unlocked,
+)
+from fecreator.core.paths import safe_join
+from fecreator.references.model import ReferencePack
+
+STAGING_PREFIX = ".tmp-"
+
+
+class ReferencePackCorruptionError(Exception):
+    """Raised when a visible reference pack revision is missing or corrupt."""
+
+
+class ReferencePackStore:
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    def _refs_dir(self) -> Path:
+        return safe_join(self._root, "refs")
+
+    def _normalize_pack_id(self, pack_id: str) -> str:
+        normalized = pack_id.strip()
+        if not normalized:
+            raise ValueError("pack_id must be a non-empty string")
+        safe_join(self._refs_dir(), normalized)
+        if "/" in normalized or "\\" in normalized:
+            raise ValueError(f"pack_id must not contain path separators: {pack_id!r}")
+        return normalized
+
+    def _validate_revision(self, revision: int) -> int:
+        if revision < 1:
+            raise ValueError("revision must be >= 1")
+        return revision
+
+    def _pack_dir(self, pack_id: str) -> Path:
+        return safe_join(self._root, "refs", self._normalize_pack_id(pack_id))
+
+    def _revision_path(self, pack_id: str, revision: int) -> Path:
+        return self._pack_dir(pack_id) / f"{self._validate_revision(revision)}.json"
+
+    def _lock_target(self, pack_id: str) -> Path:
+        return safe_join(self._root, "refs", ".locks", self._normalize_pack_id(pack_id))
+
+    def _lock_path(self, pack_id: str) -> Path:
+        return self._lock_target(pack_id).with_suffix(".lock")
+
+    def _staging_dir(self, pack_id: str) -> Path:
+        return safe_join(self._root, "refs", f"{STAGING_PREFIX}{self._normalize_pack_id(pack_id)}")
+
+    def _read_pack_payload_locked(self, path: Path) -> dict[str, Any]:
+        payload = _read_json_unlocked(path)
+        if not isinstance(payload, dict):
+            raise TypeError("reference pack revision must contain an object")
+        return payload
+
+    def _read_pack_locked(self, pack_id: str, revision: int) -> ReferencePack:
+        path = self._revision_path(pack_id, revision)
+        try:
+            payload = self._read_pack_payload_locked(path)
+            pack = ReferencePack.model_validate(payload)
+        except FileNotFoundError:
+            raise
+        except Exception as exc:
+            raise ReferencePackCorruptionError(f"corrupt reference pack revision: {path}") from exc
+        if pack.id != self._normalize_pack_id(pack_id) or pack.revision != revision:
+            raise ReferencePackCorruptionError(f"corrupt reference pack revision: {path}")
+        return pack
+
+    def _revision_numbers_locked(self, pack_id: str) -> list[int]:
+        pack_dir = self._pack_dir(pack_id)
+        if not pack_dir.exists():
+            raise FileNotFoundError(pack_dir)
+
+        revisions: list[int] = []
+        for entry in sorted(pack_dir.iterdir(), key=lambda path: path.name):
+            if entry.name.startswith(".") or entry.name.endswith(".tmp"):
+                continue
+            if entry.is_dir():
+                raise ReferencePackCorruptionError(f"unexpected directory in reference pack: {entry}")
+            if entry.suffix != ".json" or not entry.stem.isdecimal():
+                raise ReferencePackCorruptionError(f"unexpected file in reference pack: {entry}")
+            revisions.append(int(entry.stem))
+
+        if not revisions:
+            raise ReferencePackCorruptionError(f"reference pack has no visible revisions: {pack_id}")
+
+        expected = list(range(1, max(revisions) + 1))
+        if revisions != expected:
+            raise ReferencePackCorruptionError(
+                f"reference pack {pack_id} has missing revision(s): expected {expected}, found {revisions}"
+            )
+        return revisions
+
+    def _latest_locked(self, pack_id: str) -> ReferencePack:
+        revisions = self._revision_numbers_locked(pack_id)
+        return self._read_pack_locked(pack_id, revisions[-1])
+
+    def create(self, pack: ReferencePack) -> ReferencePack:
+        pack_id = self._normalize_pack_id(pack.id)
+        first = ReferencePack.model_validate({**pack.model_dump(mode="python"), "revision": 1})
+        refs_dir = self._refs_dir()
+        refs_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir = self._staging_dir(pack_id)
+        final_dir = self._pack_dir(pack_id)
+        replaced = False
+        with _path_lock(final_dir, lock_path=self._lock_path(pack_id)):
+            if final_dir.exists():
+                self._revision_numbers_locked(pack_id)
+                raise ValueError(f"reference pack already exists: {pack_id}")
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            try:
+                staging_dir.mkdir(parents=True, exist_ok=False)
+                _write_json_atomic_unlocked(
+                    staging_dir / "1.json",
+                    first.model_dump(mode="json"),
+                )
+                os.replace(staging_dir, final_dir)
+                replaced = True
+                _fsync_directory(refs_dir)
+            except Exception:
+                shutil.rmtree(final_dir if replaced else staging_dir, ignore_errors=True)
+                raise
+        return first
+
+    def new_revision(self, pack_id: str, **changes: object) -> ReferencePack:
+        if "id" in changes or "revision" in changes:
+            raise ValueError("id and revision are immutable; use explicit new revisions")
+        normalized = self._normalize_pack_id(pack_id)
+        with _path_lock(self._pack_dir(normalized), lock_path=self._lock_path(normalized)):
+            current = self._latest_locked(normalized)
+            next_pack = ReferencePack.model_validate(
+                {
+                    **current.model_dump(mode="python"),
+                    **changes,
+                    "revision": current.revision + 1,
+                }
+            )
+            _write_json_atomic_unlocked(
+                self._revision_path(normalized, next_pack.revision),
+                next_pack.model_dump(mode="json"),
+            )
+            return next_pack
+
+    def get(self, pack_id: str, revision: int) -> ReferencePack:
+        normalized = self._normalize_pack_id(pack_id)
+        with _path_lock(self._pack_dir(normalized), lock_path=self._lock_path(normalized)):
+            return self._read_pack_locked(normalized, self._validate_revision(revision))
+
+    def latest(self, pack_id: str) -> ReferencePack:
+        normalized = self._normalize_pack_id(pack_id)
+        with _path_lock(self._pack_dir(normalized), lock_path=self._lock_path(normalized)):
+            return self._latest_locked(normalized)
