@@ -29,11 +29,7 @@ def build_prompt_plan(manifest: Manifest, pack: ReferencePack | None) -> PromptP
 def plan_sources(manifest: Manifest, pack: ReferencePack | None) -> SourcePlan:
     plan = build_prompt_plan(manifest, pack)
     prompts = (plan.neutral_prompt, *plan.expression_prompts.values())
-    roles = (
-        {f"concept_{i}": art.role for i, art in enumerate(pack.concept_art)}
-        if pack
-        else {}
-    )
+    roles = {f"concept_{i}": art.role for i, art in enumerate(pack.concept_art)} if pack else {}
     forbidden_colors = pack.swatches if pack else ()
     return SourcePlan(
         prompts=prompts,

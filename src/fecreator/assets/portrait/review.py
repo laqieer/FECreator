@@ -12,9 +12,12 @@ class ReviewThresholds(BaseModel):
     palette_max: float = 20.0
 
 
+_DEFAULT_THRESHOLDS = ReviewThresholds()
+
+
 def review_gate(
     metrics: dict[str, float],
-    thresholds: ReviewThresholds = ReviewThresholds(),
+    thresholds: ReviewThresholds = _DEFAULT_THRESHOLDS,
 ) -> list[Diagnostic]:
     diags: list[Diagnostic] = []
     if metrics.get("identity", 0.0) < thresholds.identity_min:

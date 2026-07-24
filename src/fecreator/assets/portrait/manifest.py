@@ -4,12 +4,14 @@ from fecreator.contracts.capabilities import Capability
 
 GREEN_BG: tuple[int, int, int] = (0, 248, 0)
 
-WORKFLOWS: frozenset[str] = frozenset({
-    "text_to_portrait",
-    "concept_to_portrait",
-    "expression_refine",
-    "masked_variant",
-})
+WORKFLOWS: frozenset[str] = frozenset(
+    {
+        "text_to_portrait",
+        "concept_to_portrait",
+        "expression_refine",
+        "masked_variant",
+    }
+)
 
 REQUIRED_CAPS: dict[str, set[Capability]] = {
     "text_to_portrait": {Capability.TEXT_TO_IMAGE},
