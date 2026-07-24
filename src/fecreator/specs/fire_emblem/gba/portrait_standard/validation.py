@@ -35,6 +35,11 @@ def _pngs(package_dir: Path) -> list[Path]:
     return sorted(package_dir.glob("*.png"))
 
 
+def _palette_sidecar_paths(package_dir: Path) -> list[Path]:
+    pals = [p for p in package_dir.iterdir() if p.is_file() and p.suffix.casefold() == ".pal"]
+    return sorted(pals, key=lambda p: (p.suffix.casefold(), p.name.casefold(), p.name))
+
+
 def _within(package_dir: Path, path: Path) -> bool:
     """True only if ``path`` is a real (non-symlink) file directly inside the
     resolved package directory."""
@@ -150,7 +155,7 @@ def _snap_diags(palette: list[_RGB], where: str) -> list[Diagnostic]:
 def _palette_sidecar_diags(package_dir: Path, sheet: Path, palette: list[_RGB]) -> list[Diagnostic]:
     out: list[Diagnostic] = []
     expected = (sheet.stem + ".pal").casefold()
-    pals = sorted(package_dir.glob("*.pal"))
+    pals = _palette_sidecar_paths(package_dir)
     # Basenames are matched case-insensitively so a sidecar differing only by
     # case is the canonical match (and the same file on case-insensitive
     # filesystems), not a foreign sidecar.
