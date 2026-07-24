@@ -226,6 +226,24 @@ def test_write_json_atomic_preserves_lf_bytes(tmp_path: Path) -> None:
     assert b"\r\n" not in p.read_bytes()
 
 
+def test_read_jsonl_missing_parent_does_not_create_sidecar(tmp_path: Path) -> None:
+    path = tmp_path / "missing" / "events.jsonl"
+
+    assert read_jsonl(path) == []
+    assert not path.parent.exists()
+    assert not path.with_suffix(".jsonl.lock").exists()
+
+
+def test_read_json_missing_parent_does_not_create_sidecar(tmp_path: Path) -> None:
+    path = tmp_path / "missing" / "job.json"
+
+    with pytest.raises(FileNotFoundError):
+        read_json(path)
+
+    assert not path.parent.exists()
+    assert not path.with_suffix(".json.lock").exists()
+
+
 def test_write_json_atomic_flushes_then_fsyncs_before_replace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

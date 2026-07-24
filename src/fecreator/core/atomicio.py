@@ -50,7 +50,9 @@ class JsonlBudgetError(ValueError):
 """v1 keeps atomic JSONL by rewriting the whole file under a lock.
 
 This is intentionally bounded by MAX_JSONL_RECORDS and MAX_JSONL_BYTES so event and
-approval logs remain finite until a true durable append strategy is introduced.
+approval logs remain finite until a true durable append strategy is introduced. When
+the cap is reached, additional event-backed transitions fail loudly and must be
+remediated by archiving or pruning prior history before retrying.
 """
 
 
@@ -168,6 +170,8 @@ def _read_json_unlocked(path: Path) -> Any:
 
 
 def read_json(path: Path) -> Any:
+    if not path.exists():
+        raise FileNotFoundError(path)
     with _path_lock(path):
         return _read_json_unlocked(path)
 
@@ -181,6 +185,8 @@ def _read_jsonl_unlocked(path: Path) -> list[Any]:
 
 
 def read_jsonl(path: Path) -> list[Any]:
+    if not path.exists():
+        return []
     with _path_lock(path):
         return _read_jsonl_unlocked(path)
 
@@ -193,10 +199,16 @@ def _jsonl_payload(records: list[Any]) -> bytes:
 def _validate_jsonl_budget(records: list[Any], payload: bytes) -> None:
     if len(records) > MAX_JSONL_RECORDS:
         raise JsonlBudgetError(
-            f"JSONL record budget exceeded: {len(records)} > {MAX_JSONL_RECORDS}"
+            "v1 JSONL record budget exceeded; "
+            f"current={len(records)} limit={MAX_JSONL_RECORDS}. "
+            "archive or prune history before retrying event-backed operations."
         )
     if len(payload) > MAX_JSONL_BYTES:
-        raise JsonlBudgetError(f"JSONL byte budget exceeded: {len(payload)} > {MAX_JSONL_BYTES}")
+        raise JsonlBudgetError(
+            "v1 JSONL byte budget exceeded; "
+            f"current={len(payload)} limit={MAX_JSONL_BYTES}. "
+            "archive or prune history before retrying event-backed operations."
+        )
 
 
 def _write_jsonl_records_unlocked(path: Path, records: list[Any]) -> None:

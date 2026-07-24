@@ -11,6 +11,7 @@ from typing import Any
 
 from fecreator.contracts.manifest import Manifest
 from fecreator.core.atomicio import (
+    LockTimeoutError,
     _fsync_directory,
     _path_lock,
     _read_json_unlocked,
@@ -21,6 +22,7 @@ from fecreator.core.paths import safe_join
 from fecreator.jobs.model import Job, JobState, ensure_non_empty_text
 
 STALE_STAGING_MAX_AGE_SECONDS = 300.0
+STAGING_PREFIX = ".tmp-"
 
 
 class JobCorruptionError(Exception):
@@ -59,20 +61,51 @@ class JobStore:
         return self._locks_dir() / f"{normalized}.lock"
 
     def _staging_dir(self, job_id: str) -> Path:
-        return safe_join(self._root, "jobs", f".tmp-{self._normalize_job_id(job_id)}")
+        return safe_join(self._root, "jobs", f"{STAGING_PREFIX}{self._normalize_job_id(job_id)}")
+
+    def _staging_lock_target(self, job_id: str) -> Path:
+        normalized = self._normalize_job_id(job_id)
+        return self._locks_dir() / f"staging-{normalized}"
+
+    def _staging_lock_target_from_dir(self, staging_dir: Path) -> Path:
+        job_id = staging_dir.name.removeprefix(STAGING_PREFIX)
+        return self._staging_lock_target(job_id)
+
+    def _staging_lock_file(self, staging_dir: Path) -> Path:
+        target = self._staging_lock_target_from_dir(staging_dir)
+        return target.with_suffix(target.suffix + ".lock")
+
+    def _touch_staging_dir(self, staging_dir: Path) -> None:
+        os.utime(staging_dir, None)
+
+    def _remove_staging_lock_file(self, staging_dir: Path) -> None:
+        self._staging_lock_file(staging_dir).unlink(missing_ok=True)
 
     def _cleanup_stale_staging_dirs(self) -> None:
         jobs_dir = self._jobs_dir()
         if not jobs_dir.exists():
             return
 
+        # Cleanup is intentionally conservative: only stage directories older than the
+        # 300s contract are considered, and an active stage lock prevents deletion.
+        # A process that stalls after mkdir but before locking could still race here,
+        # but the long age threshold keeps that fail-closed window narrow in practice.
         now = time.time()
         for entry in jobs_dir.iterdir():
-            if not entry.is_dir() or not entry.name.startswith(".tmp-"):
+            if not entry.is_dir() or not entry.name.startswith(STAGING_PREFIX):
                 continue
             age_seconds = now - entry.stat().st_mtime
             if age_seconds >= STALE_STAGING_MAX_AGE_SECONDS:
-                shutil.rmtree(entry, ignore_errors=True)
+                try:
+                    with _path_lock(
+                        self._staging_lock_target_from_dir(entry),
+                        timeout=0.01,
+                        poll_interval=0.01,
+                    ):
+                        shutil.rmtree(entry, ignore_errors=True)
+                except LockTimeoutError:
+                    continue
+                self._remove_staging_lock_file(entry)
 
     @contextmanager
     def locked(self, job_id: str) -> Iterator[None]:
@@ -133,20 +166,26 @@ class JobStore:
         jobs_dir.mkdir(parents=True, exist_ok=True)
         staging_dir = self._staging_dir(job_id)
         final_dir = self._job_dir(job_id)
-        staging_dir.mkdir(parents=True, exist_ok=True)
         replaced = False
         try:
-            _write_json_atomic_unlocked(
-                staging_dir / "manifest.json",
-                manifest.model_dump(mode="json"),
-            )
-            _write_json_atomic_unlocked(staging_dir / "job.json", self._job_payload(job))
-            os.replace(staging_dir, final_dir)
-            replaced = True
-            _fsync_directory(jobs_dir)
+            with _path_lock(self._staging_lock_target(job_id)):
+                staging_dir.mkdir(parents=True, exist_ok=True)
+                self._touch_staging_dir(staging_dir)
+                _write_json_atomic_unlocked(
+                    staging_dir / "manifest.json",
+                    manifest.model_dump(mode="json"),
+                )
+                self._touch_staging_dir(staging_dir)
+                _write_json_atomic_unlocked(staging_dir / "job.json", self._job_payload(job))
+                self._touch_staging_dir(staging_dir)
+                os.replace(staging_dir, final_dir)
+                replaced = True
+                _fsync_directory(jobs_dir)
         except Exception:
             shutil.rmtree(final_dir if replaced else staging_dir, ignore_errors=True)
             raise
+        finally:
+            self._remove_staging_lock_file(staging_dir)
         return job
 
     def remove(self, job_id: str) -> None:
@@ -194,7 +233,7 @@ class JobStore:
         for entry in sorted(jobs_dir.iterdir(), key=lambda path: path.name):
             if not entry.is_dir():
                 continue
-            if entry.name == ".locks" or entry.name.startswith(".tmp-"):
+            if entry.name == ".locks" or entry.name.startswith(STAGING_PREFIX):
                 continue
             if entry.name.startswith("."):
                 raise JobCorruptionError(f"unexpected hidden directory in jobs store: {entry}")

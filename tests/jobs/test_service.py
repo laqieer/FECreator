@@ -5,6 +5,7 @@ import inspect
 import pytest
 
 from fecreator.contracts.manifest import Manifest, SourceSpec
+from fecreator.core.atomicio import JsonlBudgetError
 from fecreator.jobs.events import EventLog
 from fecreator.jobs.model import JobState
 from fecreator.jobs.service import InvalidTransitionError, JobService
@@ -48,8 +49,7 @@ def test_create_rolls_back_when_event_append_fails(
     with pytest.raises(OSError, match="boom"):
         service.create_job(_manifest())
 
-    jobs_dir = data_root / "jobs"
-    assert not jobs_dir.exists() or list(jobs_dir.iterdir()) == []
+    assert JobStore(data_root).list_jobs() == []
 
 
 def test_valid_transition(data_root) -> None:
@@ -123,3 +123,21 @@ def test_save_requires_expected_revision_keyword(data_root) -> None:
     signature = inspect.signature(JobStore.save)
 
     assert signature.parameters["expected_revision"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_transition_rolls_back_when_event_log_budget_is_exhausted(
+    data_root,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(data_root)
+    job = service.create_job(_manifest())
+    monkeypatch.setattr("fecreator.core.atomicio.MAX_JSONL_RECORDS", 1)
+
+    with pytest.raises(JsonlBudgetError, match="archive or prune") as exc_info:
+        service.transition(job.id, JobState.PLANNING)
+
+    assert "current=2" in str(exc_info.value)
+    assert "limit=1" in str(exc_info.value)
+    reloaded = JobStore(data_root).load(job.id)
+    assert reloaded.state is JobState.CREATED
+    assert reloaded.revision == 1

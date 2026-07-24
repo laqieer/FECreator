@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.jobs import store as store_module
+from fecreator.jobs.approvals import ApprovalStore
+from fecreator.jobs.events import EventLog
 from fecreator.jobs.model import Job, JobState
 from fecreator.jobs.store import JobCorruptionError, JobStore, RevisionConflictError
 
@@ -53,8 +58,7 @@ def test_create_rolls_back_failed_job_write(
     with pytest.raises(OSError, match="boom"):
         JobStore(data_root).create(_manifest())
 
-    jobs_dir = data_root / "jobs"
-    assert not jobs_dir.exists() or list(jobs_dir.iterdir()) == []
+    assert JobStore(data_root).list_jobs() == []
 
 
 def test_list_jobs_ignores_staging_directories(data_root) -> None:
@@ -82,6 +86,61 @@ def test_init_prunes_only_stale_staging_directories(data_root) -> None:
 
     assert not stale.exists()
     assert fresh.exists()
+
+
+def test_init_keeps_stale_staging_directory_with_active_lock(data_root, tmp_path) -> None:
+    jobs_dir = data_root / "jobs"
+    staging = jobs_dir / ".tmp-active"
+    staging.mkdir(parents=True)
+    now = time.time() - 600
+    os.utime(staging, (now, now))
+    script = tmp_path / "hold_stage_lock.py"
+    script.write_text(
+        """
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+
+from fecreator.core.atomicio import _path_lock
+
+
+target = Path(sys.argv[1])
+ready = Path(sys.argv[2])
+with _path_lock(target, timeout=5.0, poll_interval=0.01):
+    ready.write_text("ready", encoding="utf-8")
+    time.sleep(1.0)
+""".lstrip(),
+        encoding="utf-8",
+        newline="\n",
+    )
+    ready = tmp_path / "ready.txt"
+    env = os.environ.copy()
+    src_dir = str(Path(__file__).resolve().parents[2] / "src")
+    env["PYTHONPATH"] = (
+        src_dir if not env.get("PYTHONPATH") else f"{src_dir}{os.pathsep}{env['PYTHONPATH']}"
+    )
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            str(script),
+            str(data_root / "jobs" / ".locks" / "staging-active"),
+            str(ready),
+        ],
+        env=env,
+    )
+    try:
+        deadline = time.time() + 5
+        while not ready.exists():
+            assert time.time() < deadline
+            time.sleep(0.01)
+
+        JobStore(data_root)
+    finally:
+        holder.wait(timeout=5)
+
+    assert staging.exists()
 
 
 def test_save_missing_job_does_not_create_visible_directory(data_root) -> None:
@@ -219,3 +278,13 @@ def test_list_jobs(data_root) -> None:
     second = store.create(_manifest())
 
     assert set(store.list_jobs()) == {first.id, second.id}
+
+
+def test_unknown_job_reads_do_not_pollute_list_jobs(data_root) -> None:
+    store = JobStore(data_root)
+    healthy = store.create(_manifest())
+
+    assert EventLog(data_root).read("missing-job") == []
+    assert ApprovalStore(data_root).decisions("missing-job") == []
+
+    assert store.list_jobs() == [healthy.id]

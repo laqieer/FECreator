@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator, model_validator
 
-from fecreator.core.atomicio import _read_jsonl_unlocked, _update_jsonl_atomic, read_jsonl
+from fecreator.core.atomicio import _update_jsonl_atomic, read_jsonl
 from fecreator.core.clock import utc_now_iso
 from fecreator.core.paths import safe_join
 from fecreator.jobs.model import ensure_aware_iso_timestamp, ensure_non_empty_text
@@ -59,10 +59,6 @@ class ApprovalStore:
     def _path(self, job_id: str) -> Path:
         normalized = ensure_non_empty_text(job_id, field_name="job_id")
         return safe_join(self._root, "jobs", normalized, "approvals.jsonl")
-
-    def _decisions_unlocked(self, job_id: str) -> list[ApprovalRecord]:
-        rows = _read_jsonl_unlocked(self._path(job_id))
-        return [ApprovalRecord.model_validate(row) for row in rows]
 
     def _record(
         self,
