@@ -209,6 +209,15 @@ def is_indexed_png(path: Path, budget: ResourceBudget | None = None) -> bool:
     return False
 
 
+def png_bit_depth(path: Path, budget: ResourceBudget | None = None) -> int:
+    """Return the IHDR bit depth (byte 8) of a PNG."""
+    max_bytes = (budget or ResourceBudget()).max_file_bytes
+    for ctype, body in _chunks(path, max_bytes):
+        if ctype == "IHDR":
+            return int(body[8])
+    raise ValueError("no IHDR chunk")
+
+
 def read_png_palette(
     path: Path, budget: ResourceBudget | None = None
 ) -> list[tuple[int, int, int]]:
