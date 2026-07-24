@@ -114,6 +114,7 @@ def test_duplicate_parent_ids_raise(data_root: Path) -> None:
         "..",
         ".locks",
         ".hidden",
+        "graph",
         "locks",
         ".tmp-hidden",
         " a",

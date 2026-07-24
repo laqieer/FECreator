@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fecreator.contracts.lineage import LineageNode
 from fecreator.core.atomicio import _path_lock, _read_json_unlocked, _write_json_atomic_unlocked
-from fecreator.core.paths import normalize_storage_id, safe_join
+from fecreator.core.paths import ensure_storage_id_not_reserved, normalize_storage_id, safe_join
 
 
 class CycleError(Exception):
@@ -24,6 +24,11 @@ class LineageStore:
 
     def _normalize_asset_id(self, asset_id: str) -> str:
         normalized = normalize_storage_id(asset_id, field_name="asset_id")
+        ensure_storage_id_not_reserved(
+            normalized,
+            field_name="asset_id",
+            reserved_values=frozenset({"graph"}),
+        )
         safe_join(self._lineage_dir(), f"{normalized}.json")
         return normalized
 

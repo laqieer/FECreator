@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -113,6 +114,7 @@ def test_missing_revision_raises(data_root: Path) -> None:
         ".locks",
         ".hidden",
         "locks",
+        "staging-active",
         ".tmp-hidden",
         " marth",
         "marth ",
@@ -385,6 +387,54 @@ with _path_lock(target, timeout=5.0, poll_interval=0.01):
         holder.wait(timeout=5)
 
     assert staging.exists()
+
+
+def test_init_tolerates_racing_reference_staging_dir_removal(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refs_dir = data_root / "refs"
+    stale = refs_dir / ".tmp-stale"
+    stale.mkdir(parents=True)
+    now = time.time() - 600
+    os.utime(stale, (now, now))
+    original_rmtree = shutil.rmtree
+    called = False
+
+    def racing_rmtree(path: Path, *args: object, **kwargs: object) -> None:
+        nonlocal called
+        if Path(path) == stale and not called:
+            called = True
+            original_rmtree(path, *args, **kwargs)
+            raise FileNotFoundError(path)
+        original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("fecreator.references.store.shutil.rmtree", racing_rmtree)
+
+    ReferencePackStore(data_root)
+
+    assert not stale.exists()
+
+
+def test_init_raises_for_real_reference_staging_cleanup_failure(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refs_dir = data_root / "refs"
+    stale = refs_dir / ".tmp-stale"
+    stale.mkdir(parents=True)
+    now = time.time() - 600
+    os.utime(stale, (now, now))
+
+    def failing_rmtree(path: Path, *args: object, **kwargs: object) -> None:
+        if Path(path) == stale:
+            raise PermissionError("busy")
+        shutil.rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("fecreator.references.store.shutil.rmtree", failing_rmtree)
+
+    with pytest.raises(PermissionError, match="busy"):
+        ReferencePackStore(data_root)
 
 
 def test_create_requires_explicit_non_empty_provenance_and_rights(data_root: Path) -> None:

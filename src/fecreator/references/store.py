@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -13,11 +14,12 @@ from fecreator.core.atomicio import (
     _read_json_unlocked,
     _write_json_atomic_unlocked,
 )
-from fecreator.core.paths import normalize_storage_id, safe_join
+from fecreator.core.paths import ensure_storage_id_not_reserved, normalize_storage_id, safe_join
 from fecreator.references.model import ReferencePack
 
 STALE_STAGING_MAX_AGE_SECONDS = 300.0
 STAGING_PREFIX = ".tmp-"
+STAGING_LOCK_PREFIX = "staging-"
 
 
 class ReferencePackCorruptionError(Exception):
@@ -37,6 +39,11 @@ class ReferencePackStore:
 
     def _normalize_pack_id(self, pack_id: str) -> str:
         normalized = normalize_storage_id(pack_id, field_name="pack_id")
+        ensure_storage_id_not_reserved(
+            normalized,
+            field_name="pack_id",
+            reserved_prefixes=(STAGING_LOCK_PREFIX,),
+        )
         safe_join(self._refs_dir(), normalized)
         return normalized
 
@@ -89,12 +96,15 @@ class ReferencePackStore:
             if age_seconds < STALE_STAGING_MAX_AGE_SECONDS:
                 continue
             try:
-                with _path_lock(
-                    self._staging_lock_target_from_dir(entry),
-                    timeout=0.01,
-                    poll_interval=0.01,
+                with (
+                    _path_lock(
+                        self._staging_lock_target_from_dir(entry),
+                        timeout=0.01,
+                        poll_interval=0.01,
+                    ),
+                    suppress(FileNotFoundError),
                 ):
-                    shutil.rmtree(entry, ignore_errors=True)
+                    shutil.rmtree(entry)
             except LockTimeoutError:
                 continue
             self._remove_staging_lock_file(entry)

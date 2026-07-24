@@ -52,3 +52,18 @@ def normalize_storage_id(value: str, *, field_name: str) -> str:
     if "/" in normalized or "\\" in normalized:
         raise ValueError(f"{field_name} must not contain path separators: {normalized!r}")
     return normalized
+
+
+def ensure_storage_id_not_reserved(
+    value: str,
+    *,
+    field_name: str,
+    reserved_values: set[str] | frozenset[str] = frozenset(),
+    reserved_prefixes: tuple[str, ...] = (),
+) -> str:
+    if value in reserved_values:
+        raise ValueError(f"{field_name} uses a reserved namespace: {value!r}")
+    for prefix in reserved_prefixes:
+        if value.startswith(prefix):
+            raise ValueError(f"{field_name} uses a reserved namespace: {value!r}")
+    return value
