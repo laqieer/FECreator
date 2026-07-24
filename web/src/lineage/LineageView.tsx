@@ -1,8 +1,4 @@
-interface LineageNode {
-  asset_id: string;
-  operation: string;
-  parents: string[];
-}
+import type { LineageNode } from "../api/types";
 
 interface LineageViewProps {
   nodes: LineageNode[];

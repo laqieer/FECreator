@@ -13,6 +13,10 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
 }
 
+function encodePathSegment(value: string): string {
+  return encodeURIComponent(value);
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   if (!response.ok) {
@@ -34,7 +38,7 @@ export function httpClient(baseUrl = ""): ApiClient {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(manifest),
       }),
-    getJob: (id) => requestJson<Job>(`${root}/api/jobs/${id}`),
+    getJob: (id) => requestJson<Job>(`${root}/api/jobs/${encodePathSegment(id)}`),
     validate: (spec, path) =>
       requestJson<Diagnostic[]>(`${root}/api/validate`, {
         method: "POST",

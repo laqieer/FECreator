@@ -8,8 +8,6 @@ const manifest: Manifest = {
   target_spec: "fe-gba-portrait-standard",
   workflow: "text_to_portrait",
   provider: "fake",
-  sources: [{ kind: "text", ref: "heroic knight" }],
-  params: {},
 };
 
 afterEach(() => {
@@ -41,6 +39,25 @@ test("createJob posts the frozen backend manifest contract", async () => {
       body: JSON.stringify(manifest),
     }),
   );
+});
+
+test("getJob encodes job identifiers in the request URL", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      id: "job/with spaces",
+      state: "created",
+      manifest,
+      revision: 1,
+      created_at: "2026-07-24T00:00:00+00:00",
+      updated_at: "2026-07-24T00:00:00+00:00",
+    }),
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  await httpClient("http://127.0.0.1:8000").getJob("job/with spaces");
+
+  expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8000/api/jobs/job%2Fwith%20spaces", undefined);
 });
 
 test("validate fails closed on non-ok responses", async () => {

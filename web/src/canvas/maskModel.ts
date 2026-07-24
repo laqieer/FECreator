@@ -14,6 +14,26 @@ export function paint(mask: MaskGrid, x: number, y: number): MaskGrid {
   return next;
 }
 
+export function clearMask(mask: MaskGrid): MaskGrid {
+  return emptyMask(mask[0]?.length ?? 0, mask.length);
+}
+
+export function applyPaintAtPoint(
+  mask: MaskGrid,
+  point: { x: number; y: number },
+  surface: { width: number; height: number },
+): MaskGrid {
+  if (mask.length === 0 || mask[0]?.length === 0 || surface.width <= 0 || surface.height <= 0) {
+    return mask.map((row) => [...row]);
+  }
+
+  const width = mask[0].length;
+  const height = mask.length;
+  const x = Math.min(width - 1, Math.max(0, Math.floor((point.x / surface.width) * width)));
+  const y = Math.min(height - 1, Math.max(0, Math.floor((point.y / surface.height) * height)));
+  return paint(mask, x, y);
+}
+
 export function countPainted(mask: MaskGrid): number {
   return mask.reduce((total, row) => total + row.filter(Boolean).length, 0);
 }

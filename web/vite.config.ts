@@ -6,7 +6,6 @@ export default defineConfig({
   build: {
     outDir: "../src/fecreator/_web",
     emptyOutDir: true,
-    chunkSizeWarningLimit: 600,
   },
   test: {
     environment: "jsdom",

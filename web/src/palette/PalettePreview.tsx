@@ -1,12 +1,16 @@
+import { frameToSvgDataUrl, selectFrame, type IndexedFrame } from "./framePreview";
+
 interface PalettePreviewProps {
   palette: [number, number, number][];
+  frames: IndexedFrame[];
+  selectedFrameId?: string;
+  onSelectFrame?: (frameId: string) => void;
   scale: number;
 }
 
-const nativeWidth = 128;
-const nativeHeight = 112;
+export function PalettePreview({ palette, frames, selectedFrameId, onSelectFrame, scale }: PalettePreviewProps) {
+  const selectedFrame = selectFrame(frames, selectedFrameId);
 
-export function PalettePreview({ palette, scale }: PalettePreviewProps) {
   return (
     <section aria-label="palette-preview">
       <h2>Palette and native-size review</h2>
@@ -30,24 +34,39 @@ export function PalettePreview({ palette, scale }: PalettePreviewProps) {
           ))}
         </ul>
       )}
-      <div
-        aria-label="native-size-preview"
-        style={{
-          width: nativeWidth * scale,
-          height: nativeHeight * scale,
-          border: "1px solid currentColor",
-          backgroundImage: "linear-gradient(45deg, #ddd 25%, transparent 25%, transparent 75%, #ddd 75%), linear-gradient(45deg, #ddd 25%, transparent 25%, transparent 75%, #ddd 75%)",
-          backgroundPosition: "0 0, 8px 8px",
-          backgroundSize: "16px 16px",
-          imageRendering: "pixelated",
-        }}
-      />
-      <p>Native size 128×112 at scale {scale}×</p>
-      <h3>Eye and mouth review</h3>
-      <ul>
-        <li>Eyes aligned with the portrait mask window.</li>
-        <li>Mouth centered for talk animation slices.</li>
-      </ul>
+      {frames.length === 0 ? (
+        <p>No eye or mouth frames available.</p>
+      ) : (
+        <fieldset>
+          <legend>Eye and mouth frames</legend>
+          {frames.map((frame) => (
+            <label key={frame.id}>
+              <input
+                type="radio"
+                name="frame-preview"
+                checked={selectedFrame?.id === frame.id}
+                onChange={() => onSelectFrame?.(frame.id)}
+              />
+              {frame.label}
+            </label>
+          ))}
+        </fieldset>
+      )}
+      {selectedFrame ? (
+        <>
+          <img
+
+            alt={`${selectedFrame.label} preview`}
+            src={frameToSvgDataUrl(selectedFrame, palette)}
+            width={selectedFrame.width * scale}
+            height={selectedFrame.height * scale}
+            style={{ imageRendering: "pixelated" }}
+          />
+          <p>
+            Native size {selectedFrame.width}×{selectedFrame.height} at scale {scale}×
+          </p>
+        </>
+      ) : null}
     </section>
   );
 }
