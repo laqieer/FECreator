@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useApiClient } from "../api/context";
 import { JobTimeline } from "../jobs/JobTimeline";
+import { ReferenceBoard } from "../references/ReferenceBoard";
 
 const tabs = ["Review", "References", "Mask", "Palette", "Timeline", "Lineage"] as const;
 
@@ -35,6 +36,12 @@ function RegistryStatus({
 }
 
 function ActiveView({ tab }: { tab: TabName }) {
+  const [manifestText, setManifestText] = useState("{}\n");
+
+  if (tab === "References") {
+    return <ReferenceBoard swatches={[]} manifestText={manifestText} onManifestChange={setManifestText} />;
+  }
+
   if (tab === "Timeline") {
     return <JobTimeline events={[]} connectionState="idle" />;
   }
