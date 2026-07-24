@@ -13,6 +13,7 @@ from fecreator.contracts.diagnostics import Diagnostic, Severity, error
 from fecreator.contracts.lineage import LineageNode
 from fecreator.contracts.manifest import Manifest
 from fecreator.core.atomicio import (
+    LockTimeoutError,
     _fsync_directory,
     _path_lock,
     _read_json_unlocked,
@@ -367,39 +368,45 @@ def build_bundle(job: Job, workspace: Path, out_dir: Path) -> Path:
     lineage_payload = _validated_lineage_payload(raw_lineage_payload)
     _check_resource_limits([*package_files, report_path, lineage_path])
 
-    with _path_lock(out_dir, lock_path=_bundle_lock_path(out_dir)):
-        if out_dir.exists():
-            raise BundleError(
-                f"bundle destination already exists; refusing to overwrite: {out_dir}"
-            )
+    try:
+        with _path_lock(out_dir, lock_path=_bundle_lock_path(out_dir)):
+            if out_dir.exists():
+                raise BundleError(
+                    f"bundle destination already exists; refusing to overwrite: {out_dir}"
+                )
 
-        staging_dir = _stage_dir_for(out_dir)
-        if staging_dir.exists():
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            staging_dir = _stage_dir_for(out_dir)
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
 
-        try:
-            staging_dir.mkdir(parents=True, exist_ok=False)
-            _write_json_atomic_unlocked(staging_dir / "manifest.json", manifest_payload)
-            _write_json_atomic_unlocked(staging_dir / "lineage.json", lineage_payload)
-            for source in package_files:
-                relative = source.relative_to(package_dir)
-                _copy_regular_file(source, staging_dir / "package" / relative)
-            package_hashes = _package_hashes_from_stage(staging_dir)
-            report_payload = _canonicalize_report_payload(
-                job,
-                raw_report_payload,
-                manifest_payload,
-                lineage_payload,
-                package_hashes,
-            )
-            _write_json_atomic_unlocked(staging_dir / "report.json", report_payload)
-            hashes_payload = {"algorithm": "sha256", "files": _hash_files(staging_dir)}
-            _write_json_atomic_unlocked(staging_dir / "hashes.json", hashes_payload)
-            os.replace(staging_dir, out_dir)
-            _fsync_directory(out_dir.parent)
-        except Exception:
-            shutil.rmtree(staging_dir, ignore_errors=True)
-            raise
+            try:
+                staging_dir.mkdir(parents=True, exist_ok=False)
+                _write_json_atomic_unlocked(staging_dir / "manifest.json", manifest_payload)
+                _write_json_atomic_unlocked(staging_dir / "lineage.json", lineage_payload)
+                for source in package_files:
+                    relative = source.relative_to(package_dir)
+                    _copy_regular_file(source, staging_dir / "package" / relative)
+                package_hashes = _package_hashes_from_stage(staging_dir)
+                report_payload = _canonicalize_report_payload(
+                    job,
+                    raw_report_payload,
+                    manifest_payload,
+                    lineage_payload,
+                    package_hashes,
+                )
+                _write_json_atomic_unlocked(staging_dir / "report.json", report_payload)
+                hashes_payload = {"algorithm": "sha256", "files": _hash_files(staging_dir)}
+                _write_json_atomic_unlocked(staging_dir / "hashes.json", hashes_payload)
+                os.replace(staging_dir, out_dir)
+                _fsync_directory(out_dir.parent)
+            except Exception:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+                raise
+    except LockTimeoutError as exc:
+        destination = sanitize_path(out_dir.name or "bundle")
+        raise BundleError(
+            f"bundle destination lock contention while publishing to {destination}"
+        ) from exc
     return out_dir
 
 

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ import pytest
 from fecreator.contracts.lineage import LineageNode, Operation
 from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.contracts.result import Artifact, StageResult
-from fecreator.core.atomicio import write_json_atomic
+from fecreator.core.atomicio import LockTimeoutError, write_json_atomic
 from fecreator.core.hashing import sha256_file
 from fecreator.jobs.model import Job, JobState
 from fecreator.reporting.bundle import (
@@ -367,6 +368,30 @@ def test_build_bundle_serializes_cross_process_writers(tmp_path: Path) -> None:
         part for part in (first_stdout, first_stderr, second_stdout, second_stderr) if part
     )
     assert "refusing to overwrite" in loser_output or "already exists" in loser_output
+
+
+def test_build_bundle_translates_lock_timeout_to_bundle_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job, workspace = _workspace(tmp_path)
+    import fecreator.reporting.bundle as bundle_module
+
+    lock_error = LockTimeoutError(
+        f"timed out acquiring lock for {tmp_path}\\bundle via {tmp_path}\\.bundle.lock"
+    )
+
+    @contextmanager
+    def fail_lock(*args: object, **kwargs: object):
+        raise lock_error
+        yield
+
+    monkeypatch.setattr(bundle_module, "_path_lock", fail_lock)
+
+    with pytest.raises(BundleError, match="busy|lock|contention") as exc_info:
+        build_bundle(job, workspace, tmp_path / "bundle")
+
+    assert exc_info.value.__cause__ is lock_error
+    assert str(tmp_path) not in str(exc_info.value)
 
 
 def test_febuilder_compat_report_preserves_diagnostics_without_claiming_cli_proof(
