@@ -3,13 +3,14 @@ from __future__ import annotations
 import errno
 import json
 import os
+import sys
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, TypeVar
 
-if os.name == "nt":
+if sys.platform == "win32":
     import msvcrt
 
     def _try_lock_file(fh: BinaryIO) -> None:
@@ -22,13 +23,13 @@ else:  # pragma: no cover
     import fcntl as posix_fcntl
 
     def _try_lock_file(fh: BinaryIO) -> None:
-        posix_fcntl.flock(  # type: ignore[attr-defined]
+        posix_fcntl.flock(
             fh.fileno(),
-            posix_fcntl.LOCK_EX | posix_fcntl.LOCK_NB,  # type: ignore[attr-defined]
+            posix_fcntl.LOCK_EX | posix_fcntl.LOCK_NB,
         )
 
     def _unlock_file(fh: BinaryIO) -> None:
-        posix_fcntl.flock(fh.fileno(), posix_fcntl.LOCK_UN)  # type: ignore[attr-defined]
+        posix_fcntl.flock(fh.fileno(), posix_fcntl.LOCK_UN)
 
 
 DEFAULT_LOCK_TIMEOUT_SECONDS = 5.0
@@ -117,7 +118,7 @@ def _path_lock(
 
 
 def _fsync_directory(path: Path) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         return
 
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
