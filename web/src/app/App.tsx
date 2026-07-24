@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useApiClient } from "../api/context";
+import { JobTimeline } from "../jobs/JobTimeline";
 
 const tabs = ["Review", "References", "Mask", "Palette", "Timeline", "Lineage"] as const;
 
@@ -34,6 +35,10 @@ function RegistryStatus({
 }
 
 function ActiveView({ tab }: { tab: TabName }) {
+  if (tab === "Timeline") {
+    return <JobTimeline events={[]} connectionState="idle" />;
+  }
+
   return <p>{tab} workbench panel</p>;
 }
 
