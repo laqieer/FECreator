@@ -14,6 +14,22 @@ def apply_masked_edit(
     edited_rgb: np.ndarray,
     mask: np.ndarray,
 ) -> np.ndarray:
+    """Apply edits from *edited_rgb* only inside *mask*.
+
+    *mask* must be a bool array with shape matching image H×W exactly.
+    Non-bool dtype or shape mismatch raises ``ValueError`` immediately
+    rather than broadcasting silently.
+    """
+    if mask.dtype != np.dtype(bool):
+        raise ValueError(
+            f"mask must have bool dtype, got {mask.dtype!r}; "
+            "cast with mask.astype(bool) if intentional"
+        )
+    expected_hw = base_rgb.shape[:2]
+    if mask.shape != expected_hw:
+        raise ValueError(
+            f"mask shape {mask.shape} does not match image H×W {expected_hw}"
+        )
     return np.where(mask[:, :, None], edited_rgb, base_rgb).astype(np.uint8)
 
 
@@ -23,9 +39,26 @@ def check_protected_regions(
     regions: Sequence[Region],
     tol: float = 0.02,
 ) -> list[Diagnostic]:
+    """Check each protected region for unwanted changes.
+
+    Out-of-bounds regions produce a ``REGION_OUT_OF_BOUNDS`` diagnostic
+    rather than raising an uncaught ``ValueError``.
+    """
     diags: list[Diagnostic] = []
+    h, w = base_rgb.shape[:2]
     for region in regions:
-        diff = protected_region_diff(base_rgb, result_rgb, [region])
+        try:
+            diff = protected_region_diff(base_rgb, result_rgb, [region])
+        except ValueError:
+            diags.append(
+                error(
+                    "REGION_OUT_OF_BOUNDS",
+                    f"protected region {region.label!r} is out of bounds "
+                    f"for {h}×{w} image",
+                    where=region.label,
+                )
+            )
+            continue
         if diff > tol:
             diags.append(
                 error(
