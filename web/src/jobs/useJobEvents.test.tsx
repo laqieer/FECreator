@@ -2,6 +2,8 @@ import "@testing-library/jest-dom/vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { useJobEvents } from "./useJobEvents";
+import { JobEventSourceProvider } from "./eventSourceContext";
+import { webSocketJobEventSource } from "./webSocketEventSource";
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
@@ -22,12 +24,20 @@ class MockWebSocket {
   }
 }
 
-function Probe({ jobId, baseUrl }: { jobId: string; baseUrl?: string }) {
-  const snapshot = useJobEvents(jobId, baseUrl);
+function Probe({ jobId }: { jobId: string }) {
+  const snapshot = useJobEvents(jobId);
   return (
     <output>
       {snapshot.connectionState}:{snapshot.events.length}:{snapshot.error ?? "none"}
     </output>
+  );
+}
+
+function renderProbe(jobId: string, baseUrl = "") {
+  return render(
+    <JobEventSourceProvider source={webSocketJobEventSource(baseUrl)}>
+      <Probe jobId={jobId} />
+    </JobEventSourceProvider>,
   );
 }
 
@@ -39,7 +49,7 @@ afterEach(() => {
 test("opens the frozen websocket endpoint, encodes ids, and completes after one snapshot", async () => {
   vi.stubGlobal("WebSocket", MockWebSocket);
 
-  render(<Probe jobId="job 7/alpha" baseUrl="http://127.0.0.1:8000" />);
+  renderProbe("job 7/alpha", "http://127.0.0.1:8000");
 
   expect(MockWebSocket.instances[0]?.url).toBe("ws://127.0.0.1:8000/ws/jobs/job%207%2Falpha");
   act(() => {
@@ -59,7 +69,7 @@ test("opens the frozen websocket endpoint, encodes ids, and completes after one 
 test("fails closed on malformed websocket json", async () => {
   vi.stubGlobal("WebSocket", MockWebSocket);
 
-  render(<Probe jobId="job-7" baseUrl="http://127.0.0.1:8000" />);
+  renderProbe("job-7", "http://127.0.0.1:8000");
 
   act(() => {
     MockWebSocket.instances[0]?.onopen?.();
@@ -72,7 +82,7 @@ test("fails closed on malformed websocket json", async () => {
 test("fails closed on websocket payloads without a valid events array", async () => {
   vi.stubGlobal("WebSocket", MockWebSocket);
 
-  render(<Probe jobId="job-7" baseUrl="http://127.0.0.1:8000" />);
+  renderProbe("job-7", "http://127.0.0.1:8000");
 
   act(() => {
     MockWebSocket.instances[0]?.onopen?.();
@@ -87,7 +97,7 @@ test("fails closed on websocket payloads without a valid events array", async ()
 test("surfaces an unexpected disconnect before any snapshot", async () => {
   vi.stubGlobal("WebSocket", MockWebSocket);
 
-  render(<Probe jobId="job-7" baseUrl="http://127.0.0.1:8000" />);
+  renderProbe("job-7", "http://127.0.0.1:8000");
 
   act(() => {
     MockWebSocket.instances[0]?.onclose?.();

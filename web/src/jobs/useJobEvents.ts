@@ -1,6 +1,7 @@
 import type { JobEvent, JobEventsPayload } from "../api/types";
 import { useEffect, useState } from "react";
 import type { JobConnectionState } from "./JobTimeline";
+import { useJobEventSource } from "./eventSourceContext";
 
 export interface JobEventsSnapshot {
   events: JobEvent[];
@@ -88,7 +89,8 @@ export function parseJobEventsPayload(rawData: unknown, expectedJobId: string): 
   };
 }
 
-export function useJobEvents(jobId: string, baseUrl = ""): JobEventsSnapshot {
+export function useJobEvents(jobId: string): JobEventsSnapshot {
+  const source = useJobEventSource();
   const [snapshot, setSnapshot] = useState<JobEventsSnapshot>(initialSnapshot);
 
   useEffect(() => {
@@ -100,7 +102,7 @@ export function useJobEvents(jobId: string, baseUrl = ""): JobEventsSnapshot {
     let active = true;
     let receivedSnapshot = false;
     let hasError = false;
-    const socket = new WebSocket(toWebSocketUrl(baseUrl, jobId));
+    const socket = source.connect(jobId);
     setSnapshot({ events: [], connectionState: "connecting", error: null });
 
     socket.onopen = () => {
@@ -164,7 +166,7 @@ export function useJobEvents(jobId: string, baseUrl = ""): JobEventsSnapshot {
       active = false;
       socket.close();
     };
-  }, [baseUrl, jobId]);
+  }, [jobId, source]);
 
   return snapshot;
 }
