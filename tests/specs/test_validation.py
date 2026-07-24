@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import os
 import struct
 from pathlib import Path
@@ -11,7 +12,10 @@ from PIL import Image
 from fecreator.contracts.diagnostics import Severity, has_errors
 from fecreator.imaging.io import save_indexed_png
 from fecreator.specs.fire_emblem.gba.portrait_standard.palette import write_jasc
-from fecreator.specs.fire_emblem.gba.portrait_standard.validation import validate_package
+from fecreator.specs.fire_emblem.gba.portrait_standard.validation import (
+    _palette_sidecar_paths,
+    validate_package,
+)
 from tests.fixtures.gba import (
     PALETTE,
     build_indices,
@@ -88,6 +92,68 @@ def test_case_insensitive_matching_sidecar(tmp_path: Path) -> None:
     assert "EXTRA_PALETTE" not in codes
     assert "MISSING_PALETTE" not in codes
     assert not has_errors(diags)
+
+
+def test_palette_sidecar_paths_enumerates_case_insensitive_suffixes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidates = [
+        tmp_path / "hero.pal",
+        tmp_path / "HERO.PAL",
+        tmp_path / "Hero.PaL",
+        tmp_path / "notes.txt",
+        tmp_path / "nested.pal",
+    ]
+
+    def fake_iterdir(self: Path):
+        return candidates
+
+    def fake_is_file(self: Path) -> bool:
+        return self.name != "nested.pal"
+
+    monkeypatch.setattr(Path, "iterdir", fake_iterdir)
+    monkeypatch.setattr(Path, "is_file", fake_is_file)
+
+    names = [p.name for p in _palette_sidecar_paths(tmp_path)]
+    assert names == ["HERO.PAL", "Hero.PaL", "hero.pal"]
+
+
+def test_case_insensitive_matching_sidecar_is_independent_of_glob_case_rules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Simulate POSIX-style case-sensitive globbing even on Windows so the test
+    # fails against the old "*.pal" enumeration and proves the fix.
+    real_glob = Path.glob
+
+    def posix_glob(self: Path, pattern: str):
+        if self == tmp_path:
+            return [p for p in self.iterdir() if fnmatch.fnmatchcase(p.name, pattern)]
+        return real_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "glob", posix_glob)
+
+    save_indexed_png(tmp_path / "hero.png", build_indices(), np.array(PALETTE, dtype=np.uint8))
+    write_jasc(tmp_path / "HERO.PAL", PALETTE)
+    diags = validate_package(tmp_path)
+    codes = {d.code for d in diags}
+    assert "EXTRA_PALETTE" not in codes
+    assert "MISSING_PALETTE" not in codes
+    assert not has_errors(diags)
+
+
+def test_case_insensitive_matching_sidecar_flags_case_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    save_indexed_png(tmp_path / "hero.png", build_indices(), np.array(PALETTE, dtype=np.uint8))
+    write_jasc(tmp_path / "hero.pal", PALETTE)
+    monkeypatch.setattr(
+        "fecreator.specs.fire_emblem.gba.portrait_standard.validation._palette_sidecar_paths",
+        lambda package_dir: [package_dir / "hero.pal", package_dir / "HERO.PAL"],
+    )
+    diags = validate_package(tmp_path)
+    codes = [d.code for d in diags]
+    assert codes.count("EXTRA_PALETTE") == 1
+    assert "MISSING_PALETTE" not in codes
 
 
 def test_palette_count_mismatch(tmp_path: Path) -> None:
