@@ -53,9 +53,12 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.11"
 strict = true
 files = ["src"]
+# stubs/ contains a Python-3.11-compatible numpy shim that shadows the numpy 2.x
+# bundled stubs (which use PEP 695 `type` syntax requiring python_version >= 3.12).
+mypy_path = "stubs"
 
 [[tool.mypy.overrides]]
 module = ["cv2", "cv2.*", "PIL", "PIL.*"]
