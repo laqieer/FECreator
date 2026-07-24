@@ -12,11 +12,15 @@ def _dump_json(obj: object, *, pretty: bool) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"))
 
 
-def write_json_atomic(path: Path, obj: object) -> None:
+def _write_text_atomic(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(_dump_json(obj, pretty=True), encoding="utf-8")
+    tmp.write_text(content, encoding="utf-8")
     os.replace(tmp, path)
+
+
+def write_json_atomic(path: Path, obj: object) -> None:
+    _write_text_atomic(path, _dump_json(obj, pretty=True))
 
 
 def read_json(path: Path) -> Any:
@@ -24,9 +28,10 @@ def read_json(path: Path) -> Any:
 
 
 def append_jsonl(path: Path, obj: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as fh:
-        fh.write(_dump_json(obj, pretty=False) + "\n")
+    records = read_jsonl(path)
+    records.append(obj)
+    payload = "".join(f"{_dump_json(record, pretty=False)}\n" for record in records)
+    _write_text_atomic(path, payload)
 
 
 def read_jsonl(path: Path) -> list[Any]:

@@ -39,6 +39,7 @@ def test_valid_transition(data_root) -> None:
     updated = service.transition(job.id, JobState.PLANNING)
 
     assert updated.state is JobState.PLANNING
+    assert updated.revision == 2
 
 
 def test_invalid_transition_raises(data_root) -> None:
@@ -70,4 +71,6 @@ def test_resume_reloads_from_disk(data_root) -> None:
     job = service.create_job(_manifest())
     service.transition(job.id, JobState.PLANNING)
 
-    assert service.resume(job.id).state is JobState.PLANNING
+    resumed = service.resume(job.id)
+    assert resumed.state is JobState.PLANNING
+    assert resumed.revision == 2

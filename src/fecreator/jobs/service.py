@@ -26,13 +26,14 @@ class JobService:
             raise InvalidTransitionError(f"{job.state} -> {to} is not allowed")
 
         from_state = job.state
+        expected_revision = job.revision
         job.state = to
-        self._store.save(job)
+        self._store.save(job, expected_revision=expected_revision)
         self._events.append(
             job.id,
             "transition",
             f"{from_state}->{to}",
-            {"from": from_state, "to": to},
+            {"from": from_state.value, "to": to.value},
         )
         return job
 
