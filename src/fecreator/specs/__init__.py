@@ -1,12 +1,7 @@
 from __future__ import annotations
 
 from fecreator.core.registry import SPEC_REGISTRY
-from fecreator.specs.fe_gba_portrait import FEGbaPortraitStandardSpec
+from fecreator.specs.fire_emblem.gba.portrait_standard.spec import FeGbaPortraitStandard
 
-
-def _register(spec_id: str, spec: object) -> None:
-    if spec_id not in set(SPEC_REGISTRY.ids()):
-        SPEC_REGISTRY.register(spec_id, spec)
-
-
-_register("fe-gba-portrait-standard", FEGbaPortraitStandardSpec())
+if "fe-gba-portrait-standard" not in SPEC_REGISTRY.ids():
+    SPEC_REGISTRY.register("fe-gba-portrait-standard", FeGbaPortraitStandard())
