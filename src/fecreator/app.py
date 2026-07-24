@@ -49,9 +49,7 @@ class AssetPluginNotFoundError(AppError):
     """The asset type has no registered plugin."""
 
     def __init__(self, asset_type: str) -> None:
-        super().__init__(
-            f"no plugin registered for asset type: {asset_type!r}", "PLUGIN_NOT_FOUND"
-        )
+        super().__init__(f"no plugin registered for asset type: {asset_type!r}", "PLUGIN_NOT_FOUND")
 
 
 class SpecNotFoundError(AppError):
@@ -79,9 +77,7 @@ class FeCreatorApp:
         else:
             self._asset_reg = asset_registry
 
-        self._spec_reg: Registry[object] = (
-            SPEC_REGISTRY if spec_registry is None else spec_registry
-        )
+        self._spec_reg: Registry[object] = SPEC_REGISTRY if spec_registry is None else spec_registry
         self._provider_reg: Registry[object] = (
             PROVIDER_REGISTRY if provider_registry is None else provider_registry
         )
@@ -101,16 +97,16 @@ class FeCreatorApp:
 
         try:
             return cast(AssetPlugin, self._asset_reg.get(asset_type))
-        except UnknownIdError:
-            raise AssetPluginNotFoundError(asset_type)
+        except UnknownIdError as exc:
+            raise AssetPluginNotFoundError(asset_type) from exc
 
     def _get_spec(self, spec_id: str) -> TargetSpec:
         from fecreator.core.registry import UnknownIdError
 
         try:
             return cast(TargetSpec, self._spec_reg.get(spec_id))
-        except UnknownIdError:
-            raise SpecNotFoundError(spec_id)
+        except UnknownIdError as exc:
+            raise SpecNotFoundError(spec_id) from exc
 
     def _get_ref_pack(self, pack_id: str | None) -> ReferencePack | None:
         if not pack_id:
@@ -143,7 +139,12 @@ class FeCreatorApp:
         return self._jobs.load(job_id)
 
     def cancel(self, job_id: str) -> Job:
-        return self._service.cancel(job_id)
+        from fecreator.jobs.service import InvalidTransitionError
+
+        try:
+            return self._service.cancel(job_id)
+        except InvalidTransitionError as exc:
+            raise InvalidStateError(str(exc)) from exc
 
     def events(self, job_id: str) -> list[JobEvent]:
         return self._events.read(job_id)
@@ -179,20 +180,18 @@ class FeCreatorApp:
         src = Path(sources_dir)
         if not src.exists():
             raise AppError(f"sources directory not found: {src}", "NOT_FOUND")
-        items = [
-            item
-            for item in sorted(src.iterdir())
-            if item.is_file() and not item.is_symlink()
-        ]
+        items = [item for item in sorted(src.iterdir()) if item.is_file() and not item.is_symlink()]
+        # Explicitly reject any symlinks found in the source directory
+        for entry in src.iterdir():
+            if entry.is_symlink():
+                raise AppError(f"symlink not allowed in sources: {entry.name!r}", "UNSAFE_PATH")
         if len(items) > _MAX_SOURCE_FILES:
             raise AppError(
                 f"too many source files: {len(items)} > {_MAX_SOURCE_FILES}", "TOO_MANY_FILES"
             )
         total = sum(item.stat().st_size for item in items)
         if total > _MAX_SOURCE_BYTES:
-            raise AppError(
-                f"sources too large: {total} bytes > {_MAX_SOURCE_BYTES}", "TOO_LARGE"
-            )
+            raise AppError(f"sources too large: {total} bytes > {_MAX_SOURCE_BYTES}", "TOO_LARGE")
         dest = safe_join(self._settings.data_root, "jobs", job_id, "submitted")
         dest.mkdir(parents=True, exist_ok=True)
         for item in items:
@@ -212,9 +211,10 @@ class FeCreatorApp:
         if job.state == JobState.CREATED:
             self._service.transition(job_id, JobState.PLANNING)
             self._service.transition(job_id, JobState.PROCESSING)
-        elif job.state == JobState.PLANNING:
-            self._service.transition(job_id, JobState.PROCESSING)
-        elif job.state in {JobState.WAITING_FOR_PROVIDER, JobState.WAITING_FOR_SOURCES}:
+        elif job.state == JobState.PLANNING or job.state in {
+            JobState.WAITING_FOR_PROVIDER,
+            JobState.WAITING_FOR_SOURCES,
+        }:
             self._service.transition(job_id, JobState.PROCESSING)
 
     def generate(self, job_id: str) -> JobResult:
@@ -272,9 +272,7 @@ class FeCreatorApp:
         """Approve a review stage; job must be in WAITING_FOR_REVIEW."""
         job = self._jobs.load(job_id)
         if job.state != JobState.WAITING_FOR_REVIEW:
-            raise InvalidStateError(
-                f"approve requires WAITING_FOR_REVIEW, got {job.state.value}"
-            )
+            raise InvalidStateError(f"approve requires WAITING_FOR_REVIEW, got {job.state.value}")
         record = self._approvals.approve(job_id, stage, actor)
         self._service.transition(job_id, JobState.VALIDATING)
         return record
@@ -283,9 +281,7 @@ class FeCreatorApp:
         """Reject a review stage; job must be in WAITING_FOR_REVIEW."""
         job = self._jobs.load(job_id)
         if job.state != JobState.WAITING_FOR_REVIEW:
-            raise InvalidStateError(
-                f"reject requires WAITING_FOR_REVIEW, got {job.state.value}"
-            )
+            raise InvalidStateError(f"reject requires WAITING_FOR_REVIEW, got {job.state.value}")
         record = self._approvals.reject(job_id, stage, actor, reason)
         self._service.transition(job_id, JobState.FAILED)
         return record
