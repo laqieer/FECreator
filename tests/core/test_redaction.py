@@ -11,6 +11,27 @@ def test_redact_masks_tokens() -> None:
     assert "xyz" not in redacted
 
 
+def test_redact_masks_bare_tokens_and_embedded_absolute_paths() -> None:
+    text = (
+        "failed reading C:\\secret\\nested\\hero.png and /srv/private/out.png; "
+        "retry with sk-live-abc123456789 ghp_abcdefghijklmnopqrstuvwxyz123456 "
+        "AKIAABCDEFGHIJKLMNOP eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.sigabcdefghi "
+        "while keeping ordinary words"
+    )
+
+    redacted = redact(text)
+
+    assert "C:\\secret\\nested\\hero.png" not in redacted
+    assert "/srv/private/out.png" not in redacted
+    assert "sk-live-abc123456789" not in redacted
+    assert "ghp_abcdefghijklmnopqrstuvwxyz123456" not in redacted
+    assert "AKIAABCDEFGHIJKLMNOP" not in redacted
+    assert "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.sigabcdefghi" not in redacted
+    assert "failed reading" in redacted
+    assert "ordinary words" in redacted
+    assert "***" in redacted
+
+
 def test_contains_secret_key() -> None:
     assert contains_secret_key("api_key") is True
     assert contains_secret_key("authorization") is True
