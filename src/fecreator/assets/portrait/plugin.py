@@ -28,6 +28,7 @@ from fecreator.core.registry import PROVIDER_REGISTRY
 from fecreator.imaging.io import load_rgb, save_indexed_png
 from fecreator.imaging.quantize import quantize_median_cut
 from fecreator.imaging.resize import ResizeMode, resize
+from fecreator.jobs.model import JobState
 from fecreator.jobs.store import JobStore
 from fecreator.lineage.store import LineageStore
 from fecreator.providers.base import GenRequest, Provider, require_capabilities
@@ -96,6 +97,22 @@ def _background_first(
     return swapped_indices, swapped_palette
 
 
+def _select_neutral_artifact(artifacts: tuple[Artifact, ...]) -> Artifact | None:
+    image_artifacts = tuple(
+        artifact for artifact in artifacts if artifact.media_type.startswith("image/")
+    )
+    neutral_artifacts = tuple(
+        artifact for artifact in image_artifacts if artifact.role == "neutral"
+    )
+    if len(neutral_artifacts) == 1:
+        return neutral_artifacts[0]
+    if len(neutral_artifacts) > 1:
+        return None
+    if len(image_artifacts) == 1:
+        return image_artifacts[0]
+    return None
+
+
 class PortraitPlugin:
     id = "portrait"
 
@@ -128,19 +145,35 @@ class PortraitPlugin:
             ),
             ctx.workspace,
         )
+        provider_diagnostics = tuple(response.diagnostics)
         if not response.ok or not response.artifacts:
-            diagnostics = response.diagnostics or (
+            diagnostics = provider_diagnostics or (
                 error("PROVIDER_NO_ARTIFACTS", "provider returned no artifacts"),
             )
             return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
 
-        neutral = load_rgb(_safe_artifact_path(ctx.workspace, response.artifacts[0].path))
+        neutral_artifact = _select_neutral_artifact(response.artifacts)
+        if neutral_artifact is None:
+            return JobResult(
+                job_id=ctx.job_id,
+                ok=False,
+                diagnostics=provider_diagnostics
+                + (
+                    error(
+                        "PROVIDER_INVALID_RESPONSE",
+                        "provider did not return exactly one usable neutral image artifact",
+                    ),
+                ),
+            )
+
+        neutral = load_rgb(_safe_artifact_path(ctx.workspace, neutral_artifact.path))
         main = align_to_main(neutral, GREEN_BG)
         package_dir = safe_join(ctx.workspace, "package")
         self._export_package(package_dir, main, GREEN_BG)
 
-        diagnostics = tuple(FeGbaPortraitStandard().validate(package_dir))
-        if has_errors(diagnostics):
+        validation_diagnostics = tuple(FeGbaPortraitStandard().validate(package_dir))
+        diagnostics = provider_diagnostics + validation_diagnostics
+        if has_errors(validation_diagnostics):
             return JobResult(job_id=ctx.job_id, ok=False, diagnostics=diagnostics)
 
         artifacts = self._package_artifacts(ctx.workspace, package_dir)
@@ -158,14 +191,20 @@ class PortraitPlugin:
             output_hashes=output_hashes,
             created_at=utc_now_iso(),
         )
-        LineageStore(data_root).add(lineage)
-
         job = JobStore(data_root).load(ctx.job_id)
+        report_job = job.model_copy(update={"state": JobState.COMPLETED})
         write_report(
             safe_join(ctx.workspace, "report.json"),
             build_report(
-                job,
-                [StageResult(stage="export", ok=True, artifacts=artifacts)],
+                report_job,
+                [
+                    StageResult(
+                        stage="export",
+                        ok=True,
+                        artifacts=artifacts,
+                        diagnostics=provider_diagnostics,
+                    )
+                ],
                 [lineage],
             ),
         )
@@ -173,7 +212,8 @@ class PortraitPlugin:
             safe_join(ctx.workspace, "lineage.json"),
             [lineage.model_dump(mode="json")],
         )
-        build_bundle(job, ctx.workspace, safe_join(ctx.workspace, "bundle"))
+        build_bundle(report_job, ctx.workspace, safe_join(ctx.workspace, "bundle"))
+        LineageStore(data_root).add(lineage)
         return JobResult(
             job_id=ctx.job_id,
             ok=True,
