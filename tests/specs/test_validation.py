@@ -78,6 +78,18 @@ def test_extra_foreign_palette_flagged(tmp_path: Path) -> None:
     assert any(d.code == "EXTRA_PALETTE" and d.where == "other.pal" for d in diags)
 
 
+def test_case_insensitive_matching_sidecar(tmp_path: Path) -> None:
+    # A sidecar whose basename differs only by case is the matching sidecar,
+    # not a foreign one (canonical, and required on case-insensitive filesystems).
+    save_indexed_png(tmp_path / "hero.png", build_indices(), np.array(PALETTE, dtype=np.uint8))
+    write_jasc(tmp_path / "HERO.PAL", PALETTE)
+    diags = validate_package(tmp_path)
+    codes = {d.code for d in diags}
+    assert "EXTRA_PALETTE" not in codes
+    assert "MISSING_PALETTE" not in codes
+    assert not has_errors(diags)
+
+
 def test_palette_count_mismatch(tmp_path: Path) -> None:
     write_valid_package(tmp_path)
     (tmp_path / "hero.pal").write_bytes(b"JASC-PAL\r\n0100\r\n1\r\n0 248 0\r\n")

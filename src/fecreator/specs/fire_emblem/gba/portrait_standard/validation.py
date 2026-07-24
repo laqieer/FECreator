@@ -149,13 +149,20 @@ def _snap_diags(palette: list[_RGB], where: str) -> list[Diagnostic]:
 
 def _palette_sidecar_diags(package_dir: Path, sheet: Path, palette: list[_RGB]) -> list[Diagnostic]:
     out: list[Diagnostic] = []
-    pal_path = sheet.with_suffix(".pal")
-    for foreign in sorted(package_dir.glob("*.pal")):
-        if foreign.name != pal_path.name:
-            out.append(error("EXTRA_PALETTE", "unrelated JASC sidecar present", where=foreign.name))
-    if not pal_path.exists():
+    expected = (sheet.stem + ".pal").casefold()
+    pals = sorted(package_dir.glob("*.pal"))
+    # Basenames are matched case-insensitively so a sidecar differing only by
+    # case is the canonical match (and the same file on case-insensitive
+    # filesystems), not a foreign sidecar.
+    matching = [p for p in pals if p.name.casefold() == expected]
+    foreign = [p for p in pals if p.name.casefold() != expected]
+    foreign += matching[1:]
+    for extra in foreign:
+        out.append(error("EXTRA_PALETTE", "unrelated JASC sidecar present", where=extra.name))
+    if not matching:
         out.append(error("MISSING_PALETTE", "no matching JASC sidecar", where=sheet.name))
         return out
+    pal_path = matching[0]
     if not _within(package_dir, pal_path):
         out.append(
             error(

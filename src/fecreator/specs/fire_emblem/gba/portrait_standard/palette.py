@@ -34,12 +34,33 @@ def _validate_palette(palette: Sequence[RGB]) -> None:
                 raise ValueError(f"JASC palette channel {channel!r} out of range 0..255")
 
 
+def _fsync_dir(directory: Path) -> None:
+    """Best-effort fsync of a directory so a rename is durable.
+
+    POSIX requires syncing the parent directory after ``os.replace`` for the
+    new name to survive a crash. Platforms/filesystems that cannot open a
+    directory for fsync (notably Windows) are treated as a safe no-op.
+    """
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def write_jasc(path: Path, palette: Sequence[RGB]) -> None:
     """Write a JASC-PAL sidecar atomically with CRLF line endings.
 
     Validates the palette (1..16 entries, integer channels 0..255) and writes
     through a same-directory temp file + fsync + ``os.replace`` so an
     interrupted write can never leave a truncated ``.pal`` at the destination.
+    The parent directory is fsynced after the replace so the new name is
+    durable (best effort; no-op where unsupported).
     """
     _validate_palette(palette)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,6 +79,7 @@ def write_jasc(path: Path, palette: Sequence[RGB]) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+    _fsync_dir(path.parent)
 
 
 def read_jasc(path: Path) -> list[RGB]:

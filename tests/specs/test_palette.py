@@ -93,3 +93,12 @@ def test_read_jasc_numeric_error_has_context(tmp_path: Path) -> None:
     p.write_bytes(b"JASC-PAL\r\n0100\r\n1\r\nxx 0 0\r\n")
     with pytest.raises(ValueError, match="nan.pal"):
         read_jasc(p)
+
+
+def test_write_jasc_fsyncs_parent_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import fecreator.specs.fire_emblem.gba.portrait_standard.palette as pal
+
+    synced: list[Path] = []
+    monkeypatch.setattr(pal, "_fsync_dir", lambda d: synced.append(Path(d)))
+    pal.write_jasc(tmp_path / "x.pal", [(0, 0, 0), (248, 128, 0)])
+    assert tmp_path in synced
