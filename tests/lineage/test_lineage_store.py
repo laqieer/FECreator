@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -98,11 +99,41 @@ def test_self_parent_is_cycle(data_root: Path) -> None:
         store.add(_node("a", parents=("a",)))
 
 
-def test_path_escape_in_asset_id_raises(data_root: Path) -> None:
+def test_duplicate_parent_ids_raise(data_root: Path) -> None:
+    store = LineageStore(data_root)
+    store.add(_node("a"))
+
+    with pytest.raises(ValueError, match="duplicate parent"):
+        store.add(_node("b", parents=("a", "a")))
+
+
+@pytest.mark.parametrize(
+    "asset_id",
+    [
+        ".",
+        "..",
+        ".locks",
+        ".hidden",
+        "locks",
+        ".tmp-hidden",
+        " a",
+        "a ",
+        "a/b",
+        "a\\b",
+    ],
+)
+def test_asset_id_rejects_reserved_or_ambiguous_values(data_root: Path, asset_id: str) -> None:
+    store = LineageStore(data_root)
+
+    with pytest.raises(ValueError):
+        store.add(_node(asset_id))
+
+
+def test_absolute_asset_id_raises_path_escape(data_root: Path) -> None:
     store = LineageStore(data_root)
 
     with pytest.raises(PathEscapeError):
-        store.add(_node("..\\escape"))
+        store.add(_node("C:\\escape"))
 
 
 def test_get_raises_for_corrupt_visible_node(data_root: Path) -> None:
@@ -239,3 +270,66 @@ except Exception as exc:
     ]
     assert all(result["ok"] for result in results)
     assert [node.asset_id for node in LineageStore(data_root).children("a")] == ["b", "c"]
+
+
+def test_concurrent_mutual_parent_adds_fail_promptly_with_domain_error(
+    data_root: Path,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "add_mutual_parent.py"
+    script.write_text(
+        """
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+from fecreator.contracts.lineage import LineageNode, Operation
+from fecreator.lineage.store import LineageStore
+
+
+result_path = Path(sys.argv[2])
+try:
+    LineageStore(Path(sys.argv[1])).add(
+        LineageNode(
+            asset_id=sys.argv[3],
+            operation=Operation.REFINE_EXPRESSION,
+            parents=(sys.argv[4],),
+            created_at="2026-07-24T00:00:00+00:00",
+        )
+    )
+    result_path.write_text(json.dumps({"ok": True}), encoding="utf-8")
+except Exception as exc:
+    result_path.write_text(
+        json.dumps({"ok": False, "error": type(exc).__name__, "message": str(exc)}),
+        encoding="utf-8",
+    )
+""".lstrip(),
+        encoding="utf-8",
+        newline="\n",
+    )
+    first_result = tmp_path / "mutual-1.json"
+    second_result = tmp_path / "mutual-2.json"
+
+    started = time.monotonic()
+    first = subprocess.Popen(
+        [sys.executable, str(script), str(data_root), str(first_result), "a", "b"],
+        env=_worker_env(),
+    )
+    second = subprocess.Popen(
+        [sys.executable, str(script), str(data_root), str(second_result), "b", "a"],
+        env=_worker_env(),
+    )
+    first.wait(timeout=10)
+    second.wait(timeout=10)
+    elapsed = time.monotonic() - started
+
+    results = [
+        json.loads(first_result.read_text(encoding="utf-8")),
+        json.loads(second_result.read_text(encoding="utf-8")),
+    ]
+    assert elapsed < 2.0
+    assert all(not result["ok"] for result in results)
+    assert {result["error"] for result in results} == {"ValueError"}
+    assert all("unknown parent" in result["message"] for result in results)

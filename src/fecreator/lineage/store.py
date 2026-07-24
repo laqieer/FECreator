@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fecreator.contracts.lineage import LineageNode
 from fecreator.core.atomicio import _path_lock, _read_json_unlocked, _write_json_atomic_unlocked
-from fecreator.core.paths import safe_join
+from fecreator.core.paths import normalize_storage_id, safe_join
 
 
 class CycleError(Exception):
@@ -23,12 +23,8 @@ class LineageStore:
         return safe_join(self._root, "lineage")
 
     def _normalize_asset_id(self, asset_id: str) -> str:
-        normalized = asset_id.strip()
-        if not normalized:
-            raise ValueError("asset_id must be a non-empty string")
+        normalized = normalize_storage_id(asset_id, field_name="asset_id")
         safe_join(self._lineage_dir(), f"{normalized}.json")
-        if "/" in normalized or "\\" in normalized:
-            raise ValueError(f"asset_id must not contain path separators: {asset_id!r}")
         return normalized
 
     def _path(self, asset_id: str) -> Path:
@@ -40,7 +36,13 @@ class LineageStore:
     def _lock_path(self, asset_id: str) -> Path:
         return self._lock_target(asset_id).with_suffix(".lock")
 
-    def _read_node_locked(self, asset_id: str) -> LineageNode:
+    def _graph_lock_target(self) -> Path:
+        return safe_join(self._root, "lineage", ".locks", "graph")
+
+    def _graph_lock_path(self) -> Path:
+        return self._graph_lock_target().with_suffix(".lock")
+
+    def _read_node_unlocked(self, asset_id: str) -> LineageNode:
         path = self._path(asset_id)
         try:
             payload = _read_json_unlocked(path)
@@ -52,6 +54,9 @@ class LineageStore:
         if node.asset_id != self._normalize_asset_id(asset_id):
             raise LineageCorruptionError(f"corrupt lineage node: {path}")
         return node
+
+    def _read_node_locked(self, asset_id: str) -> LineageNode:
+        return self._read_node_unlocked(asset_id)
 
     def _iter_nodes(self) -> list[LineageNode]:
         lineage_dir = self._lineage_dir()
@@ -69,20 +74,37 @@ class LineageStore:
             nodes.append(self.get(entry.stem))
         return nodes
 
+    def _normalized_parents(self, parents: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(self._normalize_asset_id(parent) for parent in parents)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("duplicate parent ids are not allowed")
+        return normalized
+
     def add(self, node: LineageNode) -> None:
+        """Append a lineage node with caller-provided metadata and output hashes.
+
+        Upstream ingestion owns immutable file copies and hash computation. This
+        store validates graph integrity and persists the supplied metadata only.
+        """
+
         asset_id = self._normalize_asset_id(node.asset_id)
-        with _path_lock(self._path(asset_id), lock_path=self._lock_path(asset_id)):
+        parents = self._normalized_parents(node.parents)
+        with _path_lock(self._graph_lock_target(), lock_path=self._graph_lock_path()):
             if self._path(asset_id).exists():
-                self._read_node_locked(asset_id)
+                self._read_node_unlocked(asset_id)
                 raise ValueError(f"asset_id already exists: {asset_id}")
-            if asset_id in node.parents:
+            if asset_id in parents:
                 raise CycleError(f"self-parent: {asset_id}")
-            for parent in node.parents:
+            for parent in parents:
                 try:
-                    self.get(parent)
+                    self._read_node_unlocked(parent)
                 except FileNotFoundError as exc:
                     raise ValueError(f"unknown parent: {parent}") from exc
-            _write_json_atomic_unlocked(self._path(asset_id), node.model_dump(mode="json"))
+            normalized_node = node.model_copy(update={"asset_id": asset_id, "parents": parents})
+            _write_json_atomic_unlocked(
+                self._path(asset_id),
+                normalized_node.model_dump(mode="json"),
+            )
 
     def get(self, asset_id: str) -> LineageNode:
         normalized = self._normalize_asset_id(asset_id)

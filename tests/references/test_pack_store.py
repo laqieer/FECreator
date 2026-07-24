@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -104,11 +105,33 @@ def test_missing_revision_raises(data_root: Path) -> None:
         store.get("marth", 5)
 
 
-def test_path_escape_in_pack_id_raises(data_root: Path) -> None:
+@pytest.mark.parametrize(
+    "pack_id",
+    [
+        ".",
+        "..",
+        ".locks",
+        ".hidden",
+        "locks",
+        ".tmp-hidden",
+        " marth",
+        "marth ",
+        "mar/th",
+        "mar\\th",
+    ],
+)
+def test_pack_id_rejects_reserved_or_ambiguous_values(data_root: Path, pack_id: str) -> None:
+    store = ReferencePackStore(data_root)
+
+    with pytest.raises(ValueError):
+        store.create(_pack(pack_id=pack_id))
+
+
+def test_absolute_pack_id_raises_path_escape(data_root: Path) -> None:
     store = ReferencePackStore(data_root)
 
     with pytest.raises(PathEscapeError):
-        store.create(_pack(pack_id="..\\escape"))
+        store.create(_pack(pack_id="C:\\escape"))
 
 
 def test_latest_raises_for_missing_visible_revision(data_root: Path) -> None:
@@ -268,3 +291,136 @@ except Exception as exc:
         "worker-1",
         "worker-2",
     }
+
+
+def test_latest_and_new_revision_handle_double_digit_revisions(data_root: Path) -> None:
+    store = ReferencePackStore(data_root)
+    store.create(_pack())
+
+    for index in range(2, 12):
+        created = store.new_revision("marth", provenance=f"worker-{index}")
+        assert created.revision == index
+
+    assert store.latest("marth").revision == 11
+    assert store.new_revision("marth", provenance="worker-12").revision == 12
+
+
+def test_double_digit_gap_raises_contiguity_error(data_root: Path) -> None:
+    store = ReferencePackStore(data_root)
+    store.create(_pack())
+    for index in range(2, 12):
+        store.new_revision("marth", provenance=f"worker-{index}")
+
+    (data_root / "refs" / "marth" / "10.json").unlink()
+
+    with pytest.raises(ReferencePackCorruptionError, match="missing revision"):
+        store.latest("marth")
+
+
+def test_init_prunes_only_stale_reference_staging_directories(data_root: Path) -> None:
+    refs_dir = data_root / "refs"
+    refs_dir.mkdir()
+    stale = refs_dir / ".tmp-stale"
+    fresh = refs_dir / ".tmp-fresh"
+    stale.mkdir()
+    fresh.mkdir()
+    now = time.time()
+    os.utime(stale, (now - 600, now - 600))
+    os.utime(fresh, (now, now))
+
+    ReferencePackStore(data_root)
+
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_init_keeps_stale_reference_staging_directory_with_active_lock(
+    data_root: Path,
+    tmp_path: Path,
+) -> None:
+    refs_dir = data_root / "refs"
+    staging = refs_dir / ".tmp-active"
+    staging.mkdir(parents=True)
+    now = time.time() - 600
+    os.utime(staging, (now, now))
+    script = tmp_path / "hold_stage_lock.py"
+    script.write_text(
+        """
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+
+from fecreator.core.atomicio import _path_lock
+
+
+target = Path(sys.argv[1])
+ready = Path(sys.argv[2])
+with _path_lock(target, timeout=5.0, poll_interval=0.01):
+    ready.write_text("ready", encoding="utf-8")
+    time.sleep(1.0)
+""".lstrip(),
+        encoding="utf-8",
+        newline="\n",
+    )
+    ready = tmp_path / "ready.txt"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            str(script),
+            str(data_root / "refs" / ".locks" / "staging-active"),
+            str(ready),
+        ],
+        env=_worker_env(),
+    )
+    try:
+        deadline = time.time() + 5
+        while not ready.exists():
+            assert time.time() < deadline
+            time.sleep(0.01)
+
+        ReferencePackStore(data_root)
+    finally:
+        holder.wait(timeout=5)
+
+    assert staging.exists()
+
+
+def test_create_requires_explicit_non_empty_provenance_and_rights(data_root: Path) -> None:
+    store = ReferencePackStore(data_root)
+
+    with pytest.raises(ValueError, match="provenance"):
+        store.create(_pack(provenance=""))
+
+    with pytest.raises(ValueError, match="rights"):
+        store.create(_pack(rights=" "))
+
+
+def test_new_revision_rejects_blank_provenance_and_rights(data_root: Path) -> None:
+    store = ReferencePackStore(data_root)
+    store.create(_pack())
+
+    with pytest.raises(ValueError, match="provenance"):
+        store.new_revision("marth", provenance="")
+
+    with pytest.raises(ValueError, match="rights"):
+        store.new_revision("marth", rights=" ")
+
+
+def test_get_preserves_legacy_empty_provenance_and_rights(data_root: Path) -> None:
+    store = ReferencePackStore(data_root)
+    store.create(_pack())
+    legacy_path = data_root / "refs" / "marth" / "2.json"
+    legacy_payload = {
+        **store.get("marth", 1).model_dump(mode="json"),
+        "revision": 2,
+        "provenance": "",
+        "rights": "",
+    }
+    legacy_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    loaded = store.get("marth", 2)
+
+    assert loaded.provenance == ""
+    assert loaded.rights == ""

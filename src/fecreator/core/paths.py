@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+RESERVED_STORAGE_IDS = frozenset({"locks", ".locks"})
+
 
 class PathEscapeError(Exception):
     """Raised when a path would resolve outside its workspace root."""
@@ -30,3 +32,23 @@ def is_contained(root: Path, target: Path) -> bool:
     root = root.resolve()
     target = target.resolve()
     return root == target or root in target.parents
+
+
+def normalize_storage_id(value: str, *, field_name: str) -> str:
+    if value != value.strip():
+        raise ValueError(f"{field_name} must not have leading or trailing whitespace")
+
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    if _has_absolute_part((normalized,)):
+        raise PathEscapeError(f"absolute segment not allowed: {(normalized,)!r}")
+    if normalized in {".", ".."}:
+        raise ValueError(f"{field_name} must not be '.' or '..'")
+    if normalized.startswith("."):
+        raise ValueError(f"{field_name} must not start with '.'")
+    if normalized in RESERVED_STORAGE_IDS:
+        raise ValueError(f"{field_name} uses a reserved namespace: {normalized!r}")
+    if "/" in normalized or "\\" in normalized:
+        raise ValueError(f"{field_name} must not contain path separators: {normalized!r}")
+    return normalized

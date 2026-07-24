@@ -37,6 +37,10 @@ class ReferencePack(BaseModel):
     @field_validator("id", mode="after")
     @classmethod
     def _validate_id(cls, value: str, info: ValidationInfo) -> str:
+        if value != value.strip():
+            raise ValueError(
+                f"{info.field_name or 'id'} must not have leading or trailing whitespace"
+            )
         return _ensure_non_empty_text(value, field_name=info.field_name or "id")
 
     @field_validator("source", "provenance", "rights", mode="after")
