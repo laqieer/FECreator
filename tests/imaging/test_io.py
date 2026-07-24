@@ -2,8 +2,16 @@ import numpy as np
 import pytest
 
 from fecreator.imaging.io import (
-    ImageBudgetError, ResourceBudget, has_trns, is_indexed_png, load_indexed,
-    load_rgb, png_dimensions, read_png_palette, save_indexed_png, save_png,
+    ImageBudgetError,
+    ResourceBudget,
+    has_trns,
+    is_indexed_png,
+    load_indexed,
+    load_rgb,
+    png_dimensions,
+    read_png_palette,
+    save_indexed_png,
+    save_png,
 )
 
 

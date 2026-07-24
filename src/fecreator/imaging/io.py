@@ -21,7 +21,9 @@ class ImageBudgetError(Exception):
     """Raised when an image exceeds a configured resource budget."""
 
 
-def load_rgb(path: Path, budget: ResourceBudget = ResourceBudget()) -> np.ndarray:
+def load_rgb(path: Path, budget: ResourceBudget | None = None) -> np.ndarray:
+    if budget is None:
+        budget = ResourceBudget()
     with Image.open(path) as im:
         width, height = im.size
         if width * height > budget.max_pixels:
@@ -58,7 +60,8 @@ def save_indexed_png(path: Path, indices: np.ndarray, palette: np.ndarray) -> No
 
 
 def _png_chunk(tag: bytes, data: bytes) -> bytes:
-    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
 
 
 def load_indexed(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -71,10 +74,10 @@ def load_indexed(path: Path) -> tuple[np.ndarray, np.ndarray]:
 def _iter_chunks(data: bytes) -> Iterator[tuple[str, bytes]]:
     offset = len(_PNG_SIG)
     while offset < len(data):
-        (length,) = struct.unpack(">I", data[offset:offset + 4])
-        ctype = data[offset + 4:offset + 8].decode("ascii")
+        (length,) = struct.unpack(">I", data[offset : offset + 4])
+        ctype = data[offset + 4 : offset + 8].decode("ascii")
         start = offset + 8
-        yield ctype, data[start:start + length]
+        yield ctype, data[start : start + length]
         offset = start + length + 4
 
 

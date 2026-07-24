@@ -11,12 +11,12 @@ def _kernel(radius: int) -> np.ndarray:
 
 def close_mask(mask: np.ndarray, radius: int = 1) -> np.ndarray:
     out = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, _kernel(radius))
-    return out.astype(bool)  # type: ignore[no-any-return]
+    return out.astype(bool)
 
 
 def open_mask(mask: np.ndarray, radius: int = 1) -> np.ndarray:
     out = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_OPEN, _kernel(radius))
-    return out.astype(bool)  # type: ignore[no-any-return]
+    return out.astype(bool)
 
 
 def fill_holes(mask: np.ndarray) -> np.ndarray:

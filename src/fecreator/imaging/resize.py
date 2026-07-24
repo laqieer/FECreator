@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 import cv2
 import numpy as np
 
 
-class ResizeMode(str, Enum):
+class ResizeMode(StrEnum):
     ILLUSTRATION_FIT = "illustration_fit"
     PIXEL_PRESERVE = "pixel_preserve"
     PSEUDO_PIXEL_GRID = "pseudo_pixel_grid"
@@ -20,10 +20,11 @@ def _fit(rgb: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     return cv2.resize(rgb, (target_w, target_h), interpolation=interp)
 
 
-def resize(rgb: np.ndarray, size: tuple[int, int], mode: ResizeMode,
-           grid: object | None = None) -> np.ndarray:
+def resize(
+    rgb: np.ndarray, size: tuple[int, int], mode: ResizeMode, grid: object | None = None
+) -> np.ndarray:
     if not isinstance(mode, ResizeMode):
         raise ValueError(f"unknown resize mode: {mode!r}")
     if mode is ResizeMode.PIXEL_PRESERVE:
-        return cv2.resize(rgb, size, interpolation=cv2.INTER_NEAREST)  # type: ignore[no-any-return]
+        return cv2.resize(rgb, size, interpolation=cv2.INTER_NEAREST)
     return _fit(rgb, size).astype(np.uint8)

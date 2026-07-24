@@ -31,7 +31,7 @@ def masked_perceptual_diff(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> fl
 def protected_region_diff(a: np.ndarray, b: np.ndarray, regions: Sequence[Region]) -> float:
     worst = 0.0
     for r in regions:
-        pa = a[r.y:r.y + r.h, r.x:r.x + r.w].astype(np.int32)
-        pb = b[r.y:r.y + r.h, r.x:r.x + r.w].astype(np.int32)
+        pa = a[r.y : r.y + r.h, r.x : r.x + r.w].astype(np.int32)
+        pb = b[r.y : r.y + r.h, r.x : r.x + r.w].astype(np.int32)
         worst = max(worst, float(np.abs(pa - pb).mean() / 255.0))
     return worst
