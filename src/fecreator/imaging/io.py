@@ -14,10 +14,16 @@ from pydantic import BaseModel
 
 _PNG_SIG = b"\x89PNG\r\n\x1a\n"
 
+# Maximum data size for a single non-IDAT chunk (4 MiB).
+# Stops decompression-bomb attacks where a chunk header claims an enormous payload.
+_MAX_SINGLE_CHUNK = 4 * 1024 * 1024
+
 
 class ResourceBudget(BaseModel):
     max_pixels: int = 8_000_000
     max_palette: int = 256
+    # Maximum raw PNG file bytes read during chunk scanning (8 MiB default).
+    max_file_bytes: int = 8 * 1024 * 1024
 
 
 class ImageBudgetError(Exception):
@@ -103,52 +109,106 @@ def _png_chunk(tag: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
 
 
+def _chunks(path: Path, max_file_bytes: int = ResourceBudget().max_file_bytes) -> Iterator[tuple[str, bytes]]:
+    """Yield (chunk_type, chunk_data) pairs using streaming reads with byte limits.
+
+    Validates PNG signature, rejects truncated chunks, enforces per-chunk and
+    total file-byte limits before any allocation.  Stops after the IEND chunk.
+    """
+    total_read = 0
+    with open(path, "rb") as f:
+        sig = f.read(len(_PNG_SIG))
+        total_read += len(sig)
+        if sig != _PNG_SIG:
+            raise ValueError(f"not a valid PNG (bad signature in {path.name!r})")
+
+        while True:
+            len_bytes = f.read(4)
+            if not len_bytes:
+                break  # clean EOF after IEND
+            if len(len_bytes) < 4:
+                raise ValueError(f"truncated PNG chunk length field in {path.name!r}")
+            total_read += 4
+            if total_read > max_file_bytes:
+                raise ImageBudgetError(f"PNG file {path.name!r} exceeds {max_file_bytes}-byte limit")
+
+            (chunk_len,) = struct.unpack(">I", len_bytes)
+
+            type_bytes = f.read(4)
+            if len(type_bytes) < 4:
+                raise ValueError(f"truncated PNG chunk type field in {path.name!r}")
+            total_read += 4
+            ctype = type_bytes.decode("ascii", errors="replace")
+
+            # Per-chunk guard: reject non-IDAT chunks claiming >4 MiB of data.
+            # IDAT is legitimately large (compressed pixel data); other chunks are not.
+            if ctype != "IDAT" and chunk_len > _MAX_SINGLE_CHUNK:
+                raise ImageBudgetError(
+                    f"PNG chunk '{ctype}' data ({chunk_len} bytes) exceeds "
+                    f"{_MAX_SINGLE_CHUNK}-byte per-chunk limit in {path.name!r}"
+                )
+
+            # Total budget guard (pre-read, before allocating chunk_len bytes)
+            if total_read + chunk_len + 4 > max_file_bytes:
+                raise ImageBudgetError(
+                    f"PNG file {path.name!r} exceeds {max_file_bytes}-byte limit"
+                )
+
+            data = f.read(chunk_len)
+            if len(data) < chunk_len:
+                raise ValueError(
+                    f"truncated PNG chunk '{ctype}' data in {path.name!r}: "
+                    f"expected {chunk_len} bytes, got {len(data)}"
+                )
+            total_read += chunk_len
+
+            crc_bytes = f.read(4)
+            if len(crc_bytes) < 4:
+                raise ValueError(f"truncated PNG chunk '{ctype}' CRC in {path.name!r}")
+            total_read += 4
+
+            yield ctype, data
+
+            if ctype == "IEND":
+                break
+
+
 def load_indexed(path: Path, budget: ResourceBudget | None = None) -> tuple[np.ndarray, np.ndarray]:
     if budget is None:
         budget = ResourceBudget()
-    w, h = png_dimensions(path)
+    w, h = png_dimensions(path, budget)
     _check_pixel_budget(w, h, budget)
     with Image.open(path) as im:
         indices = np.asarray(im, dtype=np.uint8)
-    palette = np.array(read_png_palette(path), dtype=np.uint8)
+    palette = np.array(read_png_palette(path, budget), dtype=np.uint8)
     return indices, palette
 
 
-def _iter_chunks(data: bytes) -> Iterator[tuple[str, bytes]]:
-    offset = len(_PNG_SIG)
-    while offset < len(data):
-        (length,) = struct.unpack(">I", data[offset : offset + 4])
-        ctype = data[offset + 4 : offset + 8].decode("ascii")
-        start = offset + 8
-        yield ctype, data[start : start + length]
-        offset = start + length + 4
-
-
-def _chunks(path: Path) -> Iterator[tuple[str, bytes]]:
-    return _iter_chunks(path.read_bytes())
-
-
-def png_dimensions(path: Path) -> tuple[int, int]:
-    for ctype, body in _chunks(path):
+def png_dimensions(path: Path, budget: ResourceBudget | None = None) -> tuple[int, int]:
+    max_bytes = (budget or ResourceBudget()).max_file_bytes
+    for ctype, body in _chunks(path, max_bytes):
         if ctype == "IHDR":
             width, height = struct.unpack(">II", body[:8])
             return int(width), int(height)
     raise ValueError("no IHDR chunk")
 
 
-def is_indexed_png(path: Path) -> bool:
-    for ctype, body in _chunks(path):
+def is_indexed_png(path: Path, budget: ResourceBudget | None = None) -> bool:
+    max_bytes = (budget or ResourceBudget()).max_file_bytes
+    for ctype, body in _chunks(path, max_bytes):
         if ctype == "IHDR":
             return body[9] == 3
     return False
 
 
-def read_png_palette(path: Path) -> list[tuple[int, int, int]]:
-    for ctype, body in _chunks(path):
+def read_png_palette(path: Path, budget: ResourceBudget | None = None) -> list[tuple[int, int, int]]:
+    max_bytes = (budget or ResourceBudget()).max_file_bytes
+    for ctype, body in _chunks(path, max_bytes):
         if ctype == "PLTE":
             return [(body[i], body[i + 1], body[i + 2]) for i in range(0, len(body), 3)]
     return []
 
 
-def has_trns(path: Path) -> bool:
-    return any(ctype == "tRNS" for ctype, _ in _chunks(path))
+def has_trns(path: Path, budget: ResourceBudget | None = None) -> bool:
+    max_bytes = (budget or ResourceBudget()).max_file_bytes
+    return any(ctype == "tRNS" for ctype, _ in _chunks(path, max_bytes))
