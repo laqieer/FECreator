@@ -47,6 +47,9 @@ def create_api(app: FeCreatorApp) -> FastAPI:
         diags = app.validate(request.spec_id, Path(request.package_dir))
         return [d.model_dump(mode="json") for d in diags]
 
+    from fecreator.interfaces.websocket import register_ws
+
+    register_ws(api, app)
     mount_static(api)
     return api
 
