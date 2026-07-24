@@ -34,7 +34,9 @@ def test_deploy_pages_builds_demo_and_uploads_the_web_bundle() -> None:
     steps = _deploy_job()["steps"]
     run_text = " ".join(step.get("run", "") for step in steps)
     assert "build:demo" in run_text
-    upload = next(s for s in steps if s.get("uses", "").startswith("actions/upload-pages-artifact@"))
+    upload = next(
+        s for s in steps if s.get("uses", "").startswith("actions/upload-pages-artifact@")
+    )
     assert upload["with"]["path"] == "src/fecreator/_web"
 
 
