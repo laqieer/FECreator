@@ -5,26 +5,31 @@ import re
 import shutil
 import stat
 import uuid
-from collections.abc import Iterable, Mapping
-from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import TypeAlias, cast
+from collections.abc import Iterable
+from pathlib import Path, PurePosixPath
+from typing import cast
 
 from fecreator.contracts.diagnostics import Diagnostic, Severity, error
 from fecreator.contracts.lineage import LineageNode
 from fecreator.contracts.manifest import Manifest
 from fecreator.core.atomicio import (
     _fsync_directory,
+    _path_lock,
     _read_json_unlocked,
     _write_json_atomic_unlocked,
 )
 from fecreator.core.hashing import sha256_file
-from fecreator.core.paths import safe_join
-from fecreator.core.redaction import contains_secret_key, redact
+from fecreator.core.paths import PathEscapeError, safe_join
+from fecreator.core.redaction import contains_secret_key
 from fecreator.jobs.model import Job
-
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject: TypeAlias = dict[str, JsonValue]
+from fecreator.reporting.sanitize import (
+    JsonObject,
+    JsonValue,
+    as_object,
+    sanitize_json,
+    sanitize_path,
+    sanitize_text,
+)
 
 MAX_BUNDLE_FILE_COUNT = 64
 MAX_BUNDLE_BYTES = 32 * 1024 * 1024
@@ -32,46 +37,20 @@ STAGING_PREFIX = ".bundle-stage-"
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _REQUIRED_BUNDLE_FILES = frozenset({"manifest.json", "report.json", "lineage.json", "hashes.json"})
+_REQUIRED_REPORT_KEYS = frozenset(
+    {"job_id", "manifest", "manifest_hash", "stages", "diagnostics", "lineage", "output_hashes"}
+)
 
 
 class BundleError(Exception):
     """Raised when a bundle cannot be created safely."""
 
 
-def _looks_absolute_path(value: str) -> bool:
-    return PureWindowsPath(value).is_absolute() or PurePosixPath(value).is_absolute()
+def _bundle_lock_path(out_dir: Path) -> Path:
+    return out_dir.parent / f".{out_dir.name}.lock"
 
 
-def _safe_path_display(value: str) -> str:
-    windows_name = PureWindowsPath(value).name
-    posix_name = PurePosixPath(value).name
-    return windows_name or posix_name or value
-
-
-def _sanitize_string(value: str) -> str:
-    if _looks_absolute_path(value):
-        value = _safe_path_display(value)
-    return redact(value)
-
-
-def _sanitize_json(value: object) -> JsonValue:
-    if isinstance(value, Mapping):
-        sanitized: JsonObject = {}
-        for key in sorted(value):
-            if contains_secret_key(key):
-                raise BundleError(f"credential-like key is not allowed in bundle payload: {key}")
-            sanitized[key] = _sanitize_json(value[key])
-        return sanitized
-    if isinstance(value, tuple | list):
-        return [_sanitize_json(item) for item in value]
-    if isinstance(value, str):
-        return _sanitize_string(value)
-    if value is None or isinstance(value, bool | int | float):
-        return value
-    raise BundleError(f"unsupported bundle payload value: {type(value)!r}")
-
-
-def _load_json_object(path: Path, *, label: str) -> JsonObject:
+def _read_json_object(path: Path, *, label: str) -> JsonObject:
     try:
         payload = _read_json_unlocked(path)
     except FileNotFoundError as exc:
@@ -80,10 +59,10 @@ def _load_json_object(path: Path, *, label: str) -> JsonObject:
         raise BundleError(f"cannot parse {label}: {path.name}") from exc
     if not isinstance(payload, dict):
         raise BundleError(f"{label} must contain a JSON object: {path.name}")
-    return cast(JsonObject, _sanitize_json(payload))
+    return cast(JsonObject, payload)
 
 
-def _load_json_list(path: Path, *, label: str) -> list[JsonObject]:
+def _read_json_list(path: Path, *, label: str) -> list[JsonObject]:
     try:
         payload = _read_json_unlocked(path)
     except FileNotFoundError as exc:
@@ -92,7 +71,12 @@ def _load_json_list(path: Path, *, label: str) -> list[JsonObject]:
         raise BundleError(f"cannot parse {label}: {path.name}") from exc
     if not isinstance(payload, list):
         raise BundleError(f"{label} must contain a JSON array: {path.name}")
-    return [cast(JsonObject, _sanitize_json(item)) for item in payload]
+    objects: list[JsonObject] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise BundleError(f"{label} must contain only JSON objects: {path.name}")
+        objects.append(cast(JsonObject, item))
+    return objects
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -138,6 +122,17 @@ def _relative_posix(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def _casefold_collisions(paths: Iterable[str]) -> dict[str, list[str]]:
+    by_casefold: dict[str, list[str]] = {}
+    for path in sorted(paths):
+        by_casefold.setdefault(path.replace("\\", "/").casefold(), []).append(path)
+    return {
+        folded: values
+        for folded, values in by_casefold.items()
+        if len({value for value in values}) > 1
+    }
+
+
 def _validate_package_tree(package_dir: Path) -> list[Path]:
     if not package_dir.exists() or not package_dir.is_dir():
         raise BundleError("missing canonical package directory")
@@ -181,7 +176,10 @@ def _hash_files(root: Path) -> dict[str, str]:
 
 def _validated_lineage_payload(payload: list[JsonObject]) -> list[JsonObject]:
     nodes = [LineageNode.model_validate(item) for item in payload]
-    sanitized = [cast(JsonObject, _sanitize_json(node.model_dump(mode="json"))) for node in nodes]
+    sanitized = [
+        as_object(sanitize_json(node.model_dump(mode="json"), error_cls=BundleError))
+        for node in nodes
+    ]
     for node in sanitized:
         node["output_hashes"] = cast(JsonValue, sorted(cast(list[str], node["output_hashes"])))
     return sorted(
@@ -190,81 +188,225 @@ def _validated_lineage_payload(payload: list[JsonObject]) -> list[JsonObject]:
     )
 
 
-def _validated_report_payload(payload: JsonObject) -> JsonObject:
-    required = {
-        "job_id",
-        "manifest",
-        "manifest_hash",
-        "stages",
-        "diagnostics",
-        "lineage",
-        "output_hashes",
+def _as_object_list(value: JsonValue, *, label: str) -> list[JsonObject]:
+    if not isinstance(value, list):
+        raise BundleError(f"{label} must contain a JSON array")
+    objects: list[JsonObject] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise BundleError(f"{label} must contain only JSON objects")
+        objects.append(item)
+    return objects
+
+
+def _as_string_list(value: JsonValue, *, label: str) -> list[str]:
+    if not isinstance(value, list):
+        raise BundleError(f"{label} must contain a JSON array")
+    strings: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise BundleError(f"{label} must contain only strings")
+        strings.append(item)
+    return strings
+
+
+def _sort_diagnostics(diagnostics: Iterable[JsonObject]) -> list[JsonObject]:
+    return sorted(
+        diagnostics,
+        key=lambda diagnostic: (
+            cast(str, diagnostic["severity"]),
+            cast(str, diagnostic["code"]),
+            cast(str | None, diagnostic["where"]) or "",
+            cast(str, diagnostic["message"]),
+        ),
+    )
+
+
+def _sort_stage(stage: JsonObject) -> JsonObject:
+    artifacts = sorted(
+        _as_object_list(stage.get("artifacts", []), label="report.stages.artifacts"),
+        key=lambda artifact: (
+            cast(str, artifact["role"]),
+            cast(str, artifact["path"]),
+            cast(str, artifact["sha256"]),
+        ),
+    )
+    diagnostics = _sort_diagnostics(
+        _as_object_list(
+            stage.get("diagnostics", []),
+            label="report.stages.diagnostics",
+        )
+    )
+    return {
+        **stage,
+        "artifacts": cast(JsonValue, artifacts),
+        "diagnostics": cast(JsonValue, diagnostics),
     }
-    missing = sorted(required - set(payload))
+
+
+def _validated_report_payload(payload: JsonObject) -> JsonObject:
+    sanitized = as_object(sanitize_json(payload, error_cls=BundleError))
+    missing = sorted(_REQUIRED_REPORT_KEYS - set(sanitized))
     if missing:
         raise BundleError(f"report.json is missing required keys: {', '.join(missing)}")
-    return payload
+    stages = sorted(
+        (
+            _sort_stage(stage)
+            for stage in _as_object_list(sanitized["stages"], label="report.stages")
+        ),
+        key=lambda item: cast(str, item["stage"]),
+    )
+    diagnostics = _sort_diagnostics(
+        _as_object_list(sanitized["diagnostics"], label="report.diagnostics")
+    )
+    _as_object_list(sanitized["lineage"], label="report.lineage")
+    _as_string_list(sanitized["output_hashes"], label="report.output_hashes")
+    return {
+        **sanitized,
+        "stages": cast(JsonValue, stages),
+        "diagnostics": cast(JsonValue, diagnostics),
+    }
+
+
+def _normalize_declared_relative_path(relative_path: str) -> str:
+    if "\\" in relative_path:
+        raise BundleError(f"unsafe bundle path uses backslashes: {relative_path}")
+    posix = PurePosixPath(relative_path)
+    if posix.is_absolute() or relative_path.startswith("//"):
+        raise BundleError(f"unsafe bundle path: {relative_path}")
+    if not posix.parts:
+        raise BundleError(f"unsafe bundle path: {relative_path}")
+    if any(part in {"", ".", ".."} for part in posix.parts):
+        raise BundleError(f"unsafe bundle path: {relative_path}")
+    if any(len(part) >= 2 and part[1] == ":" for part in posix.parts):
+        raise BundleError(f"unsafe bundle path: {relative_path}")
+    return posix.as_posix()
+
+
+def _validated_declared_path(bundle_dir: Path, relative_path: str) -> tuple[str, Path]:
+    normalized = _normalize_declared_relative_path(relative_path)
+    try:
+        target = safe_join(bundle_dir, *PurePosixPath(normalized).parts)
+    except PathEscapeError as exc:
+        raise BundleError(f"unsafe bundle path: {relative_path}") from exc
+    return normalized, target
+
+
+def _scan_bundle_files(bundle_dir: Path) -> list[str]:
+    if not bundle_dir.exists() or not bundle_dir.is_dir():
+        return []
+    relative_files = [_relative_posix(bundle_dir, path) for path in _iter_tree(bundle_dir)]
+    collisions = _casefold_collisions(relative_files)
+    if collisions:
+        collided = next(iter(collisions.values()))
+        raise BundleError(f"casefold collision in bundle paths: {', '.join(collided)}")
+    return relative_files
+
+
+def _package_hashes_from_stage(stage_dir: Path) -> dict[str, str]:
+    package_root = stage_dir / "package"
+    return {
+        _relative_posix(stage_dir, path): sha256_file(path) for path in _iter_tree(package_root)
+    }
+
+
+def _report_output_hashes(
+    package_hashes: Iterable[str],
+    lineage_payload: Iterable[JsonObject],
+) -> list[str]:
+    return sorted(
+        set(package_hashes)
+        | {
+            hash_value
+            for node in lineage_payload
+            for hash_value in cast(list[str], node["output_hashes"])
+        }
+    )
+
+
+def _canonicalize_report_payload(
+    job: Job,
+    report_payload: JsonObject,
+    manifest_payload: JsonObject,
+    lineage_payload: list[JsonObject],
+    package_hashes: dict[str, str],
+) -> JsonObject:
+    sanitized = _validated_report_payload(report_payload)
+    return {
+        **sanitized,
+        "job_id": job.id,
+        "state": job.state.value,
+        "revision": job.revision,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "manifest": cast(JsonValue, manifest_payload),
+        "manifest_hash": job.manifest.content_hash(),
+        "lineage": cast(JsonValue, lineage_payload),
+        "output_hashes": cast(
+            JsonValue,
+            _report_output_hashes(package_hashes.values(), lineage_payload),
+        ),
+    }
 
 
 def build_bundle(job: Job, workspace: Path, out_dir: Path) -> Path:
     for key in job.manifest.params:
         if contains_secret_key(key):
             raise BundleError(f"manifest param names a credential: {key}")
-    if out_dir.exists():
-        raise BundleError(f"bundle destination already exists; refusing to overwrite: {out_dir}")
-
     workspace_root = workspace.resolve(strict=True)
     package_dir = safe_join(workspace_root, "package")
     report_path = safe_join(workspace_root, "report.json")
     lineage_path = safe_join(workspace_root, "lineage.json")
 
     package_files = _validate_package_tree(package_dir)
-    manifest_payload = cast(JsonObject, _sanitize_json(job.manifest.model_dump(mode="json")))
-    report_payload = _validated_report_payload(_load_json_object(report_path, label="report"))
-    lineage_payload = _validated_lineage_payload(_load_json_list(lineage_path, label="lineage"))
+    manifest_payload = as_object(
+        sanitize_json(job.manifest.model_dump(mode="json"), error_cls=BundleError)
+    )
+    raw_report_payload = _read_json_object(report_path, label="report")
+    raw_lineage_payload = _read_json_list(lineage_path, label="lineage")
+    lineage_payload = _validated_lineage_payload(raw_lineage_payload)
     _check_resource_limits([*package_files, report_path, lineage_path])
 
-    staging_dir = _stage_dir_for(out_dir)
-    if staging_dir.exists():
-        shutil.rmtree(staging_dir, ignore_errors=True)
+    with _path_lock(out_dir, lock_path=_bundle_lock_path(out_dir)):
+        if out_dir.exists():
+            raise BundleError(
+                f"bundle destination already exists; refusing to overwrite: {out_dir}"
+            )
 
-    try:
-        staging_dir.mkdir(parents=True, exist_ok=False)
-        _write_json_atomic_unlocked(staging_dir / "manifest.json", manifest_payload)
-        _write_json_atomic_unlocked(staging_dir / "report.json", report_payload)
-        _write_json_atomic_unlocked(staging_dir / "lineage.json", lineage_payload)
-        for source in package_files:
-            relative = source.relative_to(package_dir)
-            _copy_regular_file(source, staging_dir / "package" / relative)
-        hashes_payload = {"algorithm": "sha256", "files": _hash_files(staging_dir)}
-        _write_json_atomic_unlocked(staging_dir / "hashes.json", hashes_payload)
-        os.replace(staging_dir, out_dir)
-        _fsync_directory(out_dir.parent)
-    except Exception:
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        raise
+        staging_dir = _stage_dir_for(out_dir)
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+        try:
+            staging_dir.mkdir(parents=True, exist_ok=False)
+            _write_json_atomic_unlocked(staging_dir / "manifest.json", manifest_payload)
+            _write_json_atomic_unlocked(staging_dir / "lineage.json", lineage_payload)
+            for source in package_files:
+                relative = source.relative_to(package_dir)
+                _copy_regular_file(source, staging_dir / "package" / relative)
+            package_hashes = _package_hashes_from_stage(staging_dir)
+            report_payload = _canonicalize_report_payload(
+                job,
+                raw_report_payload,
+                manifest_payload,
+                lineage_payload,
+                package_hashes,
+            )
+            _write_json_atomic_unlocked(staging_dir / "report.json", report_payload)
+            hashes_payload = {"algorithm": "sha256", "files": _hash_files(staging_dir)}
+            _write_json_atomic_unlocked(staging_dir / "hashes.json", hashes_payload)
+            os.replace(staging_dir, out_dir)
+            _fsync_directory(out_dir.parent)
+        except Exception:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
     return out_dir
 
 
-def _validate_declared_path(bundle_dir: Path, relative_path: str) -> Path:
-    if "\\" in relative_path:
-        raise BundleError(f"unsafe bundle path uses backslashes: {relative_path}")
-    posix = PurePosixPath(relative_path)
-    if posix.is_absolute() or ".." in posix.parts or "." in posix.parts:
-        raise BundleError(f"unsafe bundle path: {relative_path}")
-    return safe_join(bundle_dir, *posix.parts)
-
-
-def _scan_bundle_files(bundle_dir: Path) -> list[str]:
-    if not bundle_dir.exists() or not bundle_dir.is_dir():
-        return []
-    return [_relative_posix(bundle_dir, path) for path in _iter_tree(bundle_dir)]
-
-
-def _validate_manifest_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> None:
+def _validate_manifest_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> Manifest | None:
     path = bundle_dir / "manifest.json"
     try:
-        Manifest.model_validate(_read_json_unlocked(path))
+        return Manifest.model_validate(_read_json_unlocked(path))
     except FileNotFoundError:
         diagnostics.append(
             error("BUNDLE_MISSING_FILE", "missing manifest.json", where="manifest.json")
@@ -272,109 +414,67 @@ def _validate_manifest_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> 
     except Exception as exc:
         diagnostics.append(
             error(
-                "BUNDLE_INVALID_MANIFEST", f"manifest.json is invalid: {exc}", where="manifest.json"
+                "BUNDLE_INVALID_MANIFEST",
+                f"manifest.json is invalid: {sanitize_text(str(exc))}",
+                where="manifest.json",
             )
         )
+    return None
 
 
-def _validate_report_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> None:
+def _validate_report_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> JsonObject | None:
     path = bundle_dir / "report.json"
     try:
-        payload = _read_json_unlocked(path)
+        payload = _read_json_object(path, label="report")
+        return _validated_report_payload(payload)
     except FileNotFoundError:
         diagnostics.append(error("BUNDLE_MISSING_FILE", "missing report.json", where="report.json"))
-        return
-    except Exception as exc:
+    except BundleError as exc:
         diagnostics.append(
-            error("BUNDLE_INVALID_REPORT", f"report.json is invalid: {exc}", where="report.json")
+            error("BUNDLE_INVALID_REPORT", sanitize_text(str(exc)), where="report.json")
         )
-        return
-    if not isinstance(payload, dict):
-        diagnostics.append(
-            error(
-                "BUNDLE_INVALID_REPORT", "report.json must contain an object", where="report.json"
-            )
-        )
-        return
-    missing = sorted(
-        {"job_id", "manifest", "manifest_hash", "stages", "diagnostics", "lineage", "output_hashes"}
-        - set(payload)
-    )
-    if missing:
-        diagnostics.append(
-            error(
-                "BUNDLE_INVALID_REPORT",
-                f"report.json is missing required keys: {', '.join(missing)}",
-                where="report.json",
-            )
-        )
+    return None
 
 
-def _validate_lineage_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> None:
+def _validate_lineage_file(
+    bundle_dir: Path, diagnostics: list[Diagnostic]
+) -> list[JsonObject] | None:
     path = bundle_dir / "lineage.json"
     try:
-        payload = _read_json_unlocked(path)
+        payload = _read_json_list(path, label="lineage")
+        return _validated_lineage_payload(payload)
     except FileNotFoundError:
         diagnostics.append(
             error("BUNDLE_MISSING_FILE", "missing lineage.json", where="lineage.json")
         )
-        return
+    except BundleError as exc:
+        diagnostics.append(
+            error("BUNDLE_INVALID_LINEAGE", sanitize_text(str(exc)), where="lineage.json")
+        )
     except Exception as exc:
         diagnostics.append(
-            error("BUNDLE_INVALID_LINEAGE", f"lineage.json is invalid: {exc}", where="lineage.json")
-        )
-        return
-    if not isinstance(payload, list):
-        diagnostics.append(
             error(
-                "BUNDLE_INVALID_LINEAGE", "lineage.json must contain an array", where="lineage.json"
+                "BUNDLE_INVALID_LINEAGE",
+                sanitize_text(f"lineage.json is invalid: {exc}"),
+                where="lineage.json",
             )
         )
-        return
-    for index, item in enumerate(payload):
-        try:
-            LineageNode.model_validate(item)
-        except Exception as exc:
-            diagnostics.append(
-                error(
-                    "BUNDLE_INVALID_LINEAGE",
-                    f"lineage entry {index} is invalid: {exc}",
-                    where="lineage.json",
-                )
-            )
+    return None
 
 
-def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
-    diagnostics: list[Diagnostic] = []
-    if not bundle_dir.exists() or not bundle_dir.is_dir():
-        return [
-            error("BUNDLE_MISSING_ROOT", "bundle directory does not exist", where=str(bundle_dir))
-        ]
-
-    _validate_manifest_file(bundle_dir, diagnostics)
-    _validate_report_file(bundle_dir, diagnostics)
-    _validate_lineage_file(bundle_dir, diagnostics)
-
-    hashes_path = bundle_dir / "hashes.json"
+def _validate_hashes_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> JsonObject | None:
+    path = bundle_dir / "hashes.json"
     try:
-        hashes_payload = _read_json_unlocked(hashes_path)
+        payload = _read_json_object(path, label="hashes")
     except FileNotFoundError:
         diagnostics.append(error("BUNDLE_MISSING_FILE", "missing hashes.json", where="hashes.json"))
-        return diagnostics
-    except Exception as exc:
+        return None
+    except BundleError as exc:
         diagnostics.append(
-            error("BUNDLE_INVALID_HASHES", f"hashes.json is invalid: {exc}", where="hashes.json")
+            error("BUNDLE_INVALID_HASHES", sanitize_text(str(exc)), where="hashes.json")
         )
-        return diagnostics
-
-    if not isinstance(hashes_payload, dict):
-        diagnostics.append(
-            error(
-                "BUNDLE_INVALID_HASHES", "hashes.json must contain an object", where="hashes.json"
-            )
-        )
-        return diagnostics
-    if hashes_payload.get("algorithm") != "sha256":
+        return None
+    if payload.get("algorithm") != "sha256":
         diagnostics.append(
             error(
                 "BUNDLE_INVALID_HASHES",
@@ -382,8 +482,7 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
                 where="hashes.json",
             )
         )
-    declared = hashes_payload.get("files")
-    if not isinstance(declared, dict):
+    if not isinstance(payload.get("files"), dict):
         diagnostics.append(
             error(
                 "BUNDLE_INVALID_HASHES",
@@ -391,17 +490,64 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
                 where="hashes.json",
             )
         )
+        return None
+    return payload
+
+
+def _append_casefold_collision_diagnostics(
+    collisions: dict[str, list[str]], diagnostics: list[Diagnostic]
+) -> set[str]:
+    duplicates: set[str] = set()
+    for paths in collisions.values():
+        sorted_paths = sorted(paths)
+        duplicates.update(sorted_paths)
+        diagnostics.append(
+            error(
+                "BUNDLE_UNSAFE_PATH",
+                f"casefold collision in bundle paths: {', '.join(sorted_paths)}",
+                where=sorted_paths[-1],
+            )
+        )
+    return duplicates
+
+
+def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
+    diagnostics: list[Diagnostic] = []
+    if not bundle_dir.exists() or not bundle_dir.is_dir():
+        return [
+            error(
+                "BUNDLE_MISSING_ROOT",
+                "bundle directory does not exist",
+                where=sanitize_path(bundle_dir.name or "bundle"),
+            )
+        ]
+
+    manifest = _validate_manifest_file(bundle_dir, diagnostics)
+    report = _validate_report_file(bundle_dir, diagnostics)
+    lineage = _validate_lineage_file(bundle_dir, diagnostics)
+    hashes_payload = _validate_hashes_file(bundle_dir, diagnostics)
+    if hashes_payload is None:
         return diagnostics
 
-    actual_files: set[str]
+    declared = hashes_payload.get("files")
+    if not isinstance(declared, dict):
+        return diagnostics
+
     try:
-        actual_files = set(_scan_bundle_files(bundle_dir))
+        actual_file_list = _scan_bundle_files(bundle_dir)
     except BundleError as exc:
-        diagnostics.append(error("BUNDLE_UNSAFE_PATH", str(exc), where="bundle"))
+        diagnostics.append(error("BUNDLE_UNSAFE_PATH", sanitize_text(str(exc)), where="bundle"))
         return diagnostics
-    expected_files = set(declared) | {"hashes.json"}
+    actual_files = set(actual_file_list)
+    skipped_declared = _append_casefold_collision_diagnostics(
+        _casefold_collisions(cast(list[str], [key for key in declared if isinstance(key, str)])),
+        diagnostics,
+    )
+    _append_casefold_collision_diagnostics(_casefold_collisions(actual_file_list), diagnostics)
 
-    for relative_path, expected_hash in declared.items():
+    expected_files = {"hashes.json"}
+    package_hashes: dict[str, str] = {}
+    for relative_path, expected_hash in sorted(declared.items(), key=lambda item: str(item[0])):
         if not isinstance(relative_path, str) or not isinstance(expected_hash, str):
             diagnostics.append(
                 error(
@@ -410,6 +556,8 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
                     where="hashes.json",
                 )
             )
+            continue
+        if relative_path in skipped_declared:
             continue
         if not _HASH_RE.fullmatch(expected_hash):
             diagnostics.append(
@@ -421,16 +569,25 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
             )
             continue
         try:
-            target = _validate_declared_path(bundle_dir, relative_path)
+            normalized_path, target = _validated_declared_path(bundle_dir, relative_path)
         except BundleError as exc:
-            diagnostics.append(error("BUNDLE_UNSAFE_PATH", str(exc), where=relative_path))
+            diagnostics.append(
+                error("BUNDLE_UNSAFE_PATH", sanitize_text(str(exc)), where=relative_path)
+            )
             continue
+        except PathEscapeError as exc:
+            diagnostics.append(
+                error("BUNDLE_UNSAFE_PATH", sanitize_text(str(exc)), where=relative_path)
+            )
+            continue
+
+        expected_files.add(normalized_path)
         if not target.exists():
             diagnostics.append(
                 error(
                     "BUNDLE_MISSING_FILE",
-                    f"declared file is missing: {relative_path}",
-                    where=relative_path,
+                    f"declared file is missing: {normalized_path}",
+                    where=normalized_path,
                 )
             )
             continue
@@ -438,8 +595,8 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
             diagnostics.append(
                 error(
                     "BUNDLE_UNSAFE_PATH",
-                    f"declared file is unsafe: {relative_path}",
-                    where=relative_path,
+                    f"declared file is unsafe: {normalized_path}",
+                    where=normalized_path,
                 )
             )
             continue
@@ -447,8 +604,8 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
             diagnostics.append(
                 error(
                     "BUNDLE_UNSAFE_PATH",
-                    f"declared file is hard-linked: {relative_path}",
-                    where=relative_path,
+                    f"declared file is hard-linked: {normalized_path}",
+                    where=normalized_path,
                 )
             )
             continue
@@ -458,12 +615,13 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
                 error(
                     "BUNDLE_HASH_MISMATCH",
                     f"declared sha256 {expected_hash} does not match actual {actual_hash}",
-                    where=relative_path,
+                    where=normalized_path,
                 )
             )
+        if normalized_path.startswith("package/"):
+            package_hashes[normalized_path] = expected_hash
 
-    extra_files = sorted(actual_files - expected_files)
-    for relative_path in extra_files:
+    for relative_path in sorted(actual_files - expected_files):
         diagnostics.append(
             error(
                 "BUNDLE_EXTRA_FILE",
@@ -472,8 +630,7 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
             )
         )
 
-    missing_required = sorted(_REQUIRED_BUNDLE_FILES - actual_files)
-    for relative_path in missing_required:
+    for relative_path in sorted(_REQUIRED_BUNDLE_FILES - actual_files):
         diagnostics.append(
             error(
                 "BUNDLE_MISSING_FILE",
@@ -481,6 +638,40 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
                 where=relative_path,
             )
         )
+
+    if manifest is not None and report is not None and lineage is not None:
+        expected_manifest_hash = manifest.content_hash()
+        if report.get("manifest_hash") != expected_manifest_hash:
+            diagnostics.append(
+                error(
+                    "BUNDLE_INCONSISTENT_MANIFEST_HASH",
+                    "report.manifest_hash does not match manifest.json",
+                    where="report.json",
+                )
+            )
+
+        report_lineage = _as_object_list(report["lineage"], label="report.lineage")
+        if report_lineage != lineage:
+            diagnostics.append(
+                error(
+                    "BUNDLE_INCONSISTENT_LINEAGE",
+                    "report.lineage does not match lineage.json",
+                    where="report.json",
+                )
+            )
+
+        report_output_hashes = sorted(
+            _as_string_list(report["output_hashes"], label="report.output_hashes")
+        )
+        expected_output_hashes = _report_output_hashes(package_hashes.values(), lineage)
+        if report_output_hashes != expected_output_hashes:
+            diagnostics.append(
+                error(
+                    "BUNDLE_INCONSISTENT_OUTPUT_HASHES",
+                    "report.output_hashes does not match package and lineage hashes",
+                    where="report.json",
+                )
+            )
 
     return diagnostics
 
@@ -506,8 +697,8 @@ def febuilder_compat_report(diags: Iterable[Diagnostic]) -> dict[str, object]:
             {
                 "code": diagnostic.code,
                 "severity": diagnostic.severity.value,
-                "message": _sanitize_string(diagnostic.message),
-                "where": _sanitize_string(diagnostic.where) if diagnostic.where else None,
+                "message": sanitize_text(diagnostic.message),
+                "where": sanitize_path(diagnostic.where) if diagnostic.where else None,
             }
             for diagnostic in diagnostics
         ],

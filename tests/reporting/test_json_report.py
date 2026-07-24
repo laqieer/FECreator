@@ -87,6 +87,7 @@ def test_build_report_contains_manifest_hash_stages_lineage_and_output_hashes() 
     assert report["manifest_hash"] == _job().manifest.content_hash()
     assert [stage["stage"] for stage in report["stages"]] == ["assemble", "validate"]
     assert report["stages"][0]["artifacts"][0]["path"] == "hero.png"
+    assert report["stages"][1]["artifacts"][0]["path"] == "package/hero.png"
     assert report["diagnostics"][0]["where"] == "hero.png"
     assert report["lineage"][0]["asset_id"] == "asset-a"
     assert report["output_hashes"] == sorted(
@@ -104,21 +105,38 @@ def test_build_report_refuses_secret_key_names_and_redacts_nested_strings() -> N
         build_report(_job(params={"api_key": "sk-xyz"}), [], [])
 
     report = build_report(
-        _job(params={"note": "token=abc"}),
-        [_stage("export", path="package\\hero.png", secret_value="Bearer sk-123")],
+        _job(params={"note": "keep sk-live-abc123456789 and ghp_abcdefghijklmnopqrstuvwxyz123456"}),
+        [
+            _stage(
+                "export",
+                path="package\\hero.png",
+                secret_value=(
+                    "AKIAABCDEFGHIJKLMNOP eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.sigabcdefghi"
+                ),
+            )
+        ],
         [
             _lineage(
                 "asset-a",
-                prompt="https://example.test/out.png?signature=secret",
+                prompt=(
+                    "read C:\\secret\\nested\\hero.png and /srv/private/out.png "
+                    "before using signature=secret"
+                ),
                 created_at="2026-07-24T00:02:00+00:00",
             )
         ],
     )
 
     payload = json.dumps(report, sort_keys=True)
-    assert "sk-123" not in payload
+    assert "sk-live-abc123456789" not in payload
+    assert "ghp_abcdefghijklmnopqrstuvwxyz123456" not in payload
+    assert "AKIAABCDEFGHIJKLMNOP" not in payload
+    assert "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.sigabcdefghi" not in payload
     assert "signature=secret" not in payload
-    assert "token=abc" not in payload
+    assert "C:\\secret\\nested\\hero.png" not in payload
+    assert "/srv/private/out.png" not in payload
+    assert "package\\hero.png" not in payload
+    assert "package/hero.png" in payload
     assert "***" in payload
 
 
