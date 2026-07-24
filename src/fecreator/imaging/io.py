@@ -109,7 +109,13 @@ def _png_chunk(tag: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
 
 
-def _chunks(path: Path, max_file_bytes: int = ResourceBudget().max_file_bytes) -> Iterator[tuple[str, bytes]]:
+# Module-level default avoids a B008 default-arg function call.
+_DEFAULT_MAX_FILE_BYTES: int = ResourceBudget().max_file_bytes
+
+
+def _chunks(
+    path: Path, max_file_bytes: int = _DEFAULT_MAX_FILE_BYTES
+) -> Iterator[tuple[str, bytes]]:
     """Yield (chunk_type, chunk_data) pairs using streaming reads with byte limits.
 
     Validates PNG signature, rejects truncated chunks, enforces per-chunk and
@@ -130,7 +136,9 @@ def _chunks(path: Path, max_file_bytes: int = ResourceBudget().max_file_bytes) -
                 raise ValueError(f"truncated PNG chunk length field in {path.name!r}")
             total_read += 4
             if total_read > max_file_bytes:
-                raise ImageBudgetError(f"PNG file {path.name!r} exceeds {max_file_bytes}-byte limit")
+                raise ImageBudgetError(
+                    f"PNG file {path.name!r} exceeds {max_file_bytes}-byte limit"
+                )
 
             (chunk_len,) = struct.unpack(">I", len_bytes)
 
@@ -201,7 +209,9 @@ def is_indexed_png(path: Path, budget: ResourceBudget | None = None) -> bool:
     return False
 
 
-def read_png_palette(path: Path, budget: ResourceBudget | None = None) -> list[tuple[int, int, int]]:
+def read_png_palette(
+    path: Path, budget: ResourceBudget | None = None
+) -> list[tuple[int, int, int]]:
     max_bytes = (budget or ResourceBudget()).max_file_bytes
     for ctype, body in _chunks(path, max_bytes):
         if ctype == "PLTE":

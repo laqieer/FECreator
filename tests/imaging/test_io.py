@@ -102,6 +102,7 @@ def test_atomic_write_preserves_original_on_bad_dtype(tmp_path):
 
 def _make_raw_chunk(tag: bytes, data: bytes) -> bytes:
     import zlib
+
     crc = zlib.crc32(tag + data) & 0xFFFFFFFF
     return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
 

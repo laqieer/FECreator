@@ -56,9 +56,8 @@ def _finalize(
     """Insert locked colours, dedup, validate, then trim to exactly k entries."""
     if locked:
         # Count unique locked colours *before* merging — determines minimum palette size.
-        locked_set: set[tuple[int, int, int]] = set()
-        for c in locked:
-            locked_set.add(tuple(int(x) for x in c))
+        # Use explicit (r, g, b) construction so Python ints are used for hashing.
+        locked_set: set[tuple[int, int, int]] = {(int(c[0]), int(c[1]), int(c[2])) for c in locked}
         if len(locked_set) > k:
             raise QuantizeError(
                 f"{len(locked_set)} unique locked colours exceed k={k}; "
