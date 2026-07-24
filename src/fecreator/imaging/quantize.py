@@ -6,10 +6,6 @@ from collections.abc import Sequence
 import cv2
 import numpy as np
 
-# Chunk size for memory-bounded nearest-palette mapping:
-# 8192 pixels × 256 palette entries × 3 channels × 4 bytes ≈ 25 MB peak per chunk.
-_MAP_CHUNK = 8192
-
 # Protect the process-global cv2 RNG from concurrent access.
 _KMEANS_LOCK = threading.Lock()
 
@@ -30,20 +26,19 @@ def _validate_inputs(rgb: np.ndarray, k: int) -> int:
 
 
 def map_to_palette(rgb: np.ndarray, palette: np.ndarray) -> np.ndarray:
-    """Assign each pixel to its nearest palette entry using chunked computation.
+    """Assign each pixel to its nearest palette entry.
 
-    Uses int32 accumulation per palette colour (O(N×P) time, O(N) peak memory)
-    so the worst-case allocation is bounded regardless of palette size.
-    Ties broken toward the lower-index entry (stable argmin).
+    Iterates over palette entries one at a time (O(N×P) time, O(N) peak
+    memory) so peak allocation is bounded regardless of palette or image
+    size.  Ties break toward the lower-index entry (strict ``<`` comparison).
+    Returns an int32 array shaped (H, W).
     """
     flat = rgb.reshape(-1, 3).astype(np.int32)
     n = len(flat)
-    p = len(palette)
     pal = palette.astype(np.int32)
-    # best[i] = (best_dist², best_idx) — initialise with first palette entry
     best_dist = np.full(n, np.iinfo(np.int64).max, dtype=np.int64)
     best_idx = np.zeros(n, dtype=np.int32)
-    for pi in range(p):
+    for pi in range(len(pal)):
         diff = flat - pal[pi]  # (N, 3) int32
         d = np.einsum("ij,ij->i", diff, diff).astype(np.int64)
         mask = d < best_dist  # strict < → lower index wins on tie
@@ -58,9 +53,18 @@ def _finalize(
     locked: Sequence[tuple[int, int, int]],
     k: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Insert locked colours, dedup, then trim to exactly k entries."""
+    """Insert locked colours, dedup, validate, then trim to exactly k entries."""
     if locked:
-        locked_arr = np.array(locked, dtype=np.uint8)
+        # Count unique locked colours *before* merging — determines minimum palette size.
+        locked_set: set[tuple[int, int, int]] = set()
+        for c in locked:
+            locked_set.add(tuple(int(x) for x in c))
+        if len(locked_set) > k:
+            raise QuantizeError(
+                f"{len(locked_set)} unique locked colours exceed k={k}; "
+                "cannot satisfy all locked-colour constraints"
+            )
+        locked_arr = np.array(list(locked_set), dtype=np.uint8)
         palette = np.vstack([locked_arr, palette])
     # Stable dedup: keep first occurrence of each unique row
     _, unique = np.unique(palette, axis=0, return_index=True)

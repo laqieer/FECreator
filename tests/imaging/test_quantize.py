@@ -142,3 +142,28 @@ def test_map_to_palette_stable_tie_breaking():
     img = np.array([[[128, 128, 128]]], dtype=np.uint8)
     idx = map_to_palette(img, palette)
     assert idx[0, 0] == 0  # lower index wins on tie
+
+
+# --- Fix 3: locked colors exceeding k must fail closed ---
+
+
+def test_locked_unique_exceed_k_raises():
+    """If the number of unique locked colors > k, QuantizeError must be raised."""
+    img = _three_color_image()  # 3 distinct colours
+    # k=2 but 3 distinct locked colours → impossible; must raise, not silently drop
+    with pytest.raises(QuantizeError, match="locked"):
+        quantize_median_cut(img, 2, locked=[(200, 0, 0), (0, 200, 0), (0, 0, 200)])
+
+
+def test_locked_unique_exceed_k_kmeans_raises():
+    img = _three_color_image()
+    with pytest.raises(QuantizeError, match="locked"):
+        quantize_kmeans_lab(img, 2, locked=[(200, 0, 0), (0, 200, 0), (0, 0, 200)])
+
+
+def test_locked_duplicate_does_not_raise():
+    """Duplicate locked colors count once; should not raise if unique count <= k."""
+    img = _three_color_image()
+    # Same color twice = 1 unique locked; k=2 is fine
+    _, pal = quantize_median_cut(img, 2, locked=[(200, 0, 0), (200, 0, 0)])
+    assert len(pal) == 2
