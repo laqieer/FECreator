@@ -61,7 +61,7 @@ class CommandProvider:
                         "PROVIDER_TIMEOUT",
                         (
                             f"provider {self.id} timed out after {self._timeout:.3f}s"
-                            f"{_diagnostic_suffix(exc.stderr)}"
+                            f"{_diagnostic_suffix(_coerce_text(exc.stderr))}"
                         ),
                     ),
                 ),
@@ -181,3 +181,9 @@ def _artifact_from_mapping(workspace: Path, artifact: Mapping[str, str]) -> Arti
 
 def _optional_string(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _coerce_text(value: str | bytes | None) -> str | None:
+    if value is None or isinstance(value, str):
+        return value
+    return value.decode("utf-8", errors="replace")

@@ -17,7 +17,7 @@ from fecreator.providers.base import (
 
 
 class McpTransport(Protocol):
-    def call_tool(self, name: str, args: dict[str, object]) -> dict[str, object]: ...
+    def call_tool(self, name: str, args: Mapping[str, object]) -> dict[str, object]: ...
 
 
 class McpClientProvider:

@@ -9,7 +9,6 @@ from fecreator.contracts.capabilities import Capability, CapabilitySet
 from fecreator.providers.base import GenRequest, ProviderRefusal
 from fecreator.providers.command import CommandProvider
 
-
 PYTHON = sys.executable
 CAPABILITIES = CapabilitySet(capabilities=frozenset({Capability.TEXT_TO_IMAGE}))
 
