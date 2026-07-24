@@ -52,6 +52,7 @@ def test_fill_and_morph_shapes():
 
 # --- M-2: channel validation ---
 
+
 def test_chroma_key_non_rgb_raises():
     rgba = np.zeros((4, 4, 4), dtype=np.uint8)
     with pytest.raises(ValueError, match="channel"):
@@ -65,6 +66,7 @@ def test_background_mask_non_rgb_raises():
 
 
 # --- M-4: morphology radius validation ---
+
 
 def test_close_mask_zero_radius_raises():
     mask = np.zeros((4, 4), dtype=bool)

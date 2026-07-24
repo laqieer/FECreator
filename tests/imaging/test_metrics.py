@@ -41,6 +41,7 @@ def test_protected_region_diff_detects_change():
 
 # --- I-6: shape validation, out-of-bounds regions ---
 
+
 def test_protected_region_diff_mismatched_shapes_raises():
     a = np.zeros((8, 8, 3), dtype=np.uint8)
     b = np.zeros((4, 8, 3), dtype=np.uint8)
@@ -71,10 +72,11 @@ def test_protected_region_diff_no_nan():
     b = np.full((4, 4, 3), 255, dtype=np.uint8)
     regions = (Region(x=0, y=0, w=4, h=4, label="all"),)
     result = protected_region_diff(a, b, regions)
-    assert not (result != result)  # NaN check
+    assert result == result  # NaN guard: float('nan') == float('nan') is False
 
 
 # --- M-3: empty palettes / mismatched shapes ---
+
 
 def test_palette_distance_empty_a_raises():
     a = np.zeros((0, 3), dtype=np.uint8)

@@ -26,6 +26,7 @@ def test_unknown_mode_type_rejected():
 
 # --- I-4: grid modes fail closed; size validation ---
 
+
 def test_pseudo_pixel_grid_mode_raises_not_implemented():
     src = np.zeros((8, 8, 3), dtype=np.uint8)
     with pytest.raises(NotImplementedError):

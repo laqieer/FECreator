@@ -49,6 +49,7 @@ def test_indexed_roundtrip_and_facts(tmp_path):
 
 # --- I-2: load_indexed budget enforcement ---
 
+
 def test_load_indexed_budget_enforced(tmp_path):
     indices = np.zeros((100, 100), dtype=np.uint8)
     palette = np.array([(0, 0, 0)], dtype=np.uint8)
@@ -59,6 +60,7 @@ def test_load_indexed_budget_enforced(tmp_path):
 
 
 # --- I-7: save_indexed_png validation ---
+
 
 def test_save_indexed_palette_too_large_raises(tmp_path):
     indices = np.zeros((2, 2), dtype=np.uint8)
@@ -87,6 +89,6 @@ def test_atomic_write_preserves_original_on_bad_dtype(tmp_path):
     rgb = np.zeros((2, 2, 3), dtype=np.uint8)
     save_png(p, rgb)
     original = p.read_bytes()
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         save_png(p, np.zeros((2, 2, 4), dtype=np.uint8))  # wrong channels
     assert p.read_bytes() == original  # file unchanged

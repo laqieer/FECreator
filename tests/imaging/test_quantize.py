@@ -48,6 +48,7 @@ def test_map_to_palette_nearest():
 
 # --- C-1: median_cut termination ---
 
+
 def test_median_cut_k1_single_pixel_terminates():
     """k=1 on a 1-pixel image must terminate and return one palette entry."""
     img = np.array([[[50, 100, 150]]], dtype=np.uint8)
@@ -93,6 +94,7 @@ def test_palette_does_not_exceed_k_after_locked():
 
 # --- C-2: chunked map_to_palette (memory-safe large case) ---
 
+
 def test_map_to_palette_large_no_oom():
     """1000x1000 image with 256-entry palette must complete without OOM."""
     rng = np.random.default_rng(42)
@@ -104,6 +106,7 @@ def test_map_to_palette_large_no_oom():
 
 
 # --- I-3: kmeans concurrency ---
+
 
 def test_kmeans_concurrent_same_seed_gives_same_result():
     """Concurrent calls with the same seed must return identical palettes."""
@@ -132,10 +135,10 @@ def test_kmeans_concurrent_same_seed_gives_same_result():
 
 # --- M-5: map_to_palette index dtype (palette > 256) ---
 
+
 def test_map_to_palette_stable_tie_breaking():
     """Ties must break toward the lower-index palette entry (stable argmin)."""
     palette = np.array([(128, 128, 128), (128, 128, 128)], dtype=np.uint8)
     img = np.array([[[128, 128, 128]]], dtype=np.uint8)
     idx = map_to_palette(img, palette)
     assert idx[0, 0] == 0  # lower index wins on tie
-

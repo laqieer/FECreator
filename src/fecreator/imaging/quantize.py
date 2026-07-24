@@ -117,4 +117,3 @@ def quantize_median_cut(
         boxes = [b for b in boxes if len(b)]
     palette = np.array([b[len(b) // 2] for b in boxes], dtype=np.uint8)
     return _finalize(rgb, palette, locked, k)
-

@@ -24,6 +24,7 @@ def test_low_confidence_raises_on_gradient():
 
 # --- M-1: grid origin always 0 (detection not implemented) ---
 
+
 def test_grid_origin_always_zero():
     """Grid origin detection is not implemented; fields are documented as 0."""
     est = detect_grid(_blocky(4))
@@ -31,6 +32,7 @@ def test_grid_origin_always_zero():
 
 
 # --- M-2: non-RGB input rejected ---
+
 
 def test_detect_grid_grayscale_raises():
     gray = np.zeros((8, 8), dtype=np.uint8)

@@ -7,9 +7,7 @@ from fecreator.imaging.morphology import connected_components
 
 def _require_3channel(rgb: np.ndarray, fn: str) -> None:
     if rgb.ndim != 3 or rgb.shape[2] != 3:
-        raise ValueError(
-            f"{fn}: expected (H, W, 3) 3-channel RGB array, got shape {rgb.shape}"
-        )
+        raise ValueError(f"{fn}: expected (H, W, 3) 3-channel RGB array, got shape {rgb.shape}")
 
 
 def chroma_key(rgb: np.ndarray, key_rgb: tuple[int, int, int], tol: int = 24) -> np.ndarray:

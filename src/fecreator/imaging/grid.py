@@ -19,9 +19,7 @@ class LowConfidenceGridError(Exception):
 
 def _require_rgb(rgb: np.ndarray) -> None:
     if rgb.ndim != 3 or rgb.shape[2] != 3:
-        raise ValueError(
-            f"expected (H, W, 3) 3-channel RGB array, got shape {rgb.shape}"
-        )
+        raise ValueError(f"expected (H, W, 3) 3-channel RGB array, got shape {rgb.shape}")
 
 
 def _axis_period(gray: np.ndarray, axis: int) -> tuple[int, float]:

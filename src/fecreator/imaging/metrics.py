@@ -37,9 +37,7 @@ def masked_perceptual_diff(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> fl
 def _validate_region(r: Region, h: int, w: int) -> None:
     """Raise ValueError if region is fully or partially outside (h, w) bounds."""
     if r.x >= w or r.y >= h or r.x + r.w > w or r.y + r.h > h:
-        raise ValueError(
-            f"region ({r.x},{r.y},{r.w},{r.h}) is out-of-bounds for image ({h},{w})"
-        )
+        raise ValueError(f"region ({r.x},{r.y},{r.w},{r.h}) is out-of-bounds for image ({h},{w})")
 
 
 def protected_region_diff(a: np.ndarray, b: np.ndarray, regions: Sequence[Region]) -> float:
