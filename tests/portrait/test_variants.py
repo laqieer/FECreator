@@ -117,3 +117,34 @@ def test_mixed_valid_and_oob_regions() -> None:
     codes = {d.code for d in diags}
     assert "PROTECTED_REGION_CHANGED" in codes
     assert "REGION_OUT_OF_BOUNDS" in codes
+
+
+# ---------------------------------------------------------------------------
+# NEW (low findings): edited_rgb shape check; narrow OOB catch
+# ---------------------------------------------------------------------------
+
+
+def test_edited_rgb_height_mismatch_raises_value_error() -> None:
+    """edited_rgb must have the same shape as base_rgb."""
+    base = np.zeros((80, 96, 3), dtype=np.uint8)
+    edited_wrong = np.zeros((40, 96, 3), dtype=np.uint8)
+    mask = np.zeros((80, 96), dtype=bool)
+    with pytest.raises(ValueError, match="edited_rgb"):
+        apply_masked_edit(base, edited_wrong, mask)
+
+
+def test_edited_rgb_channel_mismatch_raises_value_error() -> None:
+    base = np.zeros((80, 96, 3), dtype=np.uint8)
+    edited_wrong = np.zeros((80, 96, 4), dtype=np.uint8)  # wrong channels
+    mask = np.zeros((80, 96), dtype=bool)
+    with pytest.raises(ValueError, match="edited_rgb"):
+        apply_masked_edit(base, edited_wrong, mask)
+
+
+def test_shape_mismatch_between_base_and_result_propagates() -> None:
+    """An image-shape mismatch in check_protected_regions must raise, not become OOB diagnostic."""
+    base = np.zeros((80, 96, 3), dtype=np.uint8)
+    wrong_result = np.zeros((40, 96, 3), dtype=np.uint8)  # different H
+    valid_region = (Region(x=0, y=0, w=10, h=10, label="face"),)
+    with pytest.raises(ValueError, match="shape mismatch"):
+        check_protected_regions(base, wrong_result, valid_region)
