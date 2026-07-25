@@ -14,6 +14,7 @@ from fecreator.contracts.manifest import Manifest
 from fecreator.core.paths import PathEscapeError, normalize_storage_id
 from fecreator.core.registry import UnknownIdError
 from fecreator.interfaces.static import mount_static
+from fecreator.interfaces.websocket import register_ws
 from fecreator.jobs.model import Job
 from fecreator.reporting.sanitize import JsonObject, as_object, sanitize_json
 
@@ -122,5 +123,6 @@ def create_api(app: FeCreatorApp) -> FastAPI:
         return _diagnostics_payload(diagnostics)
 
     api.include_router(router)
+    register_ws(api, app)
     mount_static(api)
     return api
