@@ -49,6 +49,64 @@ def _replace_placeholders(command: str) -> list[str]:
     return [PLACEHOLDER_VALUES.get(token, token) for token in tokens[1:]]
 
 
+def _documented_workflow_statuses(path: Path) -> tuple[set[str], set[str]]:
+    text = _read(path)
+    executable = re.search(
+        r"^- Executable today:\s*(.+(?:\n(?!- ).+)*)$",
+        text,
+        re.MULTILINE,
+    )
+    unavailable = re.search(
+        r"^- Unavailable until build orchestration exists:\s*(.+(?:\n(?!- ).+)*)$",
+        text,
+        re.MULTILINE,
+    )
+    assert executable is not None, f"missing executable workflow status in {path}"
+    assert unavailable is not None, f"missing unavailable workflow status in {path}"
+    return (
+        set(re.findall(r'"([^"]+)"', executable.group(1))),
+        set(re.findall(r'"([^"]+)"', unavailable.group(1))),
+    )
+
+
+def _implemented_build_workflows(tmp_path: Path, monkeypatch) -> set[str]:
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+    from fecreator.contracts.capabilities import CapabilitySet
+    from fecreator.contracts.manifest import Manifest
+    from fecreator.core.pipeline import PipelineContext
+    from fecreator.jobs.store import JobStore
+
+    class _Provider:
+        id = "stub"
+        capabilities = CapabilitySet(capabilities=frozenset())
+
+    monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda _provider_id: _Provider())
+    plugin = PortraitPlugin()
+    implemented: set[str] = set()
+
+    for workflow in sorted(WORKFLOWS):
+        job = JobStore(tmp_path).create(
+            Manifest(
+                asset_type="portrait",
+                target_spec="fe-gba-portrait-standard",
+                workflow=workflow,
+                provider="stub",
+            )
+        )
+        ctx = PipelineContext(job_id=job.id, workspace=tmp_path / "jobs" / job.id)
+        try:
+            plugin.build(ctx, job.manifest)
+        except NotImplementedError:
+            continue
+        except Exception:
+            implemented.add(workflow)
+        else:
+            implemented.add(workflow)
+
+    return implemented
+
+
 def test_skill_files_exist() -> None:
     for path in SKILL_FILES:
         assert path.is_file(), f"missing skill file: {path}"
@@ -106,6 +164,25 @@ def test_skill_stays_within_v1_portrait_scope_and_guardrails() -> None:
     assert "never edits pixels" in skill_text.lower()
 
 
+def test_skill_docs_match_currently_implemented_portrait_workflows(
+    tmp_path: Path, monkeypatch
+) -> None:
+    actual_executable = _implemented_build_workflows(tmp_path, monkeypatch)
+    actual_unavailable = WORKFLOWS - actual_executable
+    neutral_text = _normalized(PORTRAIT_NEUTRAL)
+
+    for path in (SKILL, CAPABILITY_GAPS):
+        documented_executable, documented_unavailable = _documented_workflow_statuses(path)
+        assert documented_executable == actual_executable
+        assert documented_unavailable == actual_unavailable
+
+    assert "currently implemented build workflow" in neutral_text.lower()
+    assert '"text_to_portrait"' in neutral_text
+    for workflow in sorted(actual_unavailable):
+        assert workflow in neutral_text
+    assert "unavailable until build orchestration exists" in neutral_text.lower()
+
+
 def test_submit_sources_docs_limit_source_handoff_to_manual_flows() -> None:
     skill_text = _normalized(SKILL)
     gaps_text = _normalized(CAPABILITY_GAPS)
@@ -116,12 +193,23 @@ def test_submit_sources_docs_limit_source_handoff_to_manual_flows() -> None:
     assert "source handoff" in skill_text.lower()
     assert "manual provider" in gaps_text.lower()
     assert "submit_sources" in gaps_text
+    assert "create the job with provider `manual` before `plan_sources` or `submit_sources`" in (
+        skill_text.lower()
+    )
+    assert "create the job with provider `manual` before `plan_sources` or `submit_sources`" in (
+        gaps_text.lower()
+    )
+    assert "create the job with provider `manual` before `plan_sources` or `submit_sources`" in (
+        interfaces_text.lower()
+    )
     assert "`submit_sources`" not in neutral_text
     assert "submit_sources is the explicit source-handoff tool for manual/agent-owned files" in (
         interfaces_text.lower()
     )
     assert "gather or generate the requested sources, `submit_sources`" not in skill_text
     assert "`submit_sources` (for agent-owned image tools)" not in skill_text
+    assert "transition the job into that handoff flow" not in skill_text.lower()
+    assert "explicitly transition into it" not in gaps_text.lower()
 
 
 def test_skill_docs_separate_job_build_from_standalone_validation() -> None:

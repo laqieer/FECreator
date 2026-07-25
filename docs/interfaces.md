@@ -63,7 +63,8 @@ validation, approvals, lineage, or job lookup safeguards; it only normalizes ids
 validates manifest input, sanitizes payloads, and forwards to `FeCreatorApp`.
 
 submit_sources is the explicit source-handoff tool for manual/agent-owned files, not a
-required step for providers that generate their own intermediates. build_asset already
-runs target-spec validation for the job result, and validate_asset remains available
-for standalone validation of an existing package directory when the caller already
-knows its path.
+required step for providers that generate their own intermediates. Create the job with
+provider `manual` before `plan_sources` or `submit_sources`; callers cannot flip an
+existing job into manual mode after creation. build_asset already runs target-spec
+validation for the job result, and validate_asset remains available for standalone
+validation of an existing package directory when the caller already knows its path.

@@ -15,8 +15,11 @@ invents missing commands, bypasses review, bypasses validation, or bypasses line
   "fe-gba-portrait-standard".
 - Refuse or redirect requests that treat FECreator as a ROM editor, hosted generation
   service, or non-portrait asset tool.
-- Keep workflows inside the current portrait set: "text_to_portrait",
+- Keep workflow intake vocabulary inside the current portrait set: "text_to_portrait",
   "concept_to_portrait", "expression_refine", and "masked_variant".
+- Executable today: "text_to_portrait".
+- Unavailable until build orchestration exists: "concept_to_portrait",
+  "expression_refine", and "masked_variant".
 
 ## Gather intent first
 
@@ -65,8 +68,8 @@ Use only these MCP tools:
 2. Build a manifest and call `create_job`. For CLI usage, write the same manifest to a
    file and pass it to `fecreator job create --manifest MANIFEST_PATH`.
 3. Use `plan_sources` to inspect the required inputs. Call `submit_sources` only for a
-   manual provider source handoff: choose the manual provider up front or explicitly
-   transition the job into that handoff flow before submitting files.
+   manual provider source handoff: create the job with provider `manual` before
+   `plan_sources` or `submit_sources`.
 4. For providers that generate their own outputs (`fake`, external command, or
    MCP-client), do not insert `submit_sources` as a generic step. `build_asset`
    already performs fail-closed target validation for the job result.

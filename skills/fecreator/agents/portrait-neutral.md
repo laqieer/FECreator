@@ -1,5 +1,9 @@
 # Neutral portrait recipe
 
+This recipe covers the currently implemented build workflow "text_to_portrait".
+"concept_to_portrait", "expression_refine", and "masked_variant" stay unavailable
+until build orchestration exists.
+
 Use this as a thin orchestration pattern for a standard neutral portrait request.
 
 ## Manifest skeleton
@@ -31,9 +35,10 @@ Use this as a thin orchestration pattern for a standard neutral portrait request
 4. This recipe keeps provider `fake`, so stay on MCP and call `build_asset` directly.
    It covers generation, alignment, package export, and fail-closed target validation
    for the job result.
-5. If the work instead needs a human or agent to hand off approved files, switch to a
-   separate manual-provider source-handoff flow rather than treating this fake-provider
-   recipe as a template for file submission.
+5. If the work instead needs a human or agent to hand off approved files, create a
+   separate job with provider `manual` before any source planning or source
+   submission rather than treating this fake-provider recipe as a template for file
+   submission.
 6. Stop on validation errors. Report the diagnostics, keep the review history intact,
    and do not claim the package is ready.
 7. Use `approve_stage` or `reject_stage` for review decisions so approvals and lineage
