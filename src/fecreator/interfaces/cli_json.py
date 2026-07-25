@@ -57,6 +57,8 @@ class JsonCliArgumentParser(argparse.ArgumentParser):
     def _reject_unknown_long_options(self, argv: list[str]) -> None:
         known = self._known_long_options()
         for token in argv:
+            if token == "--":
+                break
             option, _, _value = token.partition("=")
             if option.startswith("--") and option != "--" and option not in known:
                 self.error(f"unrecognized arguments: {option}")

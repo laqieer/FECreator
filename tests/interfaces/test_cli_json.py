@@ -17,6 +17,9 @@ from fecreator.core.config import Settings
 from fecreator.interfaces.cli_json import build_parser, run
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+TASK9_PLAN = (
+    REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-24-fecreator-providers-interfaces.md"
+)
 
 
 def _app(data_root: Path) -> FeCreatorApp:
@@ -165,10 +168,25 @@ def test_build_parser_rejects_abbreviated_options(
     assert f"unrecognized arguments: {flag}" in captured.err
 
 
+def test_build_parser_preserves_end_of_options_for_job_status() -> None:
+    args = build_parser().parse_args(["job", "status", "--", "--abc"])
+
+    assert args.job_id == "--abc"
+
+
 def test_build_parser_help_advertises_version() -> None:
     help_text = build_parser().format_help()
 
     assert "--version" in help_text
+
+
+def test_task9_plan_keeps_reports_out_of_plan_doc() -> None:
+    plan_text = TASK9_PLAN.read_text(encoding="utf-8")
+    task9_start = plan_text.index("## Task 9: JSON CLI")
+    task10_start = plan_text.index("## Task 10: FastAPI HTTP API and static mount", task9_start)
+    task9_section = plan_text[task9_start:task10_start]
+
+    assert "\nReport:\n" not in task9_section
 
 
 def test_main_writes_single_json_newline(
