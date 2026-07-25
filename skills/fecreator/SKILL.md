@@ -64,13 +64,19 @@ Use only these MCP tools:
    concrete enough to write down.
 2. Build a manifest and call `create_job`. For CLI usage, write the same manifest to a
    file and pass it to `fecreator job create --manifest MANIFEST_PATH`.
-3. Use MCP for the full source/build/review flow: `plan_sources`, gather or generate the
-   requested sources, `submit_sources`, `build_asset`, then `validate_asset`.
-4. Read diagnostics and job results exactly as returned. Explain capability gaps or
+3. Use `plan_sources` to inspect the required inputs. Call `submit_sources` only for a
+   manual provider source handoff: choose the manual provider up front or explicitly
+   transition the job into that handoff flow before submitting files.
+4. For providers that generate their own outputs (`fake`, external command, or
+   MCP-client), do not insert `submit_sources` as a generic step. `build_asset`
+   already performs fail-closed target validation for the job result.
+5. Use `validate_asset` only for standalone validation of an existing package
+   directory whose path the caller already knows.
+6. Read diagnostics and job results exactly as returned. Explain capability gaps or
    validation failures instead of inventing a workaround.
-5. Keep the human in the loop for approval. Use `approve_stage` or `reject_stage`
+7. Keep the human in the loop for approval. Use `approve_stage` or `reject_stage`
    instead of silently deciding.
-6. If work should stop, use `cancel_job`. If the agent only needs job readback, use
+8. If work should stop, use `cancel_job`. If the agent only needs job readback, use
    `get_job` or `fecreator job status JOB_ID`.
 
 See `references/capability-gaps.md` for missing-capability handling and CLI/MCP surface

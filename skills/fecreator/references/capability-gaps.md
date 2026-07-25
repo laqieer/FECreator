@@ -24,5 +24,10 @@ cancellation, switch to the MCP surface. Those actions exist only as MCP tools t
 - "masked_variant" requires "masked_edit" and benefits from "background_control".
 
 If a provider refuses because a required capability is missing, do not fake the missing
-step. Choose another configured provider or use the "manual" provider with approved
-source files and the MCP `submit_sources` flow.
+step. Choose another configured provider or use the manual provider with approved source
+files and the MCP `submit_sources` source handoff.
+
+When the human or agent will hand off files, stay in that manual provider flow (or
+explicitly transition into it) before submitting sources. Providers that generate their
+own outputs, such as `fake`, external command, or MCP-client, should go straight to
+`build_asset` instead of treating `submit_sources` as a generic generation step.

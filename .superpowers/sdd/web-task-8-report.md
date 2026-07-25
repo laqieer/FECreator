@@ -27,3 +27,31 @@ Concerns:
 - The JSON CLI still intentionally exposes only discovery, job-create/status, and
   validation commands. The new skill explains that full source planning, submission,
   build, approval, rejection, and cancellation must go through MCP until the CLI grows.
+
+---
+
+## 2026-07-25 documentation findings follow-up
+
+Status: done
+
+Summary:
+- Clarified that `submit_sources` is only for manual-provider or explicit source-handoff
+  flows, not the generic next step after `plan_sources` for generating providers.
+- Removed the misleading automatic `build_asset` → `validate_asset` sequence from the
+  skill docs and documented that `build_asset` already performs fail-closed target
+  validation while `validate_asset` is for a known package directory.
+- Strengthened `tests/integration/test_skills.py` to lock the submit/handoff guidance
+  and the build-versus-standalone-validation distinction across the skill and interface
+  docs.
+
+Verification:
+- Red: `.venv\Scripts\python.exe -m pytest tests\integration\test_skills.py -q`
+- Green: `.venv\Scripts\python.exe -m pytest tests\integration\test_skills.py -q`
+- Final tests: `.venv\Scripts\python.exe -m pytest tests\integration\test_skills.py tests\interfaces\test_cli_json.py tests\interfaces\test_mcp_server.py tests\app\test_app.py::test_submit_sources_copies_files_and_records_event tests\app\test_app.py::test_build_validate_approvals_cancel_and_events -q`
+- Final lint: `.venv\Scripts\python.exe -m ruff check tests\integration\test_skills.py`
+- Final format: `.venv\Scripts\python.exe -m ruff format --check tests\integration\test_skills.py`
+
+Concerns:
+- The JSON CLI still intentionally stops at discovery, job create/status, and
+  standalone validation. Manual file handoff, job builds, approvals, and cancellation
+  remain MCP-only flows for now.

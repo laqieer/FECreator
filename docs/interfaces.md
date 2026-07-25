@@ -61,3 +61,9 @@ tool-specific fields (`asset_ids`, `job`, `source_plan`, `job_result`, `approval
 raw tracebacks or absolute paths. The MCP layer does not add image logic or bypass
 validation, approvals, lineage, or job lookup safeguards; it only normalizes ids,
 validates manifest input, sanitizes payloads, and forwards to `FeCreatorApp`.
+
+submit_sources is the explicit source-handoff tool for manual/agent-owned files, not a
+required step for providers that generate their own intermediates. build_asset already
+runs target-spec validation for the job result, and validate_asset remains available
+for standalone validation of an existing package directory when the caller already
+knows its path.
