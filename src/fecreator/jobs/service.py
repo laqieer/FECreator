@@ -40,40 +40,65 @@ class JobService:
         rollback: TransitionRollbackHook | None = None,
         extra_events: Sequence[PendingEvent] = (),
     ) -> Job:
+        return self.transition_path(
+            job_id,
+            (to,),
+            before_persist=before_persist,
+            rollback=rollback,
+            extra_events=extra_events,
+        )
+
+    def transition_path(
+        self,
+        job_id: str,
+        path: Sequence[JobState],
+        *,
+        before_persist: TransitionPublishHook | None = None,
+        rollback: TransitionRollbackHook | None = None,
+        extra_events: Sequence[PendingEvent] = (),
+    ) -> Job:
         with self._store.locked(job_id):
             job = self._store._load_locked(job_id)
-            if to not in ALLOWED_TRANSITIONS[job.state]:
-                raise InvalidTransitionError(f"{job.state} -> {to} is not allowed")
-
             previous = job.model_copy(deep=True)
             expected_revision = job.revision
-            from_state = job.state
-            job.state = to
+            current_state = job.state
+            transition_events: list[PendingEvent] = []
+            for next_state in path:
+                if next_state is current_state:
+                    continue
+                if next_state not in ALLOWED_TRANSITIONS[current_state]:
+                    raise InvalidTransitionError(f"{current_state} -> {next_state} is not allowed")
+                transition_events.append(
+                    (
+                        "transition",
+                        f"{current_state}->{next_state}",
+                        {"from": current_state.value, "to": next_state.value},
+                    )
+                )
+                current_state = next_state
+
+            if not transition_events:
+                if path:
+                    raise InvalidTransitionError(f"{job.state} -> {job.state} is not allowed")
+                return job
+
             persisted_updated_at = utc_now_iso()
             candidate = job.model_copy(deep=True)
+            candidate.state = current_state
             candidate.revision = expected_revision + 1
             candidate.updated_at = persisted_updated_at
             persisted = False
             try:
                 if before_persist is not None:
                     before_persist(candidate)
+                job.state = current_state
                 self._store._save_locked(
                     job,
                     expected_revision=expected_revision,
                     updated_at=persisted_updated_at,
                 )
                 persisted = True
-                self._events.append_many(
-                    job.id,
-                    (
-                        (
-                            "transition",
-                            f"{from_state}->{to}",
-                            {"from": from_state.value, "to": to.value},
-                        ),
-                        *extra_events,
-                    ),
-                )
+                self._events.append_many(job.id, (*transition_events, *extra_events))
             except Exception as exc:
                 cleanup_error: Exception | None = None
                 if rollback is not None and before_persist is not None:

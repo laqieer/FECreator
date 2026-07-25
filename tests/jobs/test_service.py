@@ -80,6 +80,26 @@ def test_transition_appends_extra_events(data_root) -> None:
     ]
 
 
+def test_transition_path_appends_all_transition_events_atomically(data_root) -> None:
+    service = _service(data_root)
+    job = service.create_job(_manifest())
+
+    updated = service.transition_path(
+        job.id,
+        (JobState.PLANNING, JobState.WAITING_FOR_SOURCES),
+        extra_events=(("sources_submitted", "from staged dir", None),),
+    )
+
+    assert updated.state is JobState.WAITING_FOR_SOURCES
+    assert updated.revision == 2
+    assert [event.kind for event in EventLog(data_root).read(job.id)] == [
+        "created",
+        "transition",
+        "transition",
+        "sources_submitted",
+    ]
+
+
 def test_transition_rolls_back_when_event_append_fails(
     data_root,
     monkeypatch: pytest.MonkeyPatch,
@@ -101,6 +121,34 @@ def test_transition_rolls_back_when_event_append_fails(
     reloaded = JobStore(data_root).load(job.id)
     assert reloaded.state is JobState.CREATED
     assert reloaded.revision == 1
+
+
+def test_transition_path_rolls_back_all_steps_when_event_append_fails(
+    data_root,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(data_root)
+    job = service.create_job(_manifest())
+    original_append_many = service._events.append_many
+
+    def fail_on_target_path(job_id: str, events):
+        if any(event[1] == "planning->waiting_for_sources" for event in events):
+            raise OSError("boom")
+        return original_append_many(job_id, events)
+
+    monkeypatch.setattr(service._events, "append_many", fail_on_target_path)
+
+    with pytest.raises(OSError, match="boom"):
+        service.transition_path(
+            job.id,
+            (JobState.PLANNING, JobState.WAITING_FOR_SOURCES),
+            extra_events=(("sources_submitted", "from staged dir", None),),
+        )
+
+    reloaded = JobStore(data_root).load(job.id)
+    assert reloaded.state is JobState.CREATED
+    assert reloaded.revision == 1
+    assert [event.kind for event in EventLog(data_root).read(job.id)] == ["created"]
 
 
 def test_record_event_rolls_back_published_side_effects_when_event_append_fails(

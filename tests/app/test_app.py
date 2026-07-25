@@ -169,6 +169,35 @@ def test_submit_sources_copies_files_and_records_event(data_root: Path, tmp_path
     assert app.events(job.id)[-1].kind == "sources_submitted"
 
 
+def test_submit_sources_created_path_event_failure_restores_original_snapshot(
+    data_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _plugin = _app(data_root)
+    job = app.create_job(_manifest())
+    original_job = _job_snapshot(app, job.id)
+    original_events = _event_snapshots(app, job.id)
+    incoming = tmp_path / "incoming"
+    _write_png(incoming / "neutral.png")
+    original_append_many = app._service._events.append_many
+
+    def fail_target_transition(job_id: str, events):
+        if any(event[1] == "planning->waiting_for_sources" for event in events):
+            raise OSError("event boom")
+        return original_append_many(job_id, events)
+
+    monkeypatch.setattr(app._service._events, "append_many", fail_target_transition)
+
+    with pytest.raises(OSError, match="event boom"):
+        app.submit_sources(job.id, incoming)
+
+    assert _job_snapshot(app, job.id) == original_job
+    assert _event_snapshots(app, job.id) == original_events
+    assert not (data_root / "jobs" / job.id / "submitted").exists()
+    assert not list((data_root / "jobs" / job.id).glob(".submitted-stage-*"))
+
+
 def test_submit_sources_rejects_unsafe_symlinks_without_replacing_existing_snapshot(
     data_root: Path,
     tmp_path: Path,

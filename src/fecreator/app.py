@@ -150,18 +150,24 @@ class FeCreatorApp:
         extra_events: tuple[PendingEvent, ...] = (),
     ) -> Job:
         job = self._service.resume(job_id)
-        for state in self._transition_steps(job.state, target):
-            if job.state is state:
-                continue
-            is_target_step = state is target
-            job = self._service.transition(
+        steps = self._transition_steps(job.state, target)
+        if not steps:
+            return job
+        if len(steps) == 1:
+            return self._service.transition(
                 job.id,
-                state,
-                before_persist=before_persist if is_target_step else None,
-                rollback=rollback if is_target_step else None,
-                extra_events=extra_events if is_target_step else (),
+                steps[0],
+                before_persist=before_persist,
+                rollback=rollback,
+                extra_events=extra_events,
             )
-        return job
+        return self._service.transition_path(
+            job.id,
+            steps,
+            before_persist=before_persist,
+            rollback=rollback,
+            extra_events=extra_events,
+        )
 
     def _transition_steps(self, current: JobState, target: JobState) -> tuple[JobState, ...]:
         if current is target:
