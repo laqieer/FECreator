@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import fecreator.cli as cli_module
 from fecreator import __version__
 from fecreator.app import FeCreatorApp
 from fecreator.cli import main
@@ -164,6 +165,12 @@ def test_build_parser_rejects_abbreviated_options(
     assert f"unrecognized arguments: {flag}" in captured.err
 
 
+def test_build_parser_help_advertises_version() -> None:
+    help_text = build_parser().format_help()
+
+    assert "--version" in help_text
+
+
 def test_main_writes_single_json_newline(
     data_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -185,6 +192,27 @@ def test_main_version_does_not_require_data_root(
     monkeypatch.delenv("FECREATOR_DATA_ROOT", raising=False)
 
     rc = main(["--version"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.err == ""
+    assert captured.out == f"fecreator {__version__}\n"
+
+
+def test_main_version_does_not_require_settings_or_app_construction(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def _fail_settings() -> object:
+        pytest.fail("settings requested")
+
+    def _fail_app(*_args: object, **_kwargs: object) -> object:
+        pytest.fail("app constructed")
+
+    monkeypatch.setattr(cli_module, "get_settings", _fail_settings)
+    monkeypatch.setattr(cli_module, "FeCreatorApp", _fail_app)
+
+    rc = cli_module.main(["--version"])
 
     captured = capsys.readouterr()
     assert rc == 0

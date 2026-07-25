@@ -8,6 +8,7 @@ from typing import TextIO, TypeAlias, TypeVar, cast, overload
 
 from pydantic import BaseModel, ValidationError
 
+from fecreator import __version__
 from fecreator.app import FeCreatorApp
 from fecreator.contracts.diagnostics import Diagnostic, error, has_errors
 from fecreator.contracts.manifest import Manifest
@@ -177,6 +178,12 @@ def _add_job_parser(subparsers: argparse._SubParsersAction[ParserT]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = JsonCliArgumentParser(prog="fecreator", allow_abbrev=False)
+    parser.add_argument(
+        "--version",
+        action="version",
+        help="show program's version number and exit",
+        version=f"fecreator {__version__}",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     _add_list_parser(subparsers, "list-assets", handler=_run_list_assets)
     _add_list_parser(subparsers, "list-specs", handler=_run_list_specs)

@@ -1298,6 +1298,11 @@ git commit -m "feat: add json cli dispatch over FeCreatorApp
 Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 ```
 
+Report:
+
+- `build_parser().format_help()` now advertises `--version`.
+- `fecreator --version` still short-circuits before settings/app construction and prints `fecreator 0.1.0`.
+
 ---
 
 ## Task 10: FastAPI HTTP API and static mount
