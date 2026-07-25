@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +19,7 @@ from fecreator.jobs.service import InvalidTransitionError, JobService
 from fecreator.jobs.store import JobStore
 from fecreator.lineage.store import LineageStore
 from fecreator.providers.base import GenRequest, GenResponse, ProviderRefusal
+from fecreator.reporting.bundle import verify_bundle
 from fecreator.specs.fire_emblem.gba.portrait_standard.spec import FeGbaPortraitStandard
 
 
@@ -38,6 +41,46 @@ def _portrait_rgb() -> np.ndarray:
 
 def _background_rgb() -> np.ndarray:
     return np.full((80, 96, 3), (0, 248, 0), dtype=np.uint8)
+
+
+@pytest.fixture
+def isolated_app_asset_bootstrap() -> None:
+    import fecreator
+    from fecreator.core.registry import ASSET_REGISTRY, PROVIDER_REGISTRY, SPEC_REGISTRY
+
+    saved_registries = {
+        ASSET_REGISTRY: dict(ASSET_REGISTRY._items),
+        PROVIDER_REGISTRY: dict(PROVIDER_REGISTRY._items),
+        SPEC_REGISTRY: dict(SPEC_REGISTRY._items),
+    }
+    saved_modules = {
+        name: sys.modules.get(name)
+        for name in ("fecreator.assets", "fecreator.app", "fecreator.providers", "fecreator.specs")
+    }
+
+    for registry in saved_registries:
+        registry._items.clear()
+    for name in saved_modules:
+        sys.modules.pop(name, None)
+        if "." in name:
+            _, child = name.split(".", 1)
+            if hasattr(fecreator, child):
+                delattr(fecreator, child)
+    try:
+        yield
+    finally:
+        for registry, items in saved_registries.items():
+            registry._items.clear()
+            registry._items.update(items)
+        for name, module in saved_modules.items():
+            _, child = name.split(".", 1)
+            if module is None:
+                sys.modules.pop(name, None)
+                if hasattr(fecreator, child):
+                    delattr(fecreator, child)
+            else:
+                sys.modules[name] = module
+                setattr(fecreator, child, module)
 
 
 def test_plugin_required_caps() -> None:
@@ -523,23 +566,31 @@ def test_build_from_cancelled_job_preserves_cancelled_state_and_history(data_roo
     assert [event.message for event in EventLog(data_root).read(job.id)] == events_before
 
 
-def test_app_end_to_end(data_root: Path) -> None:
-    from fecreator.core.registry import ASSET_REGISTRY
-
-    saved_items = dict(ASSET_REGISTRY._items)
-    import fecreator.assets  # noqa: F401
-    from fecreator.app import FeCreatorApp
+def test_app_end_to_end(data_root: Path, isolated_app_asset_bootstrap: None) -> None:
     from fecreator.core.config import Settings
 
-    try:
-        app = FeCreatorApp(Settings(data_root=data_root))
-        assert "portrait" in app.list_assets()
-        job = app.create_job(_manifest())
-        result = app.build(job.id)
+    app_module = importlib.import_module("fecreator.app")
+    app = app_module.FeCreatorApp(Settings(data_root=data_root))
 
-        assert result.ok
-        diags = app.validate("fe-gba-portrait-standard", data_root / "jobs" / job.id / "package")
-        assert not has_errors(diags)
-    finally:
-        ASSET_REGISTRY._items.clear()
-        ASSET_REGISTRY._items.update(saved_items)
+    assert "portrait" in app.list_assets()
+    assert "fake" in app.list_providers()
+    assert "fe-gba-portrait-standard" in app.list_specs()
+
+    job = app.create_job(_manifest())
+    result = app.build(job.id)
+    package_dir = data_root / "jobs" / job.id / "package"
+    bundle_dir = data_root / "jobs" / job.id / "bundle"
+
+    assert result.ok is True
+    assert result.lineage_id == job.id
+    assert not has_errors(app.validate("fe-gba-portrait-standard", package_dir))
+    assert LineageStore(data_root).get(job.id).asset_id == job.id
+    assert (data_root / "jobs" / job.id / "report.json").exists()
+    assert (data_root / "jobs" / job.id / "lineage.json").exists()
+    assert (bundle_dir / "manifest.json").exists()
+    assert (bundle_dir / "report.json").exists()
+    assert (bundle_dir / "lineage.json").exists()
+    assert (bundle_dir / "hashes.json").exists()
+    assert (bundle_dir / "package" / "hero.png").exists()
+    assert (bundle_dir / "package" / "hero.pal").exists()
+    assert verify_bundle(bundle_dir) == []

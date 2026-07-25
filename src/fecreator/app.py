@@ -9,6 +9,7 @@ from typing import cast
 
 import fecreator.providers  # noqa: F401
 import fecreator.specs  # noqa: F401
+from fecreator.assets import register_builtin_assets
 from fecreator.assets.base import AssetPlugin, SourcePlan
 from fecreator.contracts.diagnostics import Diagnostic
 from fecreator.contracts.manifest import Manifest
@@ -35,6 +36,7 @@ _SUBMITTED_STAGE_PREFIX = ".submitted-stage-"
 
 class FeCreatorApp:
     def __init__(self, settings: Settings) -> None:
+        register_builtin_assets()
         self._settings = settings
         root = settings.data_root
         self._jobs = JobStore(root)
