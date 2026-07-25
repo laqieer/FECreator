@@ -49,8 +49,12 @@ without moving application logic out of `FeCreatorApp`.
 - `reject_stage` → `FeCreatorApp.reject()`
 - `cancel_job` → `FeCreatorApp.cancel()`
 
-Handlers return JSON-safe payloads only. Expected/domain failures are returned as
-`{"ok": false, "diagnostics": [...]}` with redacted details instead of raw tracebacks.
-The MCP layer does not add image logic or bypass validation, approvals, lineage, or
-job lookup safeguards; it only normalizes ids, validates manifest input, sanitizes
-payloads, and forwards to `FeCreatorApp`.
+FastMCP publishes the exact `Manifest` input schema for `create_job` plus typed
+`outputSchema` metadata for all 12 tools. Success responses are structured JSON-safe
+payloads with `ok: true` and tool-specific fields (`asset_ids`, `job`, `source_plan`,
+`job_result`, `approval`, or `diagnostics`). Expected/domain failures are returned as
+structured MCP errors with `isError=true` and redacted
+`{"ok": false, "diagnostics": [...]}` content instead of raw tracebacks or absolute
+paths. The MCP layer does not add image logic or bypass validation, approvals,
+lineage, or job lookup safeguards; it only normalizes ids, validates manifest input,
+sanitizes payloads, and forwards to `FeCreatorApp`.
