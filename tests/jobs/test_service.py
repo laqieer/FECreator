@@ -62,20 +62,38 @@ def test_valid_transition(data_root) -> None:
     assert updated.revision == 2
 
 
+def test_transition_appends_extra_events(data_root) -> None:
+    service = _service(data_root)
+    job = service.create_job(_manifest())
+
+    updated = service.transition(
+        job.id,
+        JobState.PLANNING,
+        extra_events=(("sources_submitted", "from staged dir", None),),
+    )
+
+    assert updated.state is JobState.PLANNING
+    assert [event.kind for event in EventLog(data_root).read(job.id)] == [
+        "created",
+        "transition",
+        "sources_submitted",
+    ]
+
+
 def test_transition_rolls_back_when_event_append_fails(
     data_root,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = _service(data_root)
     job = service.create_job(_manifest())
-    original_append = service._events.append
+    original_append_many = service._events.append_many
 
-    def fail_on_transition(job_id: str, kind: str, message: str, data=None):
-        if kind == "transition":
+    def fail_on_transition(job_id: str, events):
+        if events[0][0] == "transition":
             raise OSError("boom")
-        return original_append(job_id, kind, message, data)
+        return original_append_many(job_id, events)
 
-    monkeypatch.setattr(service._events, "append", fail_on_transition)
+    monkeypatch.setattr(service._events, "append_many", fail_on_transition)
 
     with pytest.raises(OSError, match="boom"):
         service.transition(job.id, JobState.PLANNING)
@@ -83,6 +101,44 @@ def test_transition_rolls_back_when_event_append_fails(
     reloaded = JobStore(data_root).load(job.id)
     assert reloaded.state is JobState.CREATED
     assert reloaded.revision == 1
+
+
+def test_record_event_rolls_back_published_side_effects_when_event_append_fails(
+    data_root,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(data_root)
+    job = service.create_job(_manifest())
+    marker = data_root / "published.txt"
+
+    def fail_append(*args, **kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(service._events, "append", fail_append)
+
+    def publish(candidate_job) -> None:
+        marker.write_text(
+            f"{candidate_job.state.value}:{candidate_job.revision}",
+            encoding="utf-8",
+        )
+
+    def cleanup() -> None:
+        marker.unlink(missing_ok=True)
+
+    with pytest.raises(OSError, match="boom"):
+        service.record_event(
+            job.id,
+            "sources_submitted",
+            "from staged dir",
+            before_persist=publish,
+            rollback=cleanup,
+        )
+
+    assert not marker.exists()
+    reloaded = JobStore(data_root).load(job.id)
+    assert reloaded.state is JobState.CREATED
+    assert reloaded.revision == 1
+    assert [event.kind for event in EventLog(data_root).read(job.id)] == ["created"]
 
 
 def test_invalid_transition_raises(data_root) -> None:
@@ -150,14 +206,14 @@ def test_transition_rolls_back_published_side_effects_when_event_append_fails(
     service = _service(data_root)
     job = service.create_job(_manifest())
     marker = data_root / "published.txt"
-    original_append = service._events.append
+    original_append_many = service._events.append_many
 
-    def fail_on_transition(job_id: str, kind: str, message: str, data=None):
-        if kind == "transition":
+    def fail_on_transition(job_id: str, events):
+        if events[0][0] == "transition":
             raise OSError("boom")
-        return original_append(job_id, kind, message, data)
+        return original_append_many(job_id, events)
 
-    monkeypatch.setattr(service._events, "append", fail_on_transition)
+    monkeypatch.setattr(service._events, "append_many", fail_on_transition)
 
     def publish(candidate_job) -> None:
         marker.write_text(
@@ -189,14 +245,14 @@ def test_transition_restores_state_even_when_rollback_hook_fails(
     service = _service(data_root)
     job = service.create_job(_manifest())
     marker = data_root / "published.txt"
-    original_append = service._events.append
+    original_append_many = service._events.append_many
 
-    def fail_on_transition(job_id: str, kind: str, message: str, data=None):
-        if kind == "transition":
+    def fail_on_transition(job_id: str, events):
+        if events[0][0] == "transition":
             raise OSError("boom")
-        return original_append(job_id, kind, message, data)
+        return original_append_many(job_id, events)
 
-    monkeypatch.setattr(service._events, "append", fail_on_transition)
+    monkeypatch.setattr(service._events, "append_many", fail_on_transition)
 
     def publish(candidate_job) -> None:
         marker.write_text(

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from fecreator.contracts.manifest import Manifest
 from fecreator.core.clock import utc_now_iso
-from fecreator.jobs.events import EventLog
+from fecreator.jobs.events import EventLog, PendingEvent
 from fecreator.jobs.model import ALLOWED_TRANSITIONS, Job, JobState
 from fecreator.jobs.store import JobStore
 
@@ -38,6 +38,7 @@ class JobService:
         *,
         before_persist: TransitionPublishHook | None = None,
         rollback: TransitionRollbackHook | None = None,
+        extra_events: Sequence[PendingEvent] = (),
     ) -> Job:
         with self._store.locked(job_id):
             job = self._store._load_locked(job_id)
@@ -62,11 +63,16 @@ class JobService:
                     updated_at=persisted_updated_at,
                 )
                 persisted = True
-                self._events.append(
+                self._events.append_many(
                     job.id,
-                    "transition",
-                    f"{from_state}->{to}",
-                    {"from": from_state.value, "to": to.value},
+                    (
+                        (
+                            "transition",
+                            f"{from_state}->{to}",
+                            {"from": from_state.value, "to": to.value},
+                        ),
+                        *extra_events,
+                    ),
                 )
             except Exception as exc:
                 cleanup_error: Exception | None = None
@@ -77,6 +83,34 @@ class JobService:
                         cleanup_error = cleanup_exc
                 if persisted:
                     self._store._replace_locked(previous)
+                if cleanup_error is not None:
+                    raise cleanup_error from exc
+                raise
+            return job
+
+    def record_event(
+        self,
+        job_id: str,
+        kind: str,
+        message: str,
+        data: dict[str, str | int | float | bool] | None = None,
+        *,
+        before_persist: TransitionPublishHook | None = None,
+        rollback: TransitionRollbackHook | None = None,
+    ) -> Job:
+        with self._store.locked(job_id):
+            job = self._store._load_locked(job_id)
+            try:
+                if before_persist is not None:
+                    before_persist(job)
+                self._events.append(job.id, kind, message, data)
+            except Exception as exc:
+                cleanup_error: Exception | None = None
+                if rollback is not None and before_persist is not None:
+                    try:
+                        rollback()
+                    except Exception as cleanup_exc:
+                        cleanup_error = cleanup_exc
                 if cleanup_error is not None:
                     raise cleanup_error from exc
                 raise

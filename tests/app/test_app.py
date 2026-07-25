@@ -92,6 +92,14 @@ def _write_png(path: Path) -> None:
     Image.new("RGB", (1, 1), color=(0, 248, 0)).save(path, format="PNG")
 
 
+def _job_snapshot(app: FeCreatorApp, job_id: str) -> dict[str, object]:
+    return app.get_job(job_id).model_dump(mode="json")
+
+
+def _event_snapshots(app: FeCreatorApp, job_id: str) -> list[dict[str, object]]:
+    return [event.model_dump(mode="json") for event in app.events(job_id)]
+
+
 def test_lists_registered_items_and_gets_created_jobs(data_root: Path) -> None:
     app, _plugin = _app(data_root)
 
@@ -166,15 +174,13 @@ def test_submit_sources_rejects_unsafe_symlinks_without_replacing_existing_snaps
     tmp_path: Path,
 ) -> None:
     app, _plugin = _app(data_root)
-    job = app.create_job(_manifest(provider="manual"))
+    job = app.create_job(_manifest())
     app.plan_sources(job.id, tmp_path / "plan")
-
-    first_batch = tmp_path / "first"
-    _write_png(first_batch / "neutral.png")
-    app.submit_sources(job.id, first_batch)
+    original_job = _job_snapshot(app, job.id)
+    original_events = _event_snapshots(app, job.id)
 
     unsafe_batch = tmp_path / "unsafe"
-    _write_png(unsafe_batch / "replacement.png")
+    _write_png(unsafe_batch / "neutral.png")
     outside = tmp_path / "outside.png"
     _write_png(outside)
     try:
@@ -185,8 +191,88 @@ def test_submit_sources_rejects_unsafe_symlinks_without_replacing_existing_snaps
     with pytest.raises(ValueError, match="unsafe|symlink|reparse"):
         app.submit_sources(job.id, unsafe_batch)
 
-    submitted_dir = data_root / "jobs" / job.id / "submitted"
-    assert sorted(path.name for path in submitted_dir.iterdir()) == ["neutral.png"]
+    assert _job_snapshot(app, job.id) == original_job
+    assert _event_snapshots(app, job.id) == original_events
+    assert not (data_root / "jobs" / job.id / "submitted").exists()
+    assert not list((data_root / "jobs" / job.id).glob(".submitted-stage-*"))
+
+
+def test_submit_sources_missing_directory_leaves_fake_job_state_unchanged(
+    data_root: Path,
+    tmp_path: Path,
+) -> None:
+    app, _plugin = _app(data_root)
+    job = app.create_job(_manifest())
+    app.plan_sources(job.id, tmp_path / "plan")
+    original_job = _job_snapshot(app, job.id)
+    original_events = _event_snapshots(app, job.id)
+
+    with pytest.raises(FileNotFoundError):
+        app.submit_sources(job.id, tmp_path / "missing")
+
+    assert _job_snapshot(app, job.id) == original_job
+    assert _event_snapshots(app, job.id) == original_events
+    assert not (data_root / "jobs" / job.id / "submitted").exists()
+
+
+def test_submit_sources_copy_failure_leaves_fake_job_state_unchanged(
+    data_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _plugin = _app(data_root)
+    job = app.create_job(_manifest())
+    app.plan_sources(job.id, tmp_path / "plan")
+    original_job = _job_snapshot(app, job.id)
+    original_events = _event_snapshots(app, job.id)
+    incoming = tmp_path / "incoming"
+    _write_png(incoming / "neutral.png")
+    _write_png(incoming / "blink.png")
+    original_copy = app._copy_regular_file
+    copied_paths: list[Path] = []
+
+    def fail_after_first_copy(source: Path, destination: Path) -> None:
+        copied_paths.append(destination)
+        original_copy(source, destination)
+        if destination.name == "blink.png":
+            raise OSError("copy boom")
+
+    monkeypatch.setattr(app, "_copy_regular_file", fail_after_first_copy)
+
+    with pytest.raises(OSError, match="copy boom"):
+        app.submit_sources(job.id, incoming)
+
+    assert [path.name for path in copied_paths] == ["blink.png"]
+    assert _job_snapshot(app, job.id) == original_job
+    assert _event_snapshots(app, job.id) == original_events
+    assert not (data_root / "jobs" / job.id / "submitted").exists()
+    assert not list((data_root / "jobs" / job.id).glob(".submitted-stage-*"))
+
+
+def test_submit_sources_rejects_second_submission_without_replacing_existing_snapshot(
+    data_root: Path,
+    tmp_path: Path,
+) -> None:
+    app, _plugin = _app(data_root)
+    job = app.create_job(_manifest(provider="manual"))
+    app.plan_sources(job.id, tmp_path / "plan")
+    first_batch = tmp_path / "first"
+    _write_png(first_batch / "neutral.png")
+    app.submit_sources(job.id, first_batch)
+    submitted_path = data_root / "jobs" / job.id / "submitted" / "neutral.png"
+    original_bytes = submitted_path.read_bytes()
+    original_job = _job_snapshot(app, job.id)
+    original_events = _event_snapshots(app, job.id)
+
+    second_batch = tmp_path / "second"
+    _write_png(second_batch / "neutral.png")
+
+    with pytest.raises(FileExistsError, match="submitted sources already exist"):
+        app.submit_sources(job.id, second_batch)
+
+    assert submitted_path.read_bytes() == original_bytes
+    assert _job_snapshot(app, job.id) == original_job
+    assert _event_snapshots(app, job.id) == original_events
 
 
 def test_build_validate_approvals_cancel_and_events(data_root: Path, tmp_path: Path) -> None:

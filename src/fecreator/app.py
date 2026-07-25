@@ -19,9 +19,9 @@ from fecreator.core.paths import safe_join
 from fecreator.core.pipeline import PipelineContext
 from fecreator.core.registry import ASSET_REGISTRY, PROVIDER_REGISTRY, SPEC_REGISTRY
 from fecreator.jobs.approvals import ApprovalRecord, ApprovalStore
-from fecreator.jobs.events import EventLog
+from fecreator.jobs.events import EventLog, PendingEvent
 from fecreator.jobs.model import Job, JobEvent, JobState
-from fecreator.jobs.service import JobService
+from fecreator.jobs.service import JobService, TransitionPublishHook, TransitionRollbackHook
 from fecreator.jobs.store import JobStore
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
@@ -31,7 +31,6 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _MANUAL_PROVIDER_ID = "manual"
 _SUBMITTED_DIR = "submitted"
 _SUBMITTED_STAGE_PREFIX = ".submitted-stage-"
-_SUBMITTED_BACKUP_PREFIX = ".submitted-backup-"
 
 
 class FeCreatorApp:
@@ -69,36 +68,41 @@ class FeCreatorApp:
         return plan
 
     def submit_sources(self, job_id: str, sources_dir: Path) -> Job:
-        job = self._transition_for_sources(self._jobs.load(job_id), submitted=True)
+        job = self._service.resume(job_id)
+        staged_dir = self._stage_sources(job.id, sources_dir)
         submitted_dir = self._submitted_dir(job.id)
-        staged_dir = self._stage_dir(job.id, prefix=_SUBMITTED_STAGE_PREFIX)
-        backup_dir = self._stage_dir(job.id, prefix=_SUBMITTED_BACKUP_PREFIX)
-        entries = self._validated_source_entries(sources_dir)
-        replaced_existing = False
+        published = False
+
+        def publish_submitted_sources(_candidate_job: Job) -> None:
+            nonlocal published
+            if submitted_dir.exists():
+                raise FileExistsError(f"submitted sources already exist for job {job.id}")
+            os.replace(staged_dir, submitted_dir)
+            published = True
+            _fsync_directory(submitted_dir.parent)
+
+        def rollback_submitted_sources() -> None:
+            if published and submitted_dir.exists():
+                self._remove_tree(submitted_dir)
 
         try:
-            staged_dir.mkdir(parents=True, exist_ok=False)
-            for entry in entries:
-                self._copy_regular_file(entry, staged_dir / entry.name)
-
-            if submitted_dir.exists():
-                os.replace(submitted_dir, backup_dir)
-                replaced_existing = True
-            os.replace(staged_dir, submitted_dir)
-            _fsync_directory(submitted_dir.parent)
-        except Exception:
-            if submitted_dir.exists():
-                shutil.rmtree(staged_dir, ignore_errors=True)
-            elif replaced_existing and backup_dir.exists():
-                os.replace(backup_dir, submitted_dir)
-            raise
+            if job.state is JobState.WAITING_FOR_SOURCES:
+                return self._service.record_event(
+                    job.id,
+                    "sources_submitted",
+                    f"from {sources_dir}",
+                    before_persist=publish_submitted_sources,
+                    rollback=rollback_submitted_sources,
+                )
+            return self._transition_job(
+                job.id,
+                JobState.WAITING_FOR_SOURCES,
+                before_persist=publish_submitted_sources,
+                rollback=rollback_submitted_sources,
+                extra_events=(("sources_submitted", f"from {sources_dir}", None),),
+            )
         finally:
-            shutil.rmtree(staged_dir, ignore_errors=True)
-            if backup_dir.exists() and submitted_dir.exists():
-                shutil.rmtree(backup_dir, ignore_errors=True)
-
-        self._events.append(job.id, "sources_submitted", f"from {sources_dir}")
-        return self._jobs.load(job.id)
+            self._remove_tree_if_present(staged_dir)
 
     def build(self, job_id: str) -> JobResult:
         job = self._jobs.load(job_id)
@@ -136,12 +140,27 @@ class FeCreatorApp:
         )
         return self._transition_job(job.id, target)
 
-    def _transition_job(self, job_id: str, target: JobState) -> Job:
+    def _transition_job(
+        self,
+        job_id: str,
+        target: JobState,
+        *,
+        before_persist: TransitionPublishHook | None = None,
+        rollback: TransitionRollbackHook | None = None,
+        extra_events: tuple[PendingEvent, ...] = (),
+    ) -> Job:
         job = self._service.resume(job_id)
         for state in self._transition_steps(job.state, target):
             if job.state is state:
                 continue
-            job = self._service.transition(job.id, state)
+            is_target_step = state is target
+            job = self._service.transition(
+                job.id,
+                state,
+                before_persist=before_persist if is_target_step else None,
+                rollback=rollback if is_target_step else None,
+                extra_events=extra_events if is_target_step else (),
+            )
         return job
 
     def _transition_steps(self, current: JobState, target: JobState) -> tuple[JobState, ...]:
@@ -162,6 +181,21 @@ class FeCreatorApp:
 
     def _stage_dir(self, job_id: str, *, prefix: str) -> Path:
         return safe_join(self._job_workspace(job_id), f"{prefix}{uuid.uuid4().hex}")
+
+    def _stage_sources(self, job_id: str, sources_dir: Path) -> Path:
+        staged_dir = self._stage_dir(job_id, prefix=_SUBMITTED_STAGE_PREFIX)
+        entries = self._validated_source_entries(sources_dir)
+        try:
+            staged_dir.mkdir(parents=True, exist_ok=False)
+            for entry in entries:
+                self._copy_regular_file(entry, staged_dir / entry.name)
+        except Exception as exc:
+            try:
+                self._remove_tree_if_present(staged_dir)
+            except Exception as cleanup_exc:
+                raise cleanup_exc from exc
+            raise
+        return staged_dir
 
     def _validated_source_entries(self, sources_dir: Path) -> list[Path]:
         self._reject_unsafe_path(sources_dir)
@@ -198,3 +232,10 @@ class FeCreatorApp:
             dst.flush()
             os.fsync(dst.fileno())
         _fsync_directory(destination.parent)
+
+    def _remove_tree(self, path: Path) -> None:
+        shutil.rmtree(path)
+
+    def _remove_tree_if_present(self, path: Path) -> None:
+        if path.exists():
+            self._remove_tree(path)
