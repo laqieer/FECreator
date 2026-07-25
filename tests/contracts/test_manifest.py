@@ -108,3 +108,11 @@ def test_manifest_rejects_extra_fields() -> None:
             provider="fake",
             unexpected="value",
         )
+
+
+def test_reference_revision_requires_pack_id() -> None:
+    payload = _manifest().model_dump(mode="python")
+    payload["character_ref_pack_rev"] = 2
+
+    with pytest.raises(ValidationError, match="character_ref_pack_rev"):
+        Manifest.model_validate(payload)

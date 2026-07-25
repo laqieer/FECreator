@@ -44,3 +44,10 @@ def test_lineage_created_at_schema_uses_date_time_format(tmp_path: Path) -> None
     lineage_schema = json.loads((tmp_path / "lineage.schema.json").read_text(encoding="utf-8"))
 
     assert lineage_schema["properties"]["created_at"]["format"] == "date-time"
+
+
+def test_manifest_schema_includes_pinned_reference_revision(tmp_path: Path) -> None:
+    export_schemas(tmp_path)
+    manifest_schema = json.loads((tmp_path / "manifest.schema.json").read_text(encoding="utf-8"))
+
+    assert manifest_schema["properties"]["character_ref_pack_rev"]["anyOf"][0]["minimum"] == 1

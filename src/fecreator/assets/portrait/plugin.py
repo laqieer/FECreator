@@ -37,7 +37,7 @@ from fecreator.jobs.store import JobStore
 from fecreator.lineage.store import LineageStore
 from fecreator.providers.base import GenRequest, Provider, ProviderRefusal, require_capabilities
 from fecreator.references.model import ReferencePack
-from fecreator.references.store import ReferencePackStore
+from fecreator.references.store import ReferencePackStore, UnpinnedReferencePackError
 from fecreator.reporting.bundle import build_bundle
 from fecreator.reporting.json_report import build_report, write_report
 from fecreator.specs.fire_emblem.gba.portrait_standard.layout import (
@@ -303,7 +303,14 @@ class PortraitPlugin:
     def _reference_pack(self, data_root: Path, manifest: Manifest) -> ReferencePack | None:
         if manifest.character_ref_pack is None:
             return None
-        return ReferencePackStore(data_root).latest(manifest.character_ref_pack)
+        if manifest.character_ref_pack_rev is None:
+            raise UnpinnedReferencePackError(
+                "character_ref_pack_rev is required for persisted jobs with character_ref_pack"
+            )
+        return ReferencePackStore(data_root).get(
+            manifest.character_ref_pack,
+            manifest.character_ref_pack_rev,
+        )
 
     def _load_job(self, data_root: Path, job_id: str) -> Job:
         return JobStore(data_root).load(job_id)

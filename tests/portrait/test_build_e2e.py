@@ -3,11 +3,14 @@ from __future__ import annotations
 import importlib
 import json
 import sys
+from types import SimpleNamespace
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pytest
 
+import fecreator.references.store as reference_store
 from fecreator.contracts.capabilities import Capability, CapabilitySet
 from fecreator.contracts.diagnostics import has_errors, warning
 from fecreator.contracts.manifest import Manifest, SourceSpec
@@ -19,6 +22,8 @@ from fecreator.jobs.service import InvalidTransitionError, JobService
 from fecreator.jobs.store import JobStore
 from fecreator.lineage.store import LineageStore
 from fecreator.providers.base import GenRequest, GenResponse, ProviderRefusal
+from fecreator.references.model import ReferencePack
+from fecreator.references.store import ReferencePackStore
 from fecreator.reporting.bundle import verify_bundle
 from fecreator.specs.fire_emblem.gba.portrait_standard.spec import FeGbaPortraitStandard
 
@@ -225,6 +230,72 @@ def test_build_carries_provider_diagnostics_and_completed_report_state(
     assert report["revision"] == stored_job.revision
     assert report["updated_at"] == stored_job.updated_at
     assert {diag["code"] for diag in report["diagnostics"]} == {"PROVIDER_NOTE"}
+
+
+def test_reference_pack_lookup_uses_pinned_revision(data_root: Path) -> None:
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    store = ReferencePackStore(data_root)
+    store.create(
+        ReferencePack(
+            id="hero-pack",
+            revision=99,
+            concept_art=(
+                Artifact(
+                    role="concept_art",
+                    path="incoming/rev1.png",
+                    sha256="1" * 64,
+                    media_type="image/png",
+                ),
+            ),
+            provenance="approved-board",
+            rights="original",
+        )
+    )
+    store.new_revision(
+        "hero-pack",
+        concept_art=(
+            Artifact(
+                role="concept_art",
+                path="incoming/rev2.png",
+                sha256="2" * 64,
+                media_type="image/png",
+            ),
+        ),
+        provenance="approved-update",
+    )
+
+    manifest = cast(
+        Manifest,
+        SimpleNamespace(character_ref_pack="hero-pack", character_ref_pack_rev=1),
+    )
+
+    pack = PortraitPlugin()._reference_pack(data_root, manifest)
+
+    assert pack.revision == 1
+    assert pack.concept_art[0].path == "incoming/rev1.png"
+
+
+def test_reference_pack_lookup_rejects_unpinned_legacy_manifest(data_root: Path) -> None:
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    ReferencePackStore(data_root).create(
+        ReferencePack(
+            id="hero-pack",
+            revision=99,
+            provenance="approved-board",
+            rights="original",
+        )
+    )
+    manifest = cast(
+        Manifest,
+        SimpleNamespace(character_ref_pack="hero-pack", character_ref_pack_rev=None),
+    )
+
+    assert hasattr(reference_store, "UnpinnedReferencePackError")
+
+    with pytest.raises(reference_store.UnpinnedReferencePackError, match="character_ref_pack_rev"):
+        PortraitPlugin()._reference_pack(data_root, manifest)
 
 
 def test_build_does_not_persist_lineage_when_bundle_fails(

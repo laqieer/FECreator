@@ -80,6 +80,14 @@ def test_new_revision_increments_and_keeps_history(data_root: Path) -> None:
     assert store.latest("marth").provenance == "approved synthetic edit"
 
 
+def test_history_returns_visible_revisions_in_order(data_root: Path) -> None:
+    store = ReferencePackStore(data_root)
+    store.create(_pack())
+    store.new_revision("marth", provenance="approved synthetic edit")
+
+    assert [pack.revision for pack in store.history("marth")] == [1, 2]
+
+
 def test_prior_revision_file_unchanged(data_root: Path) -> None:
     store = ReferencePackStore(data_root)
     store.create(_pack())

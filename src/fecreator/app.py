@@ -25,7 +25,7 @@ from fecreator.jobs.model import Job, JobEvent, JobState
 from fecreator.jobs.service import JobService, TransitionPublishHook, TransitionRollbackHook
 from fecreator.jobs.store import JobStore
 from fecreator.references.model import ReferencePack
-from fecreator.references.store import ReferencePackStore
+from fecreator.references.store import ReferencePackStore, UnpinnedReferencePackError
 from fecreator.specs.base import TargetSpec
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -55,7 +55,7 @@ class FeCreatorApp:
         return sorted(PROVIDER_REGISTRY.ids())
 
     def create_job(self, manifest: Manifest) -> Job:
-        return self._service.create_job(manifest)
+        return self._service.create_job(self._pin_reference_pack(manifest))
 
     def get_job(self, job_id: str) -> Job:
         return self._jobs.load(job_id)
@@ -132,7 +132,21 @@ class FeCreatorApp:
     def _reference_pack(self, manifest: Manifest) -> ReferencePack | None:
         if manifest.character_ref_pack is None:
             return None
-        return self._refs.latest(manifest.character_ref_pack)
+        if manifest.character_ref_pack_rev is None:
+            raise UnpinnedReferencePackError(
+                "character_ref_pack_rev is required for persisted jobs with character_ref_pack"
+            )
+        return self._refs.get(manifest.character_ref_pack, manifest.character_ref_pack_rev)
+
+    def _pin_reference_pack(self, manifest: Manifest) -> Manifest:
+        if manifest.character_ref_pack is None:
+            return manifest
+        pack = (
+            self._refs.latest(manifest.character_ref_pack)
+            if manifest.character_ref_pack_rev is None
+            else self._refs.get(manifest.character_ref_pack, manifest.character_ref_pack_rev)
+        )
+        return manifest.model_copy(update={"character_ref_pack_rev": pack.revision})
 
     def _transition_for_sources(self, job: Job, *, submitted: bool) -> Job:
         target = (

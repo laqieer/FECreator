@@ -26,6 +26,10 @@ class ReferencePackCorruptionError(Exception):
     """Raised when a visible reference pack revision is missing or corrupt."""
 
 
+class UnpinnedReferencePackError(ValueError):
+    """Raised when a persisted job cannot replay an exact reference revision."""
+
+
 class ReferencePackStore:
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -228,6 +232,14 @@ class ReferencePackStore:
         normalized = self._normalize_pack_id(pack_id)
         with _path_lock(self._pack_dir(normalized), lock_path=self._lock_path(normalized)):
             return self._read_pack_locked(normalized, self._validate_revision(revision))
+
+    def history(self, pack_id: str) -> list[ReferencePack]:
+        normalized = self._normalize_pack_id(pack_id)
+        with _path_lock(self._pack_dir(normalized), lock_path=self._lock_path(normalized)):
+            return [
+                self._read_pack_locked(normalized, revision)
+                for revision in self._revision_numbers_locked(normalized)
+            ]
 
     def latest(self, pack_id: str) -> ReferencePack:
         normalized = self._normalize_pack_id(pack_id)

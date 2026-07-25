@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+import fecreator.references.store as reference_store
 from fecreator.app import FeCreatorApp
 from fecreator.assets.base import SourcePlan, SubmissionSchema
 from fecreator.contracts.capabilities import Capability
@@ -156,6 +157,71 @@ def test_plan_sources_writes_file_loads_refs_and_moves_job_to_waiting_state(
     assert json.loads((tmp_path / "fake-plan" / "source_plan.json").read_text(encoding="utf-8"))[
         "expected_filenames"
     ] == ["neutral.png"]
+
+
+def test_create_job_pins_latest_reference_revision(data_root: Path) -> None:
+    app, _plugin = _app(data_root)
+    store = ReferencePackStore(data_root)
+    store.create(
+        ReferencePack(
+            id="hero-pack",
+            revision=99,
+            provenance="approved-board",
+            rights="original",
+        )
+    )
+    store.new_revision("hero-pack", provenance="approved-update")
+
+    job = app.create_job(_manifest(character_ref_pack="hero-pack"))
+
+    assert job.manifest.character_ref_pack_rev == 2
+    assert app.get_job(job.id).manifest.character_ref_pack_rev == 2
+
+
+def test_pinned_job_ignores_later_reference_revision(data_root: Path, tmp_path: Path) -> None:
+    app, plugin = _app(data_root)
+    store = ReferencePackStore(data_root)
+    store.create(
+        ReferencePack(
+            id="hero-pack",
+            revision=99,
+            provenance="approved-board",
+            rights="original",
+        )
+    )
+    job = app.create_job(_manifest(provider="manual", character_ref_pack="hero-pack"))
+    store.new_revision("hero-pack", provenance="approved-update", traits={"hair": "blue"})
+
+    app.plan_sources(job.id, tmp_path / "manual-plan")
+
+    assert plugin.planned[0][1] is not None
+    assert plugin.planned[0][1].revision == 1
+    assert app.get_job(job.id).manifest.character_ref_pack_rev == 1
+
+
+def test_legacy_unpinned_persisted_job_fails_closed(data_root: Path, tmp_path: Path) -> None:
+    app, plugin = _app(data_root)
+    store = ReferencePackStore(data_root)
+    store.create(
+        ReferencePack(
+            id="hero-pack",
+            revision=99,
+            provenance="approved-board",
+            rights="original",
+        )
+    )
+    job = app.create_job(_manifest(provider="manual", character_ref_pack="hero-pack"))
+    manifest_path = data_root / "jobs" / job.id / "manifest.json"
+    persisted_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    persisted_manifest.pop("character_ref_pack_rev")
+    manifest_path.write_text(json.dumps(persisted_manifest), encoding="utf-8")
+
+    assert hasattr(reference_store, "UnpinnedReferencePackError")
+
+    with pytest.raises(reference_store.UnpinnedReferencePackError, match="character_ref_pack_rev"):
+        app.plan_sources(job.id, tmp_path / "manual-plan")
+
+    assert plugin.planned == []
 
 
 def test_submit_sources_copies_files_and_records_event(data_root: Path, tmp_path: Path) -> None:

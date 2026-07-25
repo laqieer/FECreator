@@ -104,6 +104,19 @@
       "default": null,
       "title": "Character Ref Pack"
     },
+    "character_ref_pack_rev": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Character Ref Pack Rev"
+    },
     "edit": {
       "anyOf": [
         {

@@ -37,6 +37,7 @@ class Manifest(BaseModel):
     ]
     provider: str
     character_ref_pack: str | None = None
+    character_ref_pack_rev: int | None = Field(default=None, ge=1)
     sources: tuple[SourceSpec, ...] = ()
     edit: EditSpec | None = None
     params: Params = Field(default_factory=freeze_mapping)
@@ -45,6 +46,12 @@ class Manifest(BaseModel):
     @classmethod
     def _freeze_params(cls, value: Params) -> Params:
         return freeze_mapping(value)
+
+    @model_validator(mode="after")
+    def _validate_reference_revision(self) -> Manifest:
+        if self.character_ref_pack_rev is not None and self.character_ref_pack is None:
+            raise ValueError("character_ref_pack_rev requires character_ref_pack")
+        return self
 
     @model_validator(mode="after")
     def _edit_requires_masked_variant(self) -> Manifest:

@@ -26,6 +26,6 @@ def export_schemas(out_dir: Path) -> list[Path]:
     for name, model in SCHEMA_MODELS.items():
         output = out_dir / f"{name}.schema.json"
         schema_json = json.dumps(model.model_json_schema(), indent=2, sort_keys=True) + "\n"
-        output.write_text(schema_json, encoding="utf-8")
+        output.write_text(schema_json, encoding="utf-8", newline="\n")
         written.append(output)
     return written
