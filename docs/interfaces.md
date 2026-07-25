@@ -52,11 +52,12 @@ without moving application logic out of `FeCreatorApp`.
 FastMCP publishes the exact `Manifest` input schema for `create_job` while leaving
 manifest validation inside the handler, so malformed payloads return the standard
 redacted `INVALID_MANIFEST` diagnostic instead of a pre-handler FastMCP/Pydantic
-`ToolError`. All 12 tools also publish typed `outputSchema` metadata with exact
-success/error alternatives: success payloads require their tool-specific fields
-(`asset_ids`, `job`, `source_plan`, `job_result`, `approval`, or `diagnostics`), while
-expected/domain failures are structured MCP errors with `isError=true` and redacted
-`{"ok": false, "diagnostics": [...]}` content instead of raw tracebacks or absolute
-paths. The MCP layer does not add image logic or bypass validation, approvals,
-lineage, or job lookup safeguards; it only normalizes ids, validates manifest input,
-sanitizes payloads, and forwards to `FeCreatorApp`.
+`ToolError`, even when callers send string or list manifest values. All 12 tools also
+publish typed `outputSchema` metadata with exact success/error alternatives: every
+branch requires the `ok` discriminator, success payloads also require their
+tool-specific fields (`asset_ids`, `job`, `source_plan`, `job_result`, `approval`, or
+`diagnostics`), and expected/domain failures are structured MCP errors with
+`isError=true` plus redacted `{"ok": false, "diagnostics": [...]}` content instead of
+raw tracebacks or absolute paths. The MCP layer does not add image logic or bypass
+validation, approvals, lineage, or job lookup safeguards; it only normalizes ids,
+validates manifest input, sanitizes payloads, and forwards to `FeCreatorApp`.

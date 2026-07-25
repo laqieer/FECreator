@@ -23,7 +23,7 @@ from fecreator.references.store import ReferencePackCorruptionError
 from fecreator.reporting.sanitize import JsonObject, as_object, sanitize_json, sanitize_text
 
 ToolHandler: TypeAlias = Callable[..., CallToolResult]
-ManifestToolInput: TypeAlias = dict[str, object]
+ManifestToolInput: TypeAlias = object
 CREATE_JOB_INPUT_SCHEMA = {
     "properties": {"manifest": Manifest.model_json_schema()},
     "required": ["manifest"],
@@ -50,21 +50,21 @@ TOOL_NAMES: list[str] = [
 class AssetIdsOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    ok: Literal[True] = True
+    ok: Literal[True]
     asset_ids: tuple[str, ...]
 
 
 class SpecIdsOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    ok: Literal[True] = True
+    ok: Literal[True]
     spec_ids: tuple[str, ...]
 
 
 class ProviderIdsOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    ok: Literal[True] = True
+    ok: Literal[True]
     provider_ids: tuple[str, ...]
 
 
@@ -82,7 +82,7 @@ class ToolErrorOutput(BaseModel):
 class JobSuccessOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    ok: Literal[True] = True
+    ok: Literal[True]
     job: Job
 
 
@@ -93,7 +93,7 @@ class JobOutput(RootModel[JobSuccessOutput | ToolErrorOutput]):
 class SourcePlanSuccessOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    ok: Literal[True] = True
+    ok: Literal[True]
     source_plan: SourcePlan
 
 
@@ -104,7 +104,7 @@ class SourcePlanOutput(RootModel[SourcePlanSuccessOutput | ToolErrorOutput]):
 class JobResultSuccessOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    ok: Literal[True] = True
+    ok: Literal[True]
     job_result: JobResult
 
 
@@ -115,7 +115,7 @@ class JobResultOutput(RootModel[JobResultSuccessOutput | ToolErrorOutput]):
 class ApprovalSuccessOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    ok: Literal[True] = True
+    ok: Literal[True]
     approval: ApprovalRecord
 
 
@@ -126,7 +126,7 @@ class ApprovalOutput(RootModel[ApprovalSuccessOutput | ToolErrorOutput]):
 class ValidationSuccessOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    ok: Literal[True] = True
+    ok: Literal[True]
     diagnostics: tuple[Diagnostic, ...]
 
 
@@ -180,15 +180,15 @@ def _load_known_job(app: FeCreatorApp, job_id: str) -> Job:
 def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
     def list_assets() -> Annotated[CallToolResult, AssetIdsOutput]:
         """List registered asset plugin ids."""
-        return _success_result(AssetIdsOutput(asset_ids=tuple(app.list_assets())))
+        return _success_result(AssetIdsOutput(ok=True, asset_ids=tuple(app.list_assets())))
 
     def list_specs() -> Annotated[CallToolResult, SpecIdsOutput]:
         """List registered target specification ids."""
-        return _success_result(SpecIdsOutput(spec_ids=tuple(app.list_specs())))
+        return _success_result(SpecIdsOutput(ok=True, spec_ids=tuple(app.list_specs())))
 
     def list_providers() -> Annotated[CallToolResult, ProviderIdsOutput]:
         """List registered provider ids."""
-        return _success_result(ProviderIdsOutput(provider_ids=tuple(app.list_providers())))
+        return _success_result(ProviderIdsOutput(ok=True, provider_ids=tuple(app.list_providers())))
 
     def create_job(manifest: ManifestToolInput) -> Annotated[CallToolResult, JobOutput]:
         """Create a job from a manifest object."""
@@ -209,12 +209,12 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
                 ),
                 is_error=True,
             )
-        return _success_result(JobSuccessOutput(job=app.create_job(parsed)))
+        return _success_result(JobSuccessOutput(ok=True, job=app.create_job(parsed)))
 
     def get_job(job_id: str) -> Annotated[CallToolResult, JobOutput]:
         """Get a job snapshot by id."""
         try:
-            return _success_result(JobSuccessOutput(job=_load_known_job(app, job_id)))
+            return _success_result(JobSuccessOutput(ok=True, job=_load_known_job(app, job_id)))
         except ExpectedMcpError as exc:
             return _tool_result(
                 ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),
@@ -226,7 +226,10 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         try:
             job = _load_known_job(app, job_id)
             return _success_result(
-                SourcePlanSuccessOutput(source_plan=app.plan_sources(job.id, Path(out_dir)))
+                SourcePlanSuccessOutput(
+                    ok=True,
+                    source_plan=app.plan_sources(job.id, Path(out_dir)),
+                )
             )
         except ExpectedMcpError as exc:
             return _tool_result(
@@ -297,7 +300,7 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         try:
             job = _load_known_job(app, job_id)
             return _success_result(
-                JobSuccessOutput(job=app.submit_sources(job.id, Path(sources_dir)))
+                JobSuccessOutput(ok=True, job=app.submit_sources(job.id, Path(sources_dir)))
             )
         except ExpectedMcpError as exc:
             return _tool_result(
@@ -331,7 +334,7 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         """Build an asset for an existing job."""
         try:
             job = _load_known_job(app, job_id)
-            return _success_result(JobResultSuccessOutput(job_result=app.build(job.id)))
+            return _success_result(JobResultSuccessOutput(ok=True, job_result=app.build(job.id)))
         except ExpectedMcpError as exc:
             return _tool_result(
                 ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),
@@ -357,7 +360,7 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         """Validate an exported package directory against a target spec."""
         try:
             diagnostics = app.validate(spec_id, Path(path))
-            return _success_result(ValidationSuccessOutput(diagnostics=tuple(diagnostics)))
+            return _success_result(ValidationSuccessOutput(ok=True, diagnostics=tuple(diagnostics)))
         except UnknownIdError as exc:
             return _tool_result(
                 ToolErrorOutput(
@@ -391,7 +394,7 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         try:
             job = _load_known_job(app, job_id)
             return _success_result(
-                ApprovalSuccessOutput(approval=app.approve(job.id, stage, actor))
+                ApprovalSuccessOutput(ok=True, approval=app.approve(job.id, stage, actor))
             )
         except ExpectedMcpError as exc:
             return _tool_result(
@@ -424,7 +427,7 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         try:
             job = _load_known_job(app, job_id)
             return _success_result(
-                ApprovalSuccessOutput(approval=app.reject(job.id, stage, actor, reason))
+                ApprovalSuccessOutput(ok=True, approval=app.reject(job.id, stage, actor, reason))
             )
         except ExpectedMcpError as exc:
             return _tool_result(
@@ -451,7 +454,7 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         """Cancel an existing job."""
         try:
             job = _load_known_job(app, job_id)
-            return _success_result(JobSuccessOutput(job=app.cancel(job.id)))
+            return _success_result(JobSuccessOutput(ok=True, job=app.cancel(job.id)))
         except ExpectedMcpError as exc:
             return _tool_result(
                 ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),

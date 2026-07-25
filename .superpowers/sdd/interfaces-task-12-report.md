@@ -81,3 +81,35 @@ Concerns:
 - The remaining verification scope still inherits the existing FastAPI / Starlette
   `starlette.testclient` deprecation warning; the MCP schema/error follow-up does not
   add new warnings or known open failures.
+
+---
+
+## 2026-07-25 final-review follow-up
+
+Status: done
+
+Summary:
+- Changed the `create_job` handler input annotation from `dict[str, object]` to
+  `object` while keeping the published FastMCP `Manifest` schema exact, so raw JSON
+  string/list manifest values now reach `Manifest.model_validate()` and return the
+  redacted `INVALID_MANIFEST` envelope instead of a leaked FastMCP `ToolError`.
+- Added `call_tool()` regressions for string path-like and list manifest inputs to
+  prove the structured error path stays redacted and never exposes `input_value`.
+- Removed success-envelope defaults from every `ok: Literal[True]` discriminator and
+  instantiated them explicitly so published JSON Schema now requires `ok` on every
+  success/error branch while still requiring the success payload field.
+- Updated the interface documentation to reflect the exact `create_job` manifest
+  behavior and the required `ok` discriminators in all MCP tool envelopes.
+
+Verification:
+- Red: `.venv\Scripts\python.exe -m pytest -q tests\interfaces\test_mcp_server.py`
+- Green: `.venv\Scripts\python.exe -m pytest -q tests\interfaces\test_mcp_server.py`
+- Final tests: `.venv\Scripts\python.exe -m pytest -q tests\interfaces tests\app`
+- Final lint: `.venv\Scripts\python.exe -m ruff check .`
+- Final format: `.venv\Scripts\python.exe -m ruff format --check .`
+- Final typing: `.venv\Scripts\python.exe -m mypy src`
+
+Concerns:
+- Final verification still emits the pre-existing FastAPI / Starlette
+  `starlette.testclient` deprecation warning; this follow-up does not add new warnings
+  or open issues.

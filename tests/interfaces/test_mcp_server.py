@@ -53,7 +53,7 @@ def _assert_success_only_schema(
 
     assert schema["title"] == title
     assert schema["type"] == "object"
-    assert schema["required"] == [payload_field]
+    assert schema["required"] == ["ok", payload_field]
     assert schema["additionalProperties"] is False
     assert ok_schema["const"] is True
     assert payload_field in properties
@@ -75,7 +75,7 @@ def _assert_union_schema(
         {"$ref": "#/$defs/ToolErrorOutput"},
     ]
     assert success_schema["additionalProperties"] is False
-    assert success_schema["required"] == [payload_field]
+    assert success_schema["required"] == ["ok", payload_field]
     assert cast(dict[str, object], success_properties["ok"])["const"] is True
     assert payload_field in success_properties
     assert error_schema["additionalProperties"] is False
@@ -170,6 +170,41 @@ async def test_create_job_invalid_manifest_returns_structured_redacted_mcp_error
     serialized = _serialized_result(result)
     assert str(bad_path) not in serialized
     assert "absolute_path" not in serialized
+    assert "input_value" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("manifest", "forbidden_fragment"),
+    [
+        pytest.param("C:\\secret\\manifest.json", "C:\\secret\\manifest.json", id="string-path"),
+        pytest.param(["C:\\secret\\manifest.json"], "C:\\secret\\manifest.json", id="list-value"),
+    ],
+)
+async def test_create_job_non_object_manifest_returns_structured_redacted_mcp_error(
+    data_root: Path,
+    manifest: object,
+    forbidden_fragment: str,
+) -> None:
+    result = cast(
+        CallToolResult,
+        await build_mcp(_app(data_root)).call_tool("create_job", {"manifest": manifest}),
+    )
+
+    assert result.isError is True
+    assert _structured_content(result) == {
+        "ok": False,
+        "diagnostics": [
+            {
+                "code": "INVALID_MANIFEST",
+                "data": {"error_count": 1},
+                "message": "manifest failed validation",
+                "severity": "error",
+                "where": "manifest",
+            }
+        ],
+    }
+    serialized = _serialized_result(result)
+    assert forbidden_fragment not in serialized
     assert "input_value" not in serialized
 
 
