@@ -23,8 +23,10 @@ Facade routing:
 
 JSON commands write one compact JSON document to stdout followed by a single newline
 from `fecreator.cli`. `validate` exits with status `2` when any returned diagnostic
-has severity `error`; the other commands exit `0` on success. `--version` and parser
-help do not require runtime settings; command execution requires `FECREATOR_DATA_ROOT`.
+has severity `error`, and expected manifest/lookup failures also emit compact JSON
+diagnostics and exit `2`; the other commands exit `0` on success. Long options are not
+abbreviated anywhere in the parser tree. `--version` and parser help do not require
+runtime settings; command execution requires `FECREATOR_DATA_ROOT`.
 
 The parser and dispatch table live in `fecreator.interfaces.cli_json` so later tasks
 can extend the CLI with `plan-sources`, `submit-sources`, `build`, and `serve`
