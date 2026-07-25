@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fecreator.core.redaction import contains_secret_key, redact
 from tests.fixtures.synthetic_secrets import synthetic_aws_key, synthetic_jwt
 
@@ -33,6 +35,16 @@ def test_redact_masks_bare_tokens_and_embedded_absolute_paths() -> None:
     assert "failed reading" in redacted
     assert "ordinary words" in redacted
     assert "***" in redacted
+
+
+def test_redact_mixed_posix_windows_path_keeps_only_basename(tmp_path: Path) -> None:
+    text = f"build exploded at {tmp_path}\\nested\\artifact.png"
+
+    redacted = redact(text)
+
+    assert redacted == "build exploded at artifact.png"
+    assert str(tmp_path) not in redacted
+    assert "nested" not in redacted
 
 
 def test_contains_secret_key() -> None:

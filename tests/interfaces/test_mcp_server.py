@@ -337,6 +337,46 @@ async def test_build_asset_returns_structured_redacted_mcp_error(
     assert str(tmp_path) not in _serialized_result(result)
 
 
+async def test_build_asset_returns_structured_redacted_mcp_error_for_mixed_posix_windows_path(
+    data_root: Path,
+) -> None:
+    app = _app(data_root)
+    job = app.create_job(Manifest.model_validate(_manifest_payload()))
+    linux_tmp_path = "/tmp/pytest-123"
+
+    def fail_build(job_id: str) -> object:
+        assert job_id == job.id
+        raise ValueError(f"build exploded at {linux_tmp_path}\\nested\\artifact.png")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(app, "build", fail_build)
+    try:
+        result = cast(
+            CallToolResult,
+            await build_mcp(app).call_tool("build_asset", {"job_id": job.id}),
+        )
+    finally:
+        monkeypatch.undo()
+
+    payload = _structured_content(result)
+    assert result.isError is True
+    assert payload == {
+        "ok": False,
+        "diagnostics": [
+            {
+                "code": "BUILD_ASSET_FAILED",
+                "data": {"detail": "build exploded at artifact.png"},
+                "message": "could not build asset",
+                "severity": "error",
+                "where": job.id,
+            }
+        ],
+    }
+    serialized = _serialized_result(result)
+    assert linux_tmp_path not in serialized
+    assert "nested" not in serialized
+
+
 async def test_build_asset_corrupt_reference_pack_returns_structured_mcp_error(
     data_root: Path,
 ) -> None:

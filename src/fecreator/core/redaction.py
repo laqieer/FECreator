@@ -28,11 +28,16 @@ _BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[^\s&]+")
 
 
 def _replace_windows_path(match: re.Match[str]) -> str:
-    return PureWindowsPath(match.group(0)).name
+    return _path_basename(match.group(0))
 
 
 def _replace_posix_path(match: re.Match[str]) -> str:
-    return PurePosixPath(match.group(0)).name
+    return _path_basename(match.group(0))
+
+
+def _path_basename(value: str) -> str:
+    posix_name = PurePosixPath(value).name
+    return PureWindowsPath(posix_name).name
 
 
 def redact(text: str) -> str:
