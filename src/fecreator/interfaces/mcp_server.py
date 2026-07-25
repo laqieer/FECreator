@@ -335,6 +335,20 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         try:
             job = _load_known_job(app, job_id)
             return _success_result(JobResultSuccessOutput(ok=True, job_result=app.build(job.id)))
+        except ReferencePackCorruptionError:
+            return _tool_result(
+                ToolErrorOutput(
+                    ok=False,
+                    diagnostics=(
+                        error(
+                            "CORRUPT_REFERENCE_PACK",
+                            "reference pack is corrupt",
+                            where=job.manifest.character_ref_pack,
+                        ),
+                    ),
+                ),
+                is_error=True,
+            )
         except ExpectedMcpError as exc:
             return _tool_result(
                 ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),

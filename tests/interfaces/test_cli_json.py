@@ -13,8 +13,10 @@ import fecreator.cli as cli_module
 from fecreator import __version__
 from fecreator.app import FeCreatorApp
 from fecreator.cli import main
+from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.core.config import Settings
 from fecreator.interfaces.cli_json import build_parser, run
+from fecreator.references.store import ReferencePackCorruptionError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TASK9_PLAN = (
@@ -142,6 +144,67 @@ def test_main_expected_errors_write_json_and_exit_2(
             "message": "job not found" if expected_code == "UNKNOWN_JOB" else "unknown target spec",
             "severity": "error",
             "where": expected_where,
+        }
+    ]
+
+
+def test_run_plan_sources_rejects_invalid_job_id_with_json_diagnostic(
+    data_root: Path,
+    tmp_path: Path,
+) -> None:
+    out = io.StringIO()
+
+    rc = run(
+        _app(data_root),
+        ["plan-sources", "--job", "..", "--out", str(tmp_path / "plan")],
+        out,
+    )
+
+    assert rc == 2
+    assert json.loads(out.getvalue()) == [
+        {
+            "code": "UNKNOWN_JOB",
+            "data": None,
+            "message": "job not found",
+            "severity": "error",
+            "where": "..",
+        }
+    ]
+
+
+def test_run_build_corrupt_reference_pack_returns_json_diagnostic(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _app(data_root)
+    job = app.create_job(
+        Manifest(
+            asset_type="portrait",
+            target_spec="fe-gba-portrait-standard",
+            workflow="text_to_portrait",
+            provider="fake",
+            character_ref_pack="corrupt-pack",
+            sources=(SourceSpec(kind="text", ref="hero"),),
+        )
+    )
+    out = io.StringIO()
+
+    def _fail_build(job_id: str) -> object:
+        assert job_id == job.id
+        raise ReferencePackCorruptionError("corrupt")
+
+    monkeypatch.setattr(app, "build", _fail_build)
+
+    rc = run(app, ["build", "--job", job.id], out)
+
+    assert rc == 2
+    assert json.loads(out.getvalue()) == [
+        {
+            "code": "CORRUPT_REFERENCE_PACK",
+            "data": None,
+            "message": "reference pack is corrupt",
+            "severity": "error",
+            "where": "corrupt-pack",
         }
     ]
 

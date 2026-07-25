@@ -10,9 +10,13 @@ from pydantic import BaseModel, ValidationError
 
 from fecreator import __version__
 from fecreator.app import FeCreatorApp
-from fecreator.contracts.diagnostics import Diagnostic, error, has_errors
+from fecreator.contracts.diagnostics import DiagData, Diagnostic, error, has_errors
 from fecreator.contracts.manifest import Manifest
+from fecreator.core.paths import PathEscapeError, normalize_storage_id
 from fecreator.core.registry import UnknownIdError
+from fecreator.jobs.model import Job
+from fecreator.jobs.service import InvalidTransitionError
+from fecreator.references.store import ReferencePackCorruptionError
 from fecreator.reporting.sanitize import JsonValue, sanitize_json
 
 CommandHandler: TypeAlias = Callable[[FeCreatorApp, argparse.Namespace], tuple[int, JsonValue]]
@@ -92,6 +96,21 @@ def _diagnostics_payload(diagnostics: list[Diagnostic]) -> JsonValue:
     return [_model_payload(diagnostic) for diagnostic in diagnostics]
 
 
+def _detail_data(exc: Exception) -> DiagData | None:
+    detail = str(exc).strip()
+    if not detail:
+        return None
+    return {"detail": detail}
+
+
+def _load_known_job(app: FeCreatorApp, job_id: str) -> Job:
+    try:
+        normalized = normalize_storage_id(job_id, field_name="job_id")
+        return app.get_job(normalized)
+    except (FileNotFoundError, PathEscapeError, ValueError) as exc:
+        raise ExpectedCliError(error("UNKNOWN_JOB", "job not found", where=job_id)) from exc
+
+
 def _run_list_assets(app: FeCreatorApp, _args: argparse.Namespace) -> tuple[int, JsonValue]:
     return 0, cast(JsonValue, app.list_assets())
 
@@ -139,11 +158,95 @@ def _run_job_create(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, J
 
 
 def _run_job_status(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, JsonValue]:
+    return 0, _model_payload(_load_known_job(app, args.job_id))
+
+
+def _run_plan_sources(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, JsonValue]:
+    job = _load_known_job(app, args.job_id)
     try:
-        job = app.get_job(args.job_id)
+        plan = app.plan_sources(job.id, Path(args.out_dir))
     except FileNotFoundError as exc:
-        raise ExpectedCliError(error("UNKNOWN_JOB", "job not found", where=args.job_id)) from exc
-    return 0, _model_payload(job)
+        if job.manifest.character_ref_pack is not None:
+            raise ExpectedCliError(
+                error(
+                    "UNKNOWN_REFERENCE_PACK",
+                    "reference pack not found",
+                    where=job.manifest.character_ref_pack,
+                )
+            ) from exc
+        raise ExpectedCliError(
+            error(
+                "PLAN_SOURCES_FAILED",
+                "could not plan sources",
+                where=args.out_dir,
+                data=_detail_data(exc),
+            )
+        ) from exc
+    except ReferencePackCorruptionError as exc:
+        raise ExpectedCliError(
+            error(
+                "CORRUPT_REFERENCE_PACK",
+                "reference pack is corrupt",
+                where=job.manifest.character_ref_pack,
+            )
+        ) from exc
+    except (InvalidTransitionError, OSError, PathEscapeError, ValueError) as exc:
+        raise ExpectedCliError(
+            error(
+                "PLAN_SOURCES_FAILED",
+                "could not plan sources",
+                where=args.out_dir,
+                data=_detail_data(exc),
+            )
+        ) from exc
+    return 0, _model_payload(plan)
+
+
+def _run_submit_sources(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, JsonValue]:
+    job = _load_known_job(app, args.job_id)
+    try:
+        submitted = app.submit_sources(job.id, Path(args.sources_dir))
+    except (
+        FileExistsError,
+        FileNotFoundError,
+        InvalidTransitionError,
+        OSError,
+        PathEscapeError,
+        ValueError,
+    ) as exc:
+        raise ExpectedCliError(
+            error(
+                "SUBMIT_SOURCES_FAILED",
+                "could not submit sources",
+                where=args.sources_dir,
+                data=_detail_data(exc),
+            )
+        ) from exc
+    return 0, _model_payload(submitted)
+
+
+def _run_build(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, JsonValue]:
+    job = _load_known_job(app, args.job_id)
+    try:
+        result = app.build(job.id)
+    except ReferencePackCorruptionError as exc:
+        raise ExpectedCliError(
+            error(
+                "CORRUPT_REFERENCE_PACK",
+                "reference pack is corrupt",
+                where=job.manifest.character_ref_pack,
+            )
+        ) from exc
+    except (InvalidTransitionError, OSError, PathEscapeError, UnknownIdError, ValueError) as exc:
+        raise ExpectedCliError(
+            error(
+                "BUILD_ASSET_FAILED",
+                "could not build asset",
+                where=args.job_id,
+                data=_detail_data(exc),
+            )
+        ) from exc
+    return (0 if result.ok else 2), _model_payload(result)
 
 
 def _add_list_parser(
@@ -178,6 +281,26 @@ def _add_job_parser(subparsers: argparse._SubParsersAction[ParserT]) -> None:
     status_parser.set_defaults(handler=_run_job_status)
 
 
+def _add_plan_sources_parser(subparsers: argparse._SubParsersAction[ParserT]) -> None:
+    parser = subparsers.add_parser("plan-sources", allow_abbrev=False)
+    parser.add_argument("--job", dest="job_id", required=True)
+    parser.add_argument("--out", dest="out_dir", required=True)
+    parser.set_defaults(handler=_run_plan_sources)
+
+
+def _add_submit_sources_parser(subparsers: argparse._SubParsersAction[ParserT]) -> None:
+    parser = subparsers.add_parser("submit-sources", allow_abbrev=False)
+    parser.add_argument("--job", dest="job_id", required=True)
+    parser.add_argument("--sources", dest="sources_dir", required=True)
+    parser.set_defaults(handler=_run_submit_sources)
+
+
+def _add_build_parser(subparsers: argparse._SubParsersAction[ParserT]) -> None:
+    parser = subparsers.add_parser("build", allow_abbrev=False)
+    parser.add_argument("--job", dest="job_id", required=True)
+    parser.set_defaults(handler=_run_build)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = JsonCliArgumentParser(prog="fecreator", allow_abbrev=False)
     parser.add_argument(
@@ -192,6 +315,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_list_parser(subparsers, "list-providers", handler=_run_list_providers)
     _add_validate_parser(subparsers)
     _add_job_parser(subparsers)
+    _add_plan_sources_parser(subparsers)
+    _add_submit_sources_parser(subparsers)
+    _add_build_parser(subparsers)
     return parser
 
 

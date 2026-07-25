@@ -11,6 +11,7 @@ from fecreator.app import FeCreatorApp
 from fecreator.contracts.manifest import Manifest
 from fecreator.core.config import Settings
 from fecreator.interfaces.mcp_server import TOOL_NAMES, build_mcp, make_handlers
+from fecreator.references.store import ReferencePackCorruptionError
 
 
 def _app(data_root: Path) -> FeCreatorApp:
@@ -334,6 +335,43 @@ async def test_build_asset_returns_structured_redacted_mcp_error(
         ],
     }
     assert str(tmp_path) not in _serialized_result(result)
+
+
+async def test_build_asset_corrupt_reference_pack_returns_structured_mcp_error(
+    data_root: Path,
+) -> None:
+    app = _app(data_root)
+    job = app.create_job(
+        Manifest.model_validate(_manifest_payload(character_ref_pack="corrupt-pack"))
+    )
+
+    def fail_build(job_id: str) -> object:
+        assert job_id == job.id
+        raise ReferencePackCorruptionError("corrupt")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(app, "build", fail_build)
+    try:
+        result = cast(
+            CallToolResult,
+            await build_mcp(app).call_tool("build_asset", {"job_id": job.id}),
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert result.isError is True
+    assert _structured_content(result) == {
+        "ok": False,
+        "diagnostics": [
+            {
+                "code": "CORRUPT_REFERENCE_PACK",
+                "data": None,
+                "message": "reference pack is corrupt",
+                "severity": "error",
+                "where": "corrupt-pack",
+            }
+        ],
+    }
 
 
 async def test_validate_asset_unknown_spec_returns_structured_mcp_error(

@@ -10,6 +10,9 @@ Every interface stays thin and calls the same `FeCreatorApp` facade.
 - `fecreator list-providers`
 - `fecreator job create --manifest <path>`
 - `fecreator job status <id>`
+- `fecreator plan-sources --job <id> --out <dir>`
+- `fecreator submit-sources --job <id> --sources <dir>`
+- `fecreator build --job <id>`
 - `fecreator validate --spec <id> --path <dir>`
 
 Facade routing:
@@ -19,18 +22,38 @@ Facade routing:
 - `list-providers` → `FeCreatorApp.list_providers()`
 - `job create` → `FeCreatorApp.create_job()`
 - `job status` → `FeCreatorApp.get_job()`
+- `plan-sources` → `FeCreatorApp.plan_sources()`
+- `submit-sources` → `FeCreatorApp.submit_sources()`
+- `build` → `FeCreatorApp.build()`
 - `validate` → `FeCreatorApp.validate()`
 
 JSON commands write one compact JSON document to stdout followed by a single newline
 from `fecreator.cli`. `validate` exits with status `2` when any returned diagnostic
-has severity `error`, and expected manifest/lookup failures also emit compact JSON
-diagnostics and exit `2`; the other commands exit `0` on success. Long options are not
-abbreviated anywhere in the parser tree. `--version` and parser help do not require
+has severity `error`; `build` also exits `2` when the returned `JobResult.ok` is
+`false`. Expected manifest, lookup, source-handoff, and build failures emit compact
+JSON diagnostics and exit `2`; the other commands exit `0` on success. Long options are
+not abbreviated anywhere in the parser tree. `--version` and parser help do not require
 runtime settings; command execution requires `FECREATOR_DATA_ROOT`.
 
 The parser and dispatch table live in `fecreator.interfaces.cli_json` so later tasks
-can extend the CLI with `plan-sources`, `submit-sources`, `build`, and `serve`
-without moving application logic out of `FeCreatorApp`.
+can extend the CLI with `serve` without moving application logic out of
+`FeCreatorApp`.
+
+## HTTP API
+
+`fecreator.interfaces.http_api.create_api()` exposes the GUI-facing HTTP facade:
+
+- `GET /api/assets` → `FeCreatorApp.list_assets()`
+- `GET /api/specs` → `FeCreatorApp.list_specs()`
+- `GET /api/providers` → `FeCreatorApp.list_providers()`
+- `POST /api/jobs` → `FeCreatorApp.create_job()`
+- `GET /api/jobs/{job_id}` → `FeCreatorApp.get_job()`
+- `POST /api/validate` → `FeCreatorApp.validate()`
+
+The HTTP adapter validates request envelopes, normalizes path/id inputs, converts
+expected failures into deterministic diagnostic responses, and otherwise leaves job,
+validation, approval, and lineage orchestration inside `FeCreatorApp` and the domain
+layers behind it.
 
 ## MCP server
 
@@ -63,8 +86,9 @@ validation, approvals, lineage, or job lookup safeguards; it only normalizes ids
 validates manifest input, sanitizes payloads, and forwards to `FeCreatorApp`.
 
 submit_sources is the explicit source-handoff tool for manual/agent-owned files, not a
-required step for providers that generate their own intermediates. Create the job with
-provider `manual` before `plan_sources` or `submit_sources`; callers cannot flip an
-existing job into manual mode after creation. build_asset already runs target-spec
-validation for the job result, and validate_asset remains available for standalone
-validation of an existing package directory when the caller already knows its path.
+required step for providers that generate their own intermediates. For manual-provider
+workflows, create the job with provider `manual` before `plan_sources` or
+`submit_sources`; callers cannot rewrite an existing job manifest to flip it into
+manual mode after creation. build_asset already runs target-spec validation for the job
+result, and validate_asset remains available for standalone validation of an existing
+package directory when the caller already knows its path.

@@ -1,0 +1,342 @@
+from __future__ import annotations
+
+import io
+import json
+from pathlib import Path
+from typing import cast
+
+import httpx
+from mcp.types import CallToolResult
+from PIL import Image
+
+from fecreator.app import FeCreatorApp
+from fecreator.contracts.diagnostics import Diagnostic
+from fecreator.contracts.manifest import Manifest, SourceSpec
+from fecreator.core.config import Settings
+from fecreator.interfaces import cli_json
+from fecreator.interfaces import static as static_module
+from fecreator.interfaces.http_api import create_api
+from fecreator.interfaces.mcp_server import make_handlers
+from fecreator.reporting.sanitize import as_object, sanitize_json
+
+
+def _app(data_root: Path) -> FeCreatorApp:
+    return FeCreatorApp(Settings(data_root=data_root))
+
+
+def _manifest() -> Manifest:
+    return Manifest(
+        asset_type="portrait",
+        target_spec="fe-gba-portrait-standard",
+        workflow="text_to_portrait",
+        provider="fake",
+        sources=(SourceSpec(kind="text", ref="hero"),),
+    )
+
+
+def _mcp_payload(result: CallToolResult) -> dict[str, object]:
+    return cast(dict[str, object], result.structuredContent)
+
+
+def _write_png(path: Path, color: tuple[int, int, int] = (0, 0, 0)) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (96, 80), color).save(path, format="PNG")
+
+
+def _diagnostics_payload(diagnostics: list[Diagnostic]) -> list[dict[str, object]]:
+    return [
+        cast(
+            dict[str, object],
+            as_object(sanitize_json(diagnostic.model_dump(mode="json"), error_cls=ValueError)),
+        )
+        for diagnostic in diagnostics
+    ]
+
+
+def _client(app: FeCreatorApp, monkeypatch) -> httpx.AsyncClient:
+    monkeypatch.setattr(static_module, "web_dir", lambda: None)
+    transport = httpx.ASGITransport(app=create_api(app))
+    return httpx.AsyncClient(transport=transport, base_url="http://testserver")
+
+
+async def test_cli_mcp_http_and_app_agree_on_list_specs(
+    data_root: Path,
+    monkeypatch,
+) -> None:
+    app = _app(data_root)
+    out = io.StringIO()
+
+    rc = cli_json.run(app, ["list-specs"], out)
+    cli_specs = json.loads(out.getvalue())
+    mcp_result = cast(CallToolResult, make_handlers(app)["list_specs"]())
+
+    async with _client(app, monkeypatch) as client:
+        http_response = await client.get("/api/specs")
+
+    assert rc == 0
+    assert http_response.status_code == 200
+    assert cli_specs == app.list_specs() == http_response.json()
+    assert mcp_result.isError is False
+    assert _mcp_payload(mcp_result) == {"ok": True, "spec_ids": cli_specs}
+
+
+async def test_cli_mcp_http_and_app_agree_on_job_snapshot(
+    data_root: Path,
+    monkeypatch,
+) -> None:
+    app = _app(data_root)
+    job = app.create_job(_manifest())
+    expected = cast(dict[str, object], job.model_dump(mode="json"))
+    out = io.StringIO()
+
+    rc = cli_json.run(app, ["job", "status", job.id], out)
+    mcp_result = cast(CallToolResult, make_handlers(app)["get_job"](job.id))
+
+    async with _client(app, monkeypatch) as client:
+        http_response = await client.get(f"/api/jobs/{job.id}")
+
+    assert rc == 0
+    assert http_response.status_code == 200
+    assert json.loads(out.getvalue()) == expected == http_response.json()
+    assert mcp_result.isError is False
+    assert _mcp_payload(mcp_result) == {"ok": True, "job": expected}
+
+
+async def test_cli_mcp_http_and_app_agree_on_validation_diagnostics(
+    data_root: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app = _app(data_root)
+    package_dir = tmp_path / "package"
+    package_dir.mkdir()
+    expected = _diagnostics_payload(app.validate("fe-gba-portrait-standard", package_dir))
+    out = io.StringIO()
+
+    rc = cli_json.run(
+        app,
+        ["validate", "--spec", "fe-gba-portrait-standard", "--path", str(package_dir)],
+        out,
+    )
+    mcp_result = cast(
+        CallToolResult,
+        make_handlers(app)["validate_asset"]("fe-gba-portrait-standard", str(package_dir)),
+    )
+
+    async with _client(app, monkeypatch) as client:
+        http_response = await client.post(
+            "/api/validate",
+            json={"spec_id": "fe-gba-portrait-standard", "package_dir": str(package_dir)},
+        )
+
+    assert rc == 2
+    assert http_response.status_code == 200
+    assert json.loads(out.getvalue()) == expected == http_response.json()
+    assert mcp_result.isError is False
+    assert _mcp_payload(mcp_result) == {"ok": True, "diagnostics": expected}
+
+
+def _manual_manifest() -> Manifest:
+    return Manifest(
+        asset_type="portrait",
+        target_spec="fe-gba-portrait-standard",
+        workflow="text_to_portrait",
+        provider="manual",
+        sources=(SourceSpec(kind="text", ref="hero"),),
+    )
+
+
+def _without_job_identity(payload: dict[str, object]) -> dict[str, object]:
+    normalized = dict(payload)
+    if "id" in normalized:
+        normalized["id"] = "<job>"
+    normalized["job_id"] = "<job>"
+    if "created_at" in normalized:
+        normalized["created_at"] = "<created>"
+    if "updated_at" in normalized:
+        normalized["updated_at"] = "<updated>"
+    if normalized.get("lineage_id") is not None:
+        normalized["lineage_id"] = "<job>"
+    return normalized
+
+
+def test_cli_and_mcp_plan_sources_match_app_for_manual_jobs(
+    data_root: Path,
+    tmp_path: Path,
+) -> None:
+    cli_app = _app(data_root / "cli")
+    mcp_app = _app(data_root / "mcp")
+    app_direct = _app(data_root / "app")
+    cli_job = cli_app.create_job(_manual_manifest())
+    mcp_job = mcp_app.create_job(_manual_manifest())
+    direct_job = app_direct.create_job(_manual_manifest())
+    cli_out = io.StringIO()
+
+    cli_rc = cli_json.run(
+        cli_app,
+        ["plan-sources", "--job", cli_job.id, "--out", str(tmp_path / "cli-plan")],
+        cli_out,
+    )
+    cli_payload = json.loads(cli_out.getvalue())
+    mcp_result = cast(
+        CallToolResult,
+        make_handlers(mcp_app)["plan_sources"](mcp_job.id, str(tmp_path / "mcp-plan")),
+    )
+    direct_payload = cast(
+        dict[str, object],
+        app_direct.plan_sources(direct_job.id, tmp_path / "app-plan").model_dump(mode="json"),
+    )
+
+    assert cli_rc == 0
+    assert cli_payload == direct_payload
+    assert mcp_result.isError is False
+    assert _mcp_payload(mcp_result) == {"ok": True, "source_plan": direct_payload}
+
+
+def test_cli_and_mcp_submit_sources_match_app_for_manual_jobs(
+    data_root: Path,
+    tmp_path: Path,
+) -> None:
+    cli_app = _app(data_root / "cli")
+    mcp_app = _app(data_root / "mcp")
+    app_direct = _app(data_root / "app")
+    cli_job = cli_app.create_job(_manual_manifest())
+    mcp_job = mcp_app.create_job(_manual_manifest())
+    direct_job = app_direct.create_job(_manual_manifest())
+    cli_json.run(
+        cli_app,
+        ["plan-sources", "--job", cli_job.id, "--out", str(tmp_path / "cli-plan")],
+        io.StringIO(),
+    )
+    cli_json.run(
+        mcp_app,
+        ["plan-sources", "--job", mcp_job.id, "--out", str(tmp_path / "mcp-plan")],
+        io.StringIO(),
+    )
+    app_direct.plan_sources(direct_job.id, tmp_path / "app-plan")
+    cli_sources = tmp_path / "cli-sources"
+    mcp_sources = tmp_path / "mcp-sources"
+    app_sources = tmp_path / "app-sources"
+    _write_png(cli_sources / "neutral.png", color=(10, 20, 30))
+    _write_png(mcp_sources / "neutral.png", color=(10, 20, 30))
+    _write_png(app_sources / "neutral.png", color=(10, 20, 30))
+    cli_out = io.StringIO()
+
+    cli_rc = cli_json.run(
+        cli_app,
+        ["submit-sources", "--job", cli_job.id, "--sources", str(cli_sources)],
+        cli_out,
+    )
+    cli_payload = cast(dict[str, object], json.loads(cli_out.getvalue()))
+    mcp_result = cast(
+        CallToolResult,
+        make_handlers(mcp_app)["submit_sources"](mcp_job.id, str(mcp_sources)),
+    )
+    direct_payload = cast(
+        dict[str, object],
+        app_direct.submit_sources(direct_job.id, app_sources).model_dump(mode="json"),
+    )
+
+    assert cli_rc == 0
+    assert _without_job_identity(cli_payload) == _without_job_identity(direct_payload)
+    assert mcp_result.isError is False
+    assert _without_job_identity(cast(dict[str, object], _mcp_payload(mcp_result)["job"])) == (
+        _without_job_identity(direct_payload)
+    )
+
+
+def test_cli_and_mcp_build_match_app_for_manual_jobs_after_source_handoff(
+    data_root: Path,
+    tmp_path: Path,
+) -> None:
+    cli_app = _app(data_root / "cli")
+    mcp_app = _app(data_root / "mcp")
+    app_direct = _app(data_root / "app")
+    cli_job = cli_app.create_job(_manual_manifest())
+    mcp_job = mcp_app.create_job(_manual_manifest())
+    direct_job = app_direct.create_job(_manual_manifest())
+    cli_json.run(
+        cli_app,
+        ["plan-sources", "--job", cli_job.id, "--out", str(tmp_path / "cli-plan")],
+        io.StringIO(),
+    )
+    cli_json.run(
+        mcp_app,
+        ["plan-sources", "--job", mcp_job.id, "--out", str(tmp_path / "mcp-plan")],
+        io.StringIO(),
+    )
+    app_direct.plan_sources(direct_job.id, tmp_path / "app-plan")
+    cli_sources = tmp_path / "cli-sources"
+    mcp_sources = tmp_path / "mcp-sources"
+    app_sources = tmp_path / "app-sources"
+    _write_png(cli_sources / "neutral.png", color=(30, 60, 90))
+    _write_png(mcp_sources / "neutral.png", color=(30, 60, 90))
+    _write_png(app_sources / "neutral.png", color=(30, 60, 90))
+    cli_json.run(
+        cli_app,
+        ["submit-sources", "--job", cli_job.id, "--sources", str(cli_sources)],
+        io.StringIO(),
+    )
+    cli_json.run(
+        mcp_app,
+        ["submit-sources", "--job", mcp_job.id, "--sources", str(mcp_sources)],
+        io.StringIO(),
+    )
+    app_direct.submit_sources(direct_job.id, app_sources)
+    cli_out = io.StringIO()
+
+    cli_rc = cli_json.run(cli_app, ["build", "--job", cli_job.id], cli_out)
+    cli_payload = cast(dict[str, object], json.loads(cli_out.getvalue()))
+    mcp_result = cast(CallToolResult, make_handlers(mcp_app)["build_asset"](mcp_job.id))
+    direct_payload = cast(
+        dict[str, object],
+        app_direct.build(direct_job.id).model_dump(mode="json"),
+    )
+
+    assert cli_rc == 0
+    assert _without_job_identity(cli_payload) == _without_job_identity(direct_payload)
+    assert mcp_result.isError is False
+    assert _without_job_identity(
+        cast(dict[str, object], _mcp_payload(mcp_result)["job_result"])
+    ) == _without_job_identity(direct_payload)
+
+
+def test_cli_and_mcp_build_failure_match_before_manual_sources_are_submitted(
+    data_root: Path,
+) -> None:
+    cli_app = _app(data_root / "cli")
+    mcp_app = _app(data_root / "mcp")
+    cli_job = cli_app.create_job(_manual_manifest())
+    mcp_job = mcp_app.create_job(_manual_manifest())
+    cli_out = io.StringIO()
+
+    cli_rc = cli_json.run(cli_app, ["build", "--job", cli_job.id], cli_out)
+    cli_payload = cast(dict[str, object], json.loads(cli_out.getvalue()))
+    mcp_result = cast(CallToolResult, make_handlers(mcp_app)["build_asset"](mcp_job.id))
+
+    assert cli_rc == 2
+    assert _without_job_identity(cli_payload) == _without_job_identity(
+        cast(dict[str, object], _mcp_payload(mcp_result)["job_result"])
+    )
+
+
+def test_cli_and_mcp_plan_sources_reject_invalid_job_ids_consistently(
+    data_root: Path,
+    tmp_path: Path,
+) -> None:
+    app = _app(data_root)
+    cli_out = io.StringIO()
+
+    cli_rc = cli_json.run(
+        app,
+        ["plan-sources", "--job", "..", "--out", str(tmp_path / "plan")],
+        cli_out,
+    )
+    cli_payload = json.loads(cli_out.getvalue())
+    mcp_result = cast(
+        CallToolResult,
+        make_handlers(app)["plan_sources"]("..", str(tmp_path / "plan")),
+    )
+
+    assert cli_rc == 2
+    assert cli_payload == cast(dict[str, object], _mcp_payload(mcp_result)["diagnostics"])
