@@ -354,7 +354,13 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
                 ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),
                 is_error=True,
             )
-        except (OSError, PathEscapeError, UnknownIdError, ValueError) as exc:
+        except (
+            InvalidTransitionError,
+            OSError,
+            PathEscapeError,
+            UnknownIdError,
+            ValueError,
+        ) as exc:
             return _tool_result(
                 ToolErrorOutput(
                     ok=False,

@@ -91,4 +91,8 @@ workflows, create the job with provider `manual` before `plan_sources` or
 `submit_sources`; callers cannot rewrite an existing job manifest to flip it into
 manual mode after creation. build_asset already runs target-spec validation for the job
 result, and validate_asset remains available for standalone validation of an existing
-package directory when the caller already knows its path.
+package directory when the caller already knows its path. Repeated builds surface the
+same redacted `BUILD_ASSET_FAILED` diagnostic envelope as the CLI instead of bubbling a
+raw `InvalidTransitionError`, and the manual source-handoff equivalence tests exercise
+`plan_sources`, `submit_sources`, and `build_asset` through MCP without seeding state
+through the CLI.

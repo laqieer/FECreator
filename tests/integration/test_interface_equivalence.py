@@ -38,9 +38,30 @@ def _mcp_payload(result: CallToolResult) -> dict[str, object]:
     return cast(dict[str, object], result.structuredContent)
 
 
+def _mcp_diagnostics(result: CallToolResult) -> list[dict[str, object]]:
+    return cast(list[dict[str, object]], _mcp_payload(result)["diagnostics"])
+
+
 def _write_png(path: Path, color: tuple[int, int, int] = (0, 0, 0)) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (96, 80), color).save(path, format="PNG")
+
+
+def _assert_matching_files(*roots: Path) -> None:
+    expected_files = sorted(
+        path.relative_to(roots[0]) for path in roots[0].rglob("*") if path.is_file()
+    )
+
+    assert roots
+    assert expected_files
+    for root in roots[1:]:
+        assert sorted(path.relative_to(root) for path in root.rglob("*") if path.is_file()) == (
+            expected_files
+        )
+    for relative_path in expected_files:
+        expected_bytes = (roots[0] / relative_path).read_bytes()
+        for root in roots[1:]:
+            assert (root / relative_path).read_bytes() == expected_bytes
 
 
 def _diagnostics_payload(diagnostics: list[Diagnostic]) -> list[dict[str, object]]:
@@ -160,6 +181,18 @@ def _without_job_identity(payload: dict[str, object]) -> dict[str, object]:
     return normalized
 
 
+def _without_diagnostic_identity(
+    diagnostics: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    normalized_diagnostics: list[dict[str, object]] = []
+    for diagnostic in diagnostics:
+        normalized = dict(diagnostic)
+        if normalized.get("where") is not None:
+            normalized["where"] = "<job>"
+        normalized_diagnostics.append(normalized)
+    return normalized_diagnostics
+
+
 def test_cli_and_mcp_plan_sources_match_app_for_manual_jobs(
     data_root: Path,
     tmp_path: Path,
@@ -191,6 +224,7 @@ def test_cli_and_mcp_plan_sources_match_app_for_manual_jobs(
     assert cli_payload == direct_payload
     assert mcp_result.isError is False
     assert _mcp_payload(mcp_result) == {"ok": True, "source_plan": direct_payload}
+    _assert_matching_files(tmp_path / "cli-plan", tmp_path / "mcp-plan", tmp_path / "app-plan")
 
 
 def test_cli_and_mcp_submit_sources_match_app_for_manual_jobs(
@@ -208,10 +242,9 @@ def test_cli_and_mcp_submit_sources_match_app_for_manual_jobs(
         ["plan-sources", "--job", cli_job.id, "--out", str(tmp_path / "cli-plan")],
         io.StringIO(),
     )
-    cli_json.run(
-        mcp_app,
-        ["plan-sources", "--job", mcp_job.id, "--out", str(tmp_path / "mcp-plan")],
-        io.StringIO(),
+    mcp_plan_result = cast(
+        CallToolResult,
+        make_handlers(mcp_app)["plan_sources"](mcp_job.id, str(tmp_path / "mcp-plan")),
     )
     app_direct.plan_sources(direct_job.id, tmp_path / "app-plan")
     cli_sources = tmp_path / "cli-sources"
@@ -238,10 +271,16 @@ def test_cli_and_mcp_submit_sources_match_app_for_manual_jobs(
     )
 
     assert cli_rc == 0
+    assert mcp_plan_result.isError is False
     assert _without_job_identity(cli_payload) == _without_job_identity(direct_payload)
     assert mcp_result.isError is False
     assert _without_job_identity(cast(dict[str, object], _mcp_payload(mcp_result)["job"])) == (
         _without_job_identity(direct_payload)
+    )
+    _assert_matching_files(
+        data_root / "cli" / "jobs" / cli_job.id / "submitted",
+        data_root / "mcp" / "jobs" / mcp_job.id / "submitted",
+        data_root / "app" / "jobs" / direct_job.id / "submitted",
     )
 
 
@@ -260,10 +299,9 @@ def test_cli_and_mcp_build_match_app_for_manual_jobs_after_source_handoff(
         ["plan-sources", "--job", cli_job.id, "--out", str(tmp_path / "cli-plan")],
         io.StringIO(),
     )
-    cli_json.run(
-        mcp_app,
-        ["plan-sources", "--job", mcp_job.id, "--out", str(tmp_path / "mcp-plan")],
-        io.StringIO(),
+    mcp_plan_result = cast(
+        CallToolResult,
+        make_handlers(mcp_app)["plan_sources"](mcp_job.id, str(tmp_path / "mcp-plan")),
     )
     app_direct.plan_sources(direct_job.id, tmp_path / "app-plan")
     cli_sources = tmp_path / "cli-sources"
@@ -277,10 +315,9 @@ def test_cli_and_mcp_build_match_app_for_manual_jobs_after_source_handoff(
         ["submit-sources", "--job", cli_job.id, "--sources", str(cli_sources)],
         io.StringIO(),
     )
-    cli_json.run(
-        mcp_app,
-        ["submit-sources", "--job", mcp_job.id, "--sources", str(mcp_sources)],
-        io.StringIO(),
+    mcp_submit_result = cast(
+        CallToolResult,
+        make_handlers(mcp_app)["submit_sources"](mcp_job.id, str(mcp_sources)),
     )
     app_direct.submit_sources(direct_job.id, app_sources)
     cli_out = io.StringIO()
@@ -294,11 +331,27 @@ def test_cli_and_mcp_build_match_app_for_manual_jobs_after_source_handoff(
     )
 
     assert cli_rc == 0
+    assert mcp_plan_result.isError is False
+    assert mcp_submit_result.isError is False
     assert _without_job_identity(cli_payload) == _without_job_identity(direct_payload)
     assert mcp_result.isError is False
     assert _without_job_identity(
         cast(dict[str, object], _mcp_payload(mcp_result)["job_result"])
     ) == _without_job_identity(direct_payload)
+    _assert_matching_files(
+        data_root / "cli" / "jobs" / cli_job.id / "package",
+        data_root / "mcp" / "jobs" / mcp_job.id / "package",
+        data_root / "app" / "jobs" / direct_job.id / "package",
+    )
+    for workspace in (
+        data_root / "cli" / "jobs" / cli_job.id,
+        data_root / "mcp" / "jobs" / mcp_job.id,
+        data_root / "app" / "jobs" / direct_job.id,
+    ):
+        assert (workspace / "report.json").exists()
+        assert (workspace / "lineage.json").exists()
+        assert (workspace / "bundle" / "manifest.json").exists()
+        assert (workspace / "bundle" / "lineage.json").exists()
 
 
 def test_cli_and_mcp_build_failure_match_before_manual_sources_are_submitted(
@@ -317,6 +370,52 @@ def test_cli_and_mcp_build_failure_match_before_manual_sources_are_submitted(
     assert cli_rc == 2
     assert _without_job_identity(cli_payload) == _without_job_identity(
         cast(dict[str, object], _mcp_payload(mcp_result)["job_result"])
+    )
+
+
+def test_cli_and_mcp_repeated_build_errors_match_after_manual_source_handoff(
+    data_root: Path,
+    tmp_path: Path,
+) -> None:
+    cli_app = _app(data_root / "cli")
+    mcp_app = _app(data_root / "mcp")
+    cli_job = cli_app.create_job(_manual_manifest())
+    mcp_job = mcp_app.create_job(_manual_manifest())
+    cli_sources = tmp_path / "cli-sources"
+    mcp_sources = tmp_path / "mcp-sources"
+    _write_png(cli_sources / "neutral.png", color=(30, 60, 90))
+    _write_png(mcp_sources / "neutral.png", color=(30, 60, 90))
+
+    cli_json.run(
+        cli_app,
+        ["plan-sources", "--job", cli_job.id, "--out", str(tmp_path / "cli-plan")],
+        io.StringIO(),
+    )
+    cli_json.run(
+        cli_app,
+        ["submit-sources", "--job", cli_job.id, "--sources", str(cli_sources)],
+        io.StringIO(),
+    )
+    cli_json.run(cli_app, ["build", "--job", cli_job.id], io.StringIO())
+    cast(
+        CallToolResult,
+        make_handlers(mcp_app)["plan_sources"](mcp_job.id, str(tmp_path / "mcp-plan")),
+    )
+    cast(
+        CallToolResult,
+        make_handlers(mcp_app)["submit_sources"](mcp_job.id, str(mcp_sources)),
+    )
+    cast(CallToolResult, make_handlers(mcp_app)["build_asset"](mcp_job.id))
+    cli_out = io.StringIO()
+
+    cli_rc = cli_json.run(cli_app, ["build", "--job", cli_job.id], cli_out)
+    cli_payload = cast(list[dict[str, object]], json.loads(cli_out.getvalue()))
+    mcp_result = cast(CallToolResult, make_handlers(mcp_app)["build_asset"](mcp_job.id))
+
+    assert cli_rc == 2
+    assert mcp_result.isError is True
+    assert _without_diagnostic_identity(cli_payload) == _without_diagnostic_identity(
+        _mcp_diagnostics(mcp_result)
     )
 
 

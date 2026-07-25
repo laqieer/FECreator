@@ -374,6 +374,39 @@ async def test_build_asset_corrupt_reference_pack_returns_structured_mcp_error(
     }
 
 
+async def test_repeated_build_asset_returns_structured_redacted_transition_error(
+    data_root: Path,
+) -> None:
+    app = _app(data_root)
+    server = build_mcp(app)
+    job = app.create_job(Manifest.model_validate(_manifest_payload()))
+
+    first_result = cast(
+        CallToolResult,
+        await server.call_tool("build_asset", {"job_id": job.id}),
+    )
+    second_result = cast(
+        CallToolResult,
+        await server.call_tool("build_asset", {"job_id": job.id}),
+    )
+
+    assert first_result.isError is False
+    assert second_result.isError is True
+    assert _structured_content(second_result) == {
+        "ok": False,
+        "diagnostics": [
+            {
+                "code": "BUILD_ASSET_FAILED",
+                "data": {"detail": "completed -> processing is not allowed"},
+                "message": "could not build asset",
+                "severity": "error",
+                "where": job.id,
+            }
+        ],
+    }
+    assert "Traceback" not in _serialized_result(second_result)
+
+
 async def test_validate_asset_unknown_spec_returns_structured_mcp_error(
     data_root: Path,
     tmp_path: Path,
