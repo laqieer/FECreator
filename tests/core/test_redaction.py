@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+import pytest
 
 from fecreator.core.redaction import contains_secret_key, redact
 from tests.fixtures.synthetic_secrets import synthetic_aws_key, synthetic_jwt
@@ -37,13 +37,21 @@ def test_redact_masks_bare_tokens_and_embedded_absolute_paths() -> None:
     assert "***" in redacted
 
 
-def test_redact_mixed_posix_windows_path_keeps_only_basename(tmp_path: Path) -> None:
-    text = f"build exploded at {tmp_path}\\nested\\artifact.png"
-
-    redacted = redact(text)
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/tmp/pytest-123\\nested\\artifact.png",
+        "C:/tmp\\nested\\artifact.png",
+        "C:\\tmp\\nested\\artifact.png",
+        "\\\\server\\share\\nested\\artifact.png",
+        "/var/tmp/nested/artifact.png",
+    ],
+)
+def test_redact_absolute_paths_keep_only_basename(path: str) -> None:
+    redacted = redact(f"build exploded at {path}")
 
     assert redacted == "build exploded at artifact.png"
-    assert str(tmp_path) not in redacted
+    assert path not in redacted
     assert "nested" not in redacted
 
 

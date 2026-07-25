@@ -337,16 +337,16 @@ async def test_build_asset_returns_structured_redacted_mcp_error(
     assert str(tmp_path) not in _serialized_result(result)
 
 
-async def test_build_asset_returns_structured_redacted_mcp_error_for_mixed_posix_windows_path(
+async def test_build_asset_returns_structured_redacted_mcp_error_for_mixed_drive_letter_path(
     data_root: Path,
 ) -> None:
     app = _app(data_root)
     job = app.create_job(Manifest.model_validate(_manifest_payload()))
-    linux_tmp_path = "/tmp/pytest-123"
+    windows_tmp_path = "C:/tmp/pytest-123"
 
     def fail_build(job_id: str) -> object:
         assert job_id == job.id
-        raise ValueError(f"build exploded at {linux_tmp_path}\\nested\\artifact.png")
+        raise ValueError(f"build exploded at {windows_tmp_path}\\nested\\artifact.png")
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(app, "build", fail_build)
@@ -373,7 +373,7 @@ async def test_build_asset_returns_structured_redacted_mcp_error_for_mixed_posix
         ],
     }
     serialized = _serialized_result(result)
-    assert linux_tmp_path not in serialized
+    assert windows_tmp_path not in serialized
     assert "nested" not in serialized
 
 
