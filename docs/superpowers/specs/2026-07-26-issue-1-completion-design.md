@@ -24,7 +24,7 @@ replay already-finished master-plan tasks or expand beyond portrait-focused v1.
 2. Orchestrate all four portrait workflows.
 3. Make human review a real publication gate.
 4. Complete the local React review and tuning flows.
-5. prove deterministic ROM-free FEBuilder-compatible package behavior in CI.
+5. Prove deterministic ROM-free FEBuilder-compatible package behavior in CI.
 6. Support optional local validation with an installed FEBuilderGBA CLI.
 7. Stabilize and document the final v1 contracts.
 8. Finish with green CI and close issue #1.
@@ -140,23 +140,25 @@ redaction budgets apply to every workflow.
 
 ## Review-gated publication
 
-Generation writes an immutable candidate inside the job workspace and records
-its diagnostics and metrics. A structurally invalid candidate fails before
-review. A valid candidate transitions the job to `waiting_for_review`.
+Each job produces at most one immutable review candidate. Generation writes the
+candidate inside the job workspace, records its diagnostics and metrics, and
+adds a lineage node for the workflow operation. A structurally invalid candidate
+fails before review. A valid candidate transitions the job to
+`waiting_for_review`.
 
-The review stage is canonical for the candidate associated with that immutable
-job revision:
+The review stage is canonical for the candidate associated with that job:
 
 - approval records the actor and permits finalization
-- rejection records a required reason and preserves all candidate evidence
-- a retry creates a new immutable job or asset revision linked to the rejected
-  candidate rather than overwriting it
+- rejection records a required reason, preserves all candidate evidence, and
+  transitions that job to `failed`
+- a retry creates a new immutable job whose candidate lineage names the rejected
+  candidate as a parent rather than overwriting it
 
 Finalization requires an approval record for the current candidate. It reruns
 strict target validation, then atomically publishes the canonical package,
-report, reproducibility bundle, and lineage node. Publication uses the existing
-rollback hooks so a partial report, bundle, package, or lineage write cannot look
-successful.
+report, reproducibility bundle, and an `export_spec` lineage node that is a child
+of the approved candidate. Publication uses the existing rollback hooks so a
+partial report, bundle, package, or lineage write cannot look successful.
 
 Automated quality diagnostics remain fail-closed. Human approval does not bypass
 unsafe paths, missing capabilities, protected-region errors, package contract
@@ -171,14 +173,16 @@ adds the read and action methods required by the workbench:
 - plan and submit sources
 - run or resume workflow processing
 - approve or reject the current review stage
+- retry a rejected job as a new immutable job revision
 - list events and approval decisions
 - list reference packs and revisions
 - query lineage parents, children, and ancestry
 - validate and inspect the final package, report, and bundle
 
 HTTP endpoints mirror these facade operations with structured diagnostics.
-CLI and MCP commands preserve their JSON and tool-result conventions. Existing
-tool names remain stable unless a new operation is strictly required.
+CLI and MCP commands preserve their JSON and tool-result conventions. No
+existing CLI command, MCP tool, or HTTP path is renamed or removed; required new
+read and action operations are additive.
 
 The WebSocket stream continues to derive from persisted job events. Review,
 validation, approval, rejection, and publication transitions therefore appear
