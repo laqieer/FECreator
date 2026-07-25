@@ -195,7 +195,13 @@ class JobStore:
         with self.locked(job_id):
             return self._load_locked(job_id)
 
-    def _save_locked(self, job: Job, *, expected_revision: int) -> None:
+    def _save_locked(
+        self,
+        job: Job,
+        *,
+        expected_revision: int,
+        updated_at: str | None = None,
+    ) -> None:
         payload = self._read_job_payload_locked(job.id)
         current_revision = int(payload["revision"])
         if current_revision != expected_revision or job.revision != expected_revision:
@@ -205,13 +211,13 @@ class JobStore:
             )
 
         next_revision = current_revision + 1
-        updated_at = utc_now_iso()
+        persisted_updated_at = utc_now_iso() if updated_at is None else updated_at
         _write_json_atomic_unlocked(
             self._job_path(job.id),
-            self._job_payload(job, revision=next_revision, updated_at=updated_at),
+            self._job_payload(job, revision=next_revision, updated_at=persisted_updated_at),
         )
         job.revision = next_revision
-        job.updated_at = updated_at
+        job.updated_at = persisted_updated_at
 
     def save(self, job: Job, *, expected_revision: int) -> None:
         """Persist a job update using optimistic concurrency.

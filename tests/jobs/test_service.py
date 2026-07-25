@@ -141,3 +141,81 @@ def test_transition_rolls_back_when_event_log_budget_is_exhausted(
     reloaded = JobStore(data_root).load(job.id)
     assert reloaded.state is JobState.CREATED
     assert reloaded.revision == 1
+
+
+def test_transition_rolls_back_published_side_effects_when_event_append_fails(
+    data_root,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(data_root)
+    job = service.create_job(_manifest())
+    marker = data_root / "published.txt"
+    original_append = service._events.append
+
+    def fail_on_transition(job_id: str, kind: str, message: str, data=None):
+        if kind == "transition":
+            raise OSError("boom")
+        return original_append(job_id, kind, message, data)
+
+    monkeypatch.setattr(service._events, "append", fail_on_transition)
+
+    def publish(candidate_job) -> None:
+        marker.write_text(
+            f"{candidate_job.state.value}:{candidate_job.revision}",
+            encoding="utf-8",
+        )
+
+    def cleanup() -> None:
+        marker.unlink(missing_ok=True)
+
+    with pytest.raises(OSError, match="boom"):
+        service.transition(
+            job.id,
+            JobState.PLANNING,
+            before_persist=publish,
+            rollback=cleanup,
+        )
+
+    assert not marker.exists()
+    reloaded = JobStore(data_root).load(job.id)
+    assert reloaded.state is JobState.CREATED
+    assert reloaded.revision == 1
+
+
+def test_transition_restores_state_even_when_rollback_hook_fails(
+    data_root,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(data_root)
+    job = service.create_job(_manifest())
+    marker = data_root / "published.txt"
+    original_append = service._events.append
+
+    def fail_on_transition(job_id: str, kind: str, message: str, data=None):
+        if kind == "transition":
+            raise OSError("boom")
+        return original_append(job_id, kind, message, data)
+
+    monkeypatch.setattr(service._events, "append", fail_on_transition)
+
+    def publish(candidate_job) -> None:
+        marker.write_text(
+            f"{candidate_job.state.value}:{candidate_job.revision}",
+            encoding="utf-8",
+        )
+
+    def cleanup() -> None:
+        raise OSError("cleanup boom")
+
+    with pytest.raises(OSError, match="cleanup boom"):
+        service.transition(
+            job.id,
+            JobState.PLANNING,
+            before_persist=publish,
+            rollback=cleanup,
+        )
+
+    assert marker.exists()
+    reloaded = JobStore(data_root).load(job.id)
+    assert reloaded.state is JobState.CREATED
+    assert reloaded.revision == 1

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import cast
 
@@ -31,7 +32,7 @@ from fecreator.imaging.quantize import quantize_median_cut
 from fecreator.imaging.resize import ResizeMode, resize
 from fecreator.jobs.events import EventLog
 from fecreator.jobs.model import Job, JobState
-from fecreator.jobs.service import JobService
+from fecreator.jobs.service import InvalidTransitionError, JobService
 from fecreator.jobs.store import JobStore
 from fecreator.lineage.store import LineageStore
 from fecreator.providers.base import GenRequest, Provider, ProviderRefusal, require_capabilities
@@ -55,6 +56,7 @@ _UPPER_CONTENT = SAFE_ZONES[0]
 _LOWER_CONTENT = SAFE_ZONES[1]
 _EYE_SLOTS = ("half_closed_eyes", "closed_eyes")
 _MOUTH_SLOTS = ("mouth1", "mouth2", "mouth3", "mouth4_status", "mouth5", "mouth6", "mouth7")
+_SUPPORTED_TARGET_SPEC = "fe-gba-portrait-standard"
 
 
 def _normalized_path_parts(path: str) -> tuple[str, ...]:
@@ -129,11 +131,13 @@ class PortraitPlugin:
         return prompt_plan.plan_sources(manifest, pack)
 
     def build(self, ctx: PipelineContext, manifest: Manifest) -> JobResult:
+        self._assert_manifest_supported(manifest)
         if manifest.workflow != "text_to_portrait":
             raise NotImplementedError(f"workflow not implemented yet: {manifest.workflow}")
 
         ctx.workspace.mkdir(parents=True, exist_ok=True)
         data_root = ctx.workspace.parents[1]
+        completion_publication_pending = False
         try:
             pack = self._reference_pack(data_root, manifest)
             provider = cast(Provider, PROVIDER_REGISTRY.get(manifest.provider))
@@ -236,9 +240,11 @@ class PortraitPlugin:
             report_path = safe_join(ctx.workspace, "report.json")
             lineage_path = safe_join(ctx.workspace, "lineage.json")
             bundle_path = safe_join(ctx.workspace, "bundle")
+            lineage_store = LineageStore(data_root)
+            lineage_persisted = False
 
-            completed_job = self._transition_job(data_root, ctx.job_id, JobState.COMPLETED)
-            try:
+            def publish_completed_artifacts(completed_job: Job) -> None:
+                nonlocal lineage_persisted
                 write_report(
                     report_path,
                     build_report(
@@ -259,14 +265,26 @@ class PortraitPlugin:
                     [lineage.model_dump(mode="json")],
                 )
                 build_bundle(completed_job, ctx.workspace, bundle_path)
-                LineageStore(data_root).add(lineage)
-            except Exception:
+                lineage_store.add(lineage)
+                lineage_persisted = True
+
+            def rollback_completed_artifacts() -> None:
                 report_path.unlink(missing_ok=True)
                 lineage_path.unlink(missing_ok=True)
                 if bundle_path.exists():
-                    shutil.rmtree(bundle_path, ignore_errors=True)
-                self._force_job_state(data_root, ctx.job_id, JobState.FAILED)
-                raise
+                    shutil.rmtree(bundle_path)
+                if lineage_persisted:
+                    lineage_store.discard_pending(lineage.asset_id)
+
+            completion_publication_pending = True
+            self._transition_job(
+                data_root,
+                ctx.job_id,
+                JobState.COMPLETED,
+                before_persist=publish_completed_artifacts,
+                rollback=rollback_completed_artifacts,
+            )
+            completion_publication_pending = False
 
             return JobResult(
                 job_id=ctx.job_id,
@@ -275,8 +293,11 @@ class PortraitPlugin:
                 diagnostics=diagnostics,
                 lineage_id=lineage.asset_id,
             )
+        except InvalidTransitionError:
+            raise
         except Exception:
-            self._force_job_state(data_root, ctx.job_id, JobState.FAILED)
+            if not completion_publication_pending:
+                self._mark_job_failed_if_possible(data_root, ctx.job_id)
             raise
 
     def _reference_pack(self, data_root: Path, manifest: Manifest) -> ReferencePack | None:
@@ -287,26 +308,48 @@ class PortraitPlugin:
     def _load_job(self, data_root: Path, job_id: str) -> Job:
         return JobStore(data_root).load(job_id)
 
-    def _force_job_state(self, data_root: Path, job_id: str, state: JobState) -> Job:
-        store = JobStore(data_root)
-        job = store.load(job_id)
-        if job.state is state:
-            return job
-        expected_revision = job.revision
-        job.state = state
-        store.save(job, expected_revision=expected_revision)
-        return job
+    def _assert_manifest_supported(self, manifest: Manifest) -> None:
+        if manifest.asset_type != self.id:
+            raise ValueError(f"PortraitPlugin requires manifest asset_type='{self.id}'")
+        if manifest.target_spec != _SUPPORTED_TARGET_SPEC:
+            raise ValueError(
+                f"PortraitPlugin requires manifest target_spec='{_SUPPORTED_TARGET_SPEC}'"
+            )
 
-    def _transition_job(self, data_root: Path, job_id: str, state: JobState) -> Job:
+    def _mark_job_failed_if_possible(self, data_root: Path, job_id: str) -> Job:
+        job = self._load_job(data_root, job_id)
+        if job.state in {JobState.COMPLETED, JobState.CANCELLED}:
+            return job
+        try:
+            return self._transition_job(data_root, job_id, JobState.FAILED)
+        except InvalidTransitionError:
+            return self._load_job(data_root, job_id)
+
+    def _transition_job(
+        self,
+        data_root: Path,
+        job_id: str,
+        state: JobState,
+        *,
+        before_persist: Callable[[Job], None] | None = None,
+        rollback: Callable[[], None] | None = None,
+    ) -> Job:
         service = JobService(JobStore(data_root), EventLog(data_root))
         job = service.resume(job_id)
-        if job.state is state:
+        if job.state is state and before_persist is None:
             return job
 
-        for next_state in self._transition_steps(job.state, state):
+        steps = self._transition_steps(job.state, state)
+        for index, next_state in enumerate(steps):
             if job.state is next_state:
                 continue
-            job = service.transition(job_id, next_state)
+            is_target_step = index == len(steps) - 1
+            job = service.transition(
+                job_id,
+                next_state,
+                before_persist=before_persist if is_target_step else None,
+                rollback=rollback if is_target_step else None,
+            )
         return job
 
     def _transition_steps(self, current: JobState, target: JobState) -> tuple[JobState, ...]:

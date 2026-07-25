@@ -13,6 +13,7 @@ from fecreator.contracts.result import Artifact
 from fecreator.core.pipeline import PipelineContext
 from fecreator.imaging.io import save_png
 from fecreator.jobs.events import EventLog
+from fecreator.jobs.service import InvalidTransitionError, JobService
 from fecreator.jobs.store import JobStore
 from fecreator.lineage.store import LineageStore
 from fecreator.providers.base import GenRequest, GenResponse, ProviderRefusal
@@ -62,6 +63,32 @@ def test_build_produces_valid_package_and_lineage(data_root: Path) -> None:
     assert (ctx.workspace / "report.json").exists()
     assert (ctx.workspace / "lineage.json").exists()
     assert (ctx.workspace / "bundle" / "manifest.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("asset_type", "battle-animation", "asset_type='portrait'"),
+        ("target_spec", "fe-gba-map-sprite-standard", "target_spec='fe-gba-portrait-standard'"),
+    ],
+)
+def test_build_rejects_unsupported_manifest_scope_before_state_transition(
+    data_root: Path,
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    job = JobStore(data_root).create(_manifest())
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    invalid_manifest = job.manifest.model_copy(update={field: value})
+
+    with pytest.raises(ValueError, match=message):
+        PortraitPlugin().build(ctx, invalid_manifest)
+
+    assert JobStore(data_root).load(job.id).state.value == "created"
+    assert EventLog(data_root).read(job.id) == []
 
 
 def test_build_selects_neutral_artifact_by_role(
@@ -196,7 +223,117 @@ def test_build_does_not_persist_lineage_when_bundle_fails(
 
     with pytest.raises(FileNotFoundError):
         LineageStore(data_root).get(job.id)
-    assert JobStore(data_root).load(job.id).state.value == "failed"
+    assert JobStore(data_root).load(job.id).state.value == "validating"
+    assert [event.message for event in EventLog(data_root).read(job.id)] == [
+        "created->planning",
+        "planning->processing",
+        "processing->validating",
+    ]
+    assert not (ctx.workspace / "report.json").exists()
+    assert not (ctx.workspace / "lineage.json").exists()
+    assert not (ctx.workspace / "bundle").exists()
+
+
+def test_build_rolls_back_publication_when_completed_event_logging_fails(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    class _Provider:
+        id = "stub-completed-event-fail"
+        capabilities = CapabilitySet(capabilities=frozenset(Capability))
+
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            del request
+            save_png(workspace / "generated" / "neutral.png", _portrait_rgb())
+            return GenResponse(
+                ok=True,
+                artifacts=(
+                    Artifact(
+                        role="neutral",
+                        path="generated/neutral.png",
+                        sha256="3" * 64,
+                        media_type="image/png",
+                    ),
+                ),
+            )
+
+    original_append = plugin_module.EventLog.append
+
+    def fail_completed_transition(self, job_id: str, kind: str, message: str, data=None):
+        if kind == "transition" and message == "validating->completed":
+            raise OSError("transition event failed")
+        return original_append(self, job_id, kind, message, data)
+
+    job = JobStore(data_root).create(_manifest())
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
+    monkeypatch.setattr(plugin_module.EventLog, "append", fail_completed_transition)
+
+    with pytest.raises(OSError, match="transition event failed"):
+        PortraitPlugin().build(ctx, job.manifest)
+
+    with pytest.raises(FileNotFoundError):
+        LineageStore(data_root).get(job.id)
+    assert JobStore(data_root).load(job.id).state.value == "validating"
+    assert [event.message for event in EventLog(data_root).read(job.id)] == [
+        "created->planning",
+        "planning->processing",
+        "processing->validating",
+    ]
+    assert not (ctx.workspace / "report.json").exists()
+    assert not (ctx.workspace / "lineage.json").exists()
+    assert not (ctx.workspace / "bundle").exists()
+
+
+def test_build_rolls_back_publication_when_lineage_store_add_fails(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    class _Provider:
+        id = "stub-lineage-store-fail"
+        capabilities = CapabilitySet(capabilities=frozenset(Capability))
+
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            del request
+            save_png(workspace / "generated" / "neutral.png", _portrait_rgb())
+            return GenResponse(
+                ok=True,
+                artifacts=(
+                    Artifact(
+                        role="neutral",
+                        path="generated/neutral.png",
+                        sha256="3" * 64,
+                        media_type="image/png",
+                    ),
+                ),
+            )
+
+    def fail_lineage_add(self, node):
+        raise OSError("lineage store failed")
+
+    job = JobStore(data_root).create(_manifest())
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
+    monkeypatch.setattr(plugin_module.LineageStore, "add", fail_lineage_add)
+
+    with pytest.raises(OSError, match="lineage store failed"):
+        PortraitPlugin().build(ctx, job.manifest)
+
+    with pytest.raises(FileNotFoundError):
+        LineageStore(data_root).get(job.id)
+    assert JobStore(data_root).load(job.id).state.value == "validating"
+    assert [event.message for event in EventLog(data_root).read(job.id)] == [
+        "created->planning",
+        "planning->processing",
+        "processing->validating",
+    ]
+    assert not (ctx.workspace / "report.json").exists()
+    assert not (ctx.workspace / "lineage.json").exists()
+    assert not (ctx.workspace / "bundle").exists()
 
 
 def test_build_reports_provider_failure_without_falsely_claiming_missing_artifacts(
@@ -343,3 +480,41 @@ def test_build_marks_job_failed_on_unexpected_provider_exception(
         PortraitPlugin().build(ctx, job.manifest)
 
     assert JobStore(data_root).load(job.id).state.value == "failed"
+
+
+def test_repeated_build_preserves_completed_job_state_and_history(data_root: Path) -> None:
+    import fecreator.providers  # noqa: F401
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    plugin = PortraitPlugin()
+    job = JobStore(data_root).create(_manifest())
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+
+    first_result = plugin.build(ctx, job.manifest)
+    events_before = [event.message for event in EventLog(data_root).read(job.id)]
+    stored_before = JobStore(data_root).load(job.id)
+
+    assert first_result.ok is True
+    with pytest.raises(InvalidTransitionError, match="completed -> processing"):
+        plugin.build(ctx, job.manifest)
+
+    stored_after = JobStore(data_root).load(job.id)
+    assert stored_after.state.value == "completed"
+    assert stored_after.revision == stored_before.revision
+    assert [event.message for event in EventLog(data_root).read(job.id)] == events_before
+
+
+def test_build_from_cancelled_job_preserves_cancelled_state_and_history(data_root: Path) -> None:
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    job = JobStore(data_root).create(_manifest())
+    JobService(JobStore(data_root), EventLog(data_root)).cancel(job.id)
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    events_before = [event.message for event in EventLog(data_root).read(job.id)]
+
+    with pytest.raises(InvalidTransitionError, match="cancelled -> processing"):
+        PortraitPlugin().build(ctx, job.manifest)
+
+    stored_job = JobStore(data_root).load(job.id)
+    assert stored_job.state.value == "cancelled"
+    assert [event.message for event in EventLog(data_root).read(job.id)] == events_before

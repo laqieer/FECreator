@@ -111,6 +111,17 @@ class LineageStore:
                 normalized_node.model_dump(mode="json"),
             )
 
+    def discard_pending(self, asset_id: str) -> None:
+        """Remove a just-created node while compensating a failed publication.
+
+        This is only for rolling back the current transaction before a job is
+        durably published; callers must not use it to mutate completed lineage.
+        """
+
+        normalized = self._normalize_asset_id(asset_id)
+        with _path_lock(self._graph_lock_target(), lock_path=self._graph_lock_path()):
+            self._path(normalized).unlink(missing_ok=True)
+
     def get(self, asset_id: str) -> LineageNode:
         normalized = self._normalize_asset_id(asset_id)
         with _path_lock(self._path(normalized), lock_path=self._lock_path(normalized)):
