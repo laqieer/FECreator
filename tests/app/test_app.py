@@ -60,10 +60,21 @@ class _StubAssetPlugin:
 _PLUGIN = _StubAssetPlugin()
 
 
+@pytest.fixture(autouse=True)
+def _stub_portrait_asset_registry() -> None:
+    original = ASSET_REGISTRY._items.get(_PLUGIN.id)
+    ASSET_REGISTRY._items[_PLUGIN.id] = _PLUGIN
+    try:
+        yield
+    finally:
+        if original is None:
+            ASSET_REGISTRY._items.pop(_PLUGIN.id, None)
+        else:
+            ASSET_REGISTRY._items[_PLUGIN.id] = original
+
+
 def _register_stub_asset() -> _StubAssetPlugin:
     _PLUGIN.reset()
-    if _PLUGIN.id not in ASSET_REGISTRY.ids():
-        ASSET_REGISTRY.register(_PLUGIN.id, _PLUGIN)
     return _PLUGIN
 
 

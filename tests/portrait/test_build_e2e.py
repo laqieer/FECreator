@@ -259,17 +259,20 @@ def test_build_rolls_back_publication_when_completed_event_logging_fails(
                 ),
             )
 
-    original_append = plugin_module.EventLog.append
+    original_append_many = plugin_module.EventLog.append_many
 
-    def fail_completed_transition(self, job_id: str, kind: str, message: str, data=None):
-        if kind == "transition" and message == "validating->completed":
+    def fail_completed_transition(self, job_id: str, events):
+        if any(
+            kind == "transition" and message == "validating->completed"
+            for kind, message, _ in events
+        ):
             raise OSError("transition event failed")
-        return original_append(self, job_id, kind, message, data)
+        return original_append_many(self, job_id, events)
 
     job = JobStore(data_root).create(_manifest())
     ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
     monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
-    monkeypatch.setattr(plugin_module.EventLog, "append", fail_completed_transition)
+    monkeypatch.setattr(plugin_module.EventLog, "append_many", fail_completed_transition)
 
     with pytest.raises(OSError, match="transition event failed"):
         PortraitPlugin().build(ctx, job.manifest)
@@ -518,3 +521,25 @@ def test_build_from_cancelled_job_preserves_cancelled_state_and_history(data_roo
     stored_job = JobStore(data_root).load(job.id)
     assert stored_job.state.value == "cancelled"
     assert [event.message for event in EventLog(data_root).read(job.id)] == events_before
+
+
+def test_app_end_to_end(data_root: Path) -> None:
+    from fecreator.core.registry import ASSET_REGISTRY
+
+    saved_items = dict(ASSET_REGISTRY._items)
+    import fecreator.assets  # noqa: F401
+    from fecreator.app import FeCreatorApp
+    from fecreator.core.config import Settings
+
+    try:
+        app = FeCreatorApp(Settings(data_root=data_root))
+        assert "portrait" in app.list_assets()
+        job = app.create_job(_manifest())
+        result = app.build(job.id)
+
+        assert result.ok
+        diags = app.validate("fe-gba-portrait-standard", data_root / "jobs" / job.id / "package")
+        assert not has_errors(diags)
+    finally:
+        ASSET_REGISTRY._items.clear()
+        ASSET_REGISTRY._items.update(saved_items)
