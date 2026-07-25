@@ -31,3 +31,26 @@ runtime settings; command execution requires `FECREATOR_DATA_ROOT`.
 The parser and dispatch table live in `fecreator.interfaces.cli_json` so later tasks
 can extend the CLI with `plan-sources`, `submit-sources`, `build`, and `serve`
 without moving application logic out of `FeCreatorApp`.
+
+## MCP server
+
+`fecreator.interfaces.mcp_server.build_mcp()` registers these deterministic MCP tools:
+
+- `list_assets` → `FeCreatorApp.list_assets()`
+- `list_specs` → `FeCreatorApp.list_specs()`
+- `list_providers` → `FeCreatorApp.list_providers()`
+- `create_job` → `FeCreatorApp.create_job()`
+- `get_job` → `FeCreatorApp.get_job()`
+- `plan_sources` → `FeCreatorApp.plan_sources()`
+- `submit_sources` → `FeCreatorApp.submit_sources()`
+- `build_asset` → `FeCreatorApp.build()`
+- `validate_asset` → `FeCreatorApp.validate()`
+- `approve_stage` → `FeCreatorApp.approve()`
+- `reject_stage` → `FeCreatorApp.reject()`
+- `cancel_job` → `FeCreatorApp.cancel()`
+
+Handlers return JSON-safe payloads only. Expected/domain failures are returned as
+`{"ok": false, "diagnostics": [...]}` with redacted details instead of raw tracebacks.
+The MCP layer does not add image logic or bypass validation, approvals, lineage, or
+job lookup safeguards; it only normalizes ids, validates manifest input, sanitizes
+payloads, and forwards to `FeCreatorApp`.
