@@ -7,7 +7,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, RootModel, ValidationError
 
 from fecreator.app import FeCreatorApp
 from fecreator.assets.base import SourcePlan
@@ -23,6 +23,13 @@ from fecreator.references.store import ReferencePackCorruptionError
 from fecreator.reporting.sanitize import JsonObject, as_object, sanitize_json, sanitize_text
 
 ToolHandler: TypeAlias = Callable[..., CallToolResult]
+ManifestToolInput: TypeAlias = dict[str, object]
+CREATE_JOB_INPUT_SCHEMA = {
+    "properties": {"manifest": Manifest.model_json_schema()},
+    "required": ["manifest"],
+    "title": "create_jobArguments",
+    "type": "object",
+}
 
 TOOL_NAMES: list[str] = [
     "list_assets",
@@ -61,80 +68,69 @@ class ProviderIdsOutput(BaseModel):
     provider_ids: tuple[str, ...]
 
 
-class _ToolStateOutput(BaseModel):
+class ToolErrorOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    ok: bool
+    ok: Literal[False]
     diagnostics: tuple[Diagnostic, ...]
 
-    @model_validator(mode="after")
-    def _validate_diagnostics(self) -> _ToolStateOutput:
-        if not self.ok and not self.diagnostics:
+    def model_post_init(self, __context: object) -> None:
+        if not self.diagnostics:
             raise ValueError("error payloads require at least one diagnostic")
-        return self
 
 
-class JobOutput(_ToolStateOutput):
-    job: Job | None = None
+class JobSuccessOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    @model_validator(mode="after")
-    def _validate_job(self) -> JobOutput:
-        if self.ok:
-            if self.job is None:
-                raise ValueError("successful payloads require a job")
-            if self.diagnostics:
-                raise ValueError("successful payloads must not include diagnostics")
-        elif self.job is not None:
-            raise ValueError("error payloads must not include a job")
-        return self
+    ok: Literal[True] = True
+    job: Job
 
 
-class SourcePlanOutput(_ToolStateOutput):
-    source_plan: SourcePlan | None = None
-
-    @model_validator(mode="after")
-    def _validate_source_plan(self) -> SourcePlanOutput:
-        if self.ok:
-            if self.source_plan is None:
-                raise ValueError("successful payloads require a source plan")
-            if self.diagnostics:
-                raise ValueError("successful payloads must not include diagnostics")
-        elif self.source_plan is not None:
-            raise ValueError("error payloads must not include a source plan")
-        return self
+class JobOutput(RootModel[JobSuccessOutput | ToolErrorOutput]):
+    pass
 
 
-class JobResultOutput(_ToolStateOutput):
-    job_result: JobResult | None = None
+class SourcePlanSuccessOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    @model_validator(mode="after")
-    def _validate_job_result(self) -> JobResultOutput:
-        if self.ok:
-            if self.job_result is None:
-                raise ValueError("successful payloads require a job result")
-            if self.diagnostics:
-                raise ValueError("successful payloads must not include diagnostics")
-        elif self.job_result is not None:
-            raise ValueError("error payloads must not include a job result")
-        return self
+    ok: Literal[True] = True
+    source_plan: SourcePlan
 
 
-class ApprovalOutput(_ToolStateOutput):
-    approval: ApprovalRecord | None = None
-
-    @model_validator(mode="after")
-    def _validate_approval(self) -> ApprovalOutput:
-        if self.ok:
-            if self.approval is None:
-                raise ValueError("successful payloads require an approval record")
-            if self.diagnostics:
-                raise ValueError("successful payloads must not include diagnostics")
-        elif self.approval is not None:
-            raise ValueError("error payloads must not include an approval record")
-        return self
+class SourcePlanOutput(RootModel[SourcePlanSuccessOutput | ToolErrorOutput]):
+    pass
 
 
-class ValidationOutput(_ToolStateOutput):
+class JobResultSuccessOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ok: Literal[True] = True
+    job_result: JobResult
+
+
+class JobResultOutput(RootModel[JobResultSuccessOutput | ToolErrorOutput]):
+    pass
+
+
+class ApprovalSuccessOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ok: Literal[True] = True
+    approval: ApprovalRecord
+
+
+class ApprovalOutput(RootModel[ApprovalSuccessOutput | ToolErrorOutput]):
+    pass
+
+
+class ValidationSuccessOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ok: Literal[True] = True
+    diagnostics: tuple[Diagnostic, ...]
+
+
+class ValidationOutput(RootModel[ValidationSuccessOutput | ToolErrorOutput]):
     pass
 
 
@@ -194,17 +190,14 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         """List registered provider ids."""
         return _success_result(ProviderIdsOutput(provider_ids=tuple(app.list_providers())))
 
-    def create_job(manifest: Manifest) -> Annotated[CallToolResult, JobOutput]:
+    def create_job(manifest: ManifestToolInput) -> Annotated[CallToolResult, JobOutput]:
         """Create a job from a manifest object."""
         try:
-            parsed = (
-                manifest if isinstance(manifest, Manifest) else Manifest.model_validate(manifest)
-            )
+            parsed = Manifest.model_validate(manifest)
         except ValidationError as exc:
             return _tool_result(
-                JobOutput(
+                ToolErrorOutput(
                     ok=False,
-                    job=None,
                     diagnostics=(
                         error(
                             "INVALID_MANIFEST",
@@ -216,17 +209,15 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
                 ),
                 is_error=True,
             )
-        return _success_result(JobOutput(ok=True, job=app.create_job(parsed), diagnostics=()))
+        return _success_result(JobSuccessOutput(job=app.create_job(parsed)))
 
     def get_job(job_id: str) -> Annotated[CallToolResult, JobOutput]:
         """Get a job snapshot by id."""
         try:
-            return _success_result(
-                JobOutput(ok=True, job=_load_known_job(app, job_id), diagnostics=())
-            )
+            return _success_result(JobSuccessOutput(job=_load_known_job(app, job_id)))
         except ExpectedMcpError as exc:
             return _tool_result(
-                JobOutput(ok=False, job=None, diagnostics=(exc.diagnostic,)),
+                ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),
                 is_error=True,
             )
 
@@ -235,23 +226,18 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         try:
             job = _load_known_job(app, job_id)
             return _success_result(
-                SourcePlanOutput(
-                    ok=True,
-                    source_plan=app.plan_sources(job.id, Path(out_dir)),
-                    diagnostics=(),
-                )
+                SourcePlanSuccessOutput(source_plan=app.plan_sources(job.id, Path(out_dir)))
             )
         except ExpectedMcpError as exc:
             return _tool_result(
-                SourcePlanOutput(ok=False, source_plan=None, diagnostics=(exc.diagnostic,)),
+                ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),
                 is_error=True,
             )
         except FileNotFoundError as exc:
             if job.manifest.character_ref_pack is not None:
                 return _tool_result(
-                    SourcePlanOutput(
+                    ToolErrorOutput(
                         ok=False,
-                        source_plan=None,
                         diagnostics=(
                             error(
                                 "UNKNOWN_REFERENCE_PACK",
@@ -263,9 +249,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
                     is_error=True,
                 )
             return _tool_result(
-                SourcePlanOutput(
+                ToolErrorOutput(
                     ok=False,
-                    source_plan=None,
                     diagnostics=(
                         error(
                             "PLAN_SOURCES_FAILED",
@@ -279,9 +264,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
             )
         except ReferencePackCorruptionError:
             return _tool_result(
-                SourcePlanOutput(
+                ToolErrorOutput(
                     ok=False,
-                    source_plan=None,
                     diagnostics=(
                         error(
                             "CORRUPT_REFERENCE_PACK",
@@ -294,9 +278,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
             )
         except (InvalidTransitionError, OSError, PathEscapeError, ValueError) as exc:
             return _tool_result(
-                SourcePlanOutput(
+                ToolErrorOutput(
                     ok=False,
-                    source_plan=None,
                     diagnostics=(
                         error(
                             "PLAN_SOURCES_FAILED",
@@ -314,13 +297,11 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         try:
             job = _load_known_job(app, job_id)
             return _success_result(
-                JobOutput(
-                    ok=True, job=app.submit_sources(job.id, Path(sources_dir)), diagnostics=()
-                )
+                JobSuccessOutput(job=app.submit_sources(job.id, Path(sources_dir)))
             )
         except ExpectedMcpError as exc:
             return _tool_result(
-                JobOutput(ok=False, job=None, diagnostics=(exc.diagnostic,)),
+                ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),
                 is_error=True,
             )
         except (
@@ -332,9 +313,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
             ValueError,
         ) as exc:
             return _tool_result(
-                JobOutput(
+                ToolErrorOutput(
                     ok=False,
-                    job=None,
                     diagnostics=(
                         error(
                             "SUBMIT_SOURCES_FAILED",
@@ -351,19 +331,16 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         """Build an asset for an existing job."""
         try:
             job = _load_known_job(app, job_id)
-            return _success_result(
-                JobResultOutput(ok=True, job_result=app.build(job.id), diagnostics=())
-            )
+            return _success_result(JobResultSuccessOutput(job_result=app.build(job.id)))
         except ExpectedMcpError as exc:
             return _tool_result(
-                JobResultOutput(ok=False, job_result=None, diagnostics=(exc.diagnostic,)),
+                ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),
                 is_error=True,
             )
         except (OSError, PathEscapeError, UnknownIdError, ValueError) as exc:
             return _tool_result(
-                JobResultOutput(
+                ToolErrorOutput(
                     ok=False,
-                    job_result=None,
                     diagnostics=(
                         error(
                             "BUILD_ASSET_FAILED",
@@ -380,10 +357,10 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         """Validate an exported package directory against a target spec."""
         try:
             diagnostics = app.validate(spec_id, Path(path))
-            return _success_result(ValidationOutput(ok=True, diagnostics=tuple(diagnostics)))
+            return _success_result(ValidationSuccessOutput(diagnostics=tuple(diagnostics)))
         except UnknownIdError as exc:
             return _tool_result(
-                ValidationOutput(
+                ToolErrorOutput(
                     ok=False,
                     diagnostics=(
                         error("UNKNOWN_SPEC", "unknown target spec", where=str(exc.args[0])),
@@ -393,7 +370,7 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
             )
         except (OSError, PathEscapeError, ValueError) as exc:
             return _tool_result(
-                ValidationOutput(
+                ToolErrorOutput(
                     ok=False,
                     diagnostics=(
                         error(
@@ -414,18 +391,17 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         try:
             job = _load_known_job(app, job_id)
             return _success_result(
-                ApprovalOutput(ok=True, approval=app.approve(job.id, stage, actor), diagnostics=())
+                ApprovalSuccessOutput(approval=app.approve(job.id, stage, actor))
             )
         except ExpectedMcpError as exc:
             return _tool_result(
-                ApprovalOutput(ok=False, approval=None, diagnostics=(exc.diagnostic,)),
+                ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),
                 is_error=True,
             )
         except (ApprovalError, ValueError) as exc:
             return _tool_result(
-                ApprovalOutput(
+                ToolErrorOutput(
                     ok=False,
-                    approval=None,
                     diagnostics=(
                         error(
                             "APPROVE_STAGE_FAILED",
@@ -448,22 +424,17 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         try:
             job = _load_known_job(app, job_id)
             return _success_result(
-                ApprovalOutput(
-                    ok=True,
-                    approval=app.reject(job.id, stage, actor, reason),
-                    diagnostics=(),
-                )
+                ApprovalSuccessOutput(approval=app.reject(job.id, stage, actor, reason))
             )
         except ExpectedMcpError as exc:
             return _tool_result(
-                ApprovalOutput(ok=False, approval=None, diagnostics=(exc.diagnostic,)),
+                ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),
                 is_error=True,
             )
         except (ApprovalError, ValueError) as exc:
             return _tool_result(
-                ApprovalOutput(
+                ToolErrorOutput(
                     ok=False,
-                    approval=None,
                     diagnostics=(
                         error(
                             "REJECT_STAGE_FAILED",
@@ -480,17 +451,16 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
         """Cancel an existing job."""
         try:
             job = _load_known_job(app, job_id)
-            return _success_result(JobOutput(ok=True, job=app.cancel(job.id), diagnostics=()))
+            return _success_result(JobSuccessOutput(job=app.cancel(job.id)))
         except ExpectedMcpError as exc:
             return _tool_result(
-                JobOutput(ok=False, job=None, diagnostics=(exc.diagnostic,)),
+                ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),
                 is_error=True,
             )
         except InvalidTransitionError as exc:
             return _tool_result(
-                JobOutput(
+                ToolErrorOutput(
                     ok=False,
-                    job=None,
                     diagnostics=(
                         error(
                             "CANCEL_JOB_FAILED",
@@ -522,5 +492,7 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
 def build_mcp(app: FeCreatorApp) -> FastMCP:
     server = FastMCP("fecreator")
     for name, handler in make_handlers(app).items():
-        server.tool(name=name)(handler)
+        tool = server._tool_manager.add_tool(handler, name=name)
+        if name == "create_job":
+            tool.parameters = CREATE_JOB_INPUT_SCHEMA
     return server

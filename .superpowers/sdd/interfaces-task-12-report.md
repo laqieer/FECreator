@@ -49,3 +49,35 @@ Concerns:
 - `tests\interfaces tests\app\test_app.py` still emits the pre-existing FastAPI /
   Starlette deprecation warning about `starlette.testclient`; no new warnings were
   introduced by the MCP changes.
+
+---
+
+## 2026-07-25 remaining-schema follow-up
+
+Status: done
+
+Summary:
+- Kept the 12 MCP tool names and thin `FeCreatorApp` facade routing unchanged.
+- Switched `create_job` to accept a handler-owned manifest dict while overriding the
+  published FastMCP `inputSchema` to the exact `Manifest` JSON schema, so malformed
+  payloads now return structured redacted `INVALID_MANIFEST` results instead of
+  pre-handler `ToolError` validation dumps.
+- Replaced nullable payload envelopes with exact output alternatives: each success
+  shape now has its required payload field (`job`, `source_plan`, `job_result`,
+  `approval`, or `diagnostics`) and all handled failures share `ok: false` plus
+  `diagnostics`.
+- Added regression coverage for invalid `create_job` payloads, exact schema exposure,
+  and every output-schema family exposed by `list_tools()`.
+
+Verification:
+- Red: `.venv\Scripts\python.exe -m pytest -q tests\interfaces\test_mcp_server.py`
+- Green: `.venv\Scripts\python.exe -m pytest -q tests\interfaces\test_mcp_server.py`
+- Final tests: `.venv\Scripts\python.exe -m pytest -q tests\interfaces tests\app`
+- Final lint: `.venv\Scripts\python.exe -m ruff check .`
+- Final format: `.venv\Scripts\python.exe -m ruff format --check .`
+- Final typing: `.venv\Scripts\python.exe -m mypy src`
+
+Concerns:
+- The remaining verification scope still inherits the existing FastAPI / Starlette
+  `starlette.testclient` deprecation warning; the MCP schema/error follow-up does not
+  add new warnings or known open failures.

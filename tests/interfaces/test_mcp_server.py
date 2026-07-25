@@ -45,6 +45,46 @@ def _serialized_result(result: CallToolResult) -> str:
     return json.dumps(result.model_dump(mode="json"), sort_keys=True)
 
 
+def _assert_success_only_schema(
+    schema: dict[str, object], *, title: str, payload_field: str
+) -> None:
+    properties = cast(dict[str, object], schema["properties"])
+    ok_schema = cast(dict[str, object], properties["ok"])
+
+    assert schema["title"] == title
+    assert schema["type"] == "object"
+    assert schema["required"] == [payload_field]
+    assert schema["additionalProperties"] is False
+    assert ok_schema["const"] is True
+    assert payload_field in properties
+    assert "diagnostics" not in properties
+
+
+def _assert_union_schema(
+    schema: dict[str, object], *, title: str, success_name: str, payload_field: str
+) -> None:
+    defs = cast(dict[str, object], schema["$defs"])
+    success_schema = cast(dict[str, object], defs[success_name])
+    success_properties = cast(dict[str, object], success_schema["properties"])
+    error_schema = cast(dict[str, object], defs["ToolErrorOutput"])
+    error_properties = cast(dict[str, object], error_schema["properties"])
+
+    assert schema["title"] == title
+    assert schema["anyOf"] == [
+        {"$ref": f"#/$defs/{success_name}"},
+        {"$ref": "#/$defs/ToolErrorOutput"},
+    ]
+    assert success_schema["additionalProperties"] is False
+    assert success_schema["required"] == [payload_field]
+    assert cast(dict[str, object], success_properties["ok"])["const"] is True
+    assert payload_field in success_properties
+    assert error_schema["additionalProperties"] is False
+    assert error_schema["required"] == ["ok", "diagnostics"]
+    assert cast(dict[str, object], error_properties["ok"])["const"] is False
+    if payload_field != "diagnostics":
+        assert payload_field not in error_properties
+
+
 def test_tool_names_match_design() -> None:
     assert TOOL_NAMES == [
         "list_assets",
@@ -92,15 +132,45 @@ def test_create_job_handler_returns_structured_payload(data_root: Path) -> None:
 async def test_build_mcp_exposes_exact_manifest_schema_for_create_job(data_root: Path) -> None:
     create_job = (await _tools_by_name(data_root))["create_job"]
 
-    assert create_job.inputSchema["properties"]["manifest"] == {"$ref": "#/$defs/Manifest"}
-    assert create_job.inputSchema["$defs"]["Manifest"]["additionalProperties"] is False
-    assert create_job.inputSchema["$defs"]["Manifest"]["required"] == list(
-        Manifest.model_json_schema()["required"]
+    assert create_job.inputSchema["properties"]["manifest"] == Manifest.model_json_schema()
+
+
+async def test_create_job_invalid_manifest_returns_structured_redacted_mcp_error(
+    data_root: Path,
+    tmp_path: Path,
+) -> None:
+    bad_path = tmp_path / "secrets" / "manifest.json"
+    result = cast(
+        CallToolResult,
+        await build_mcp(_app(data_root)).call_tool(
+            "create_job",
+            {
+                "manifest": {
+                    "provider": "fake",
+                    "sources": [{"kind": "text", "ref": "hero"}],
+                    "absolute_path": str(bad_path),
+                }
+            },
+        ),
     )
-    assert (
-        create_job.inputSchema["$defs"]["Manifest"]["properties"]["workflow"]
-        == (Manifest.model_json_schema()["properties"]["workflow"])
-    )
+
+    assert result.isError is True
+    assert _structured_content(result) == {
+        "ok": False,
+        "diagnostics": [
+            {
+                "code": "INVALID_MANIFEST",
+                "data": {"error_count": 4},
+                "message": "manifest failed validation",
+                "severity": "error",
+                "where": "manifest",
+            }
+        ],
+    }
+    serialized = _serialized_result(result)
+    assert str(bad_path) not in serialized
+    assert "absolute_path" not in serialized
+    assert "input_value" not in serialized
 
 
 async def test_build_mcp_publishes_output_schema_for_every_tool(data_root: Path) -> None:
@@ -108,19 +178,55 @@ async def test_build_mcp_publishes_output_schema_for_every_tool(data_root: Path)
 
     assert list(tools) == TOOL_NAMES
     assert all(tool.outputSchema is not None for tool in tools.values())
-    assert tools["list_assets"].outputSchema == {
-        "additionalProperties": False,
-        "properties": {
-            "ok": {"const": True, "default": True, "title": "Ok", "type": "boolean"},
-            "asset_ids": {"items": {"type": "string"}, "title": "Asset Ids", "type": "array"},
-        },
-        "required": ["asset_ids"],
-        "title": "AssetIdsOutput",
-        "type": "object",
-    }
-    assert tools["create_job"].outputSchema["title"] == "JobOutput"
-    assert tools["plan_sources"].outputSchema["title"] == "SourcePlanOutput"
-    assert tools["validate_asset"].outputSchema["title"] == "ValidationOutput"
+    _assert_success_only_schema(
+        cast(dict[str, object], tools["list_assets"].outputSchema),
+        title="AssetIdsOutput",
+        payload_field="asset_ids",
+    )
+    _assert_success_only_schema(
+        cast(dict[str, object], tools["list_specs"].outputSchema),
+        title="SpecIdsOutput",
+        payload_field="spec_ids",
+    )
+    _assert_success_only_schema(
+        cast(dict[str, object], tools["list_providers"].outputSchema),
+        title="ProviderIdsOutput",
+        payload_field="provider_ids",
+    )
+    assert tools["create_job"].outputSchema == tools["get_job"].outputSchema
+    assert tools["create_job"].outputSchema == tools["submit_sources"].outputSchema
+    assert tools["create_job"].outputSchema == tools["cancel_job"].outputSchema
+    _assert_union_schema(
+        cast(dict[str, object], tools["create_job"].outputSchema),
+        title="JobOutput",
+        success_name="JobSuccessOutput",
+        payload_field="job",
+    )
+    _assert_union_schema(
+        cast(dict[str, object], tools["plan_sources"].outputSchema),
+        title="SourcePlanOutput",
+        success_name="SourcePlanSuccessOutput",
+        payload_field="source_plan",
+    )
+    _assert_union_schema(
+        cast(dict[str, object], tools["build_asset"].outputSchema),
+        title="JobResultOutput",
+        success_name="JobResultSuccessOutput",
+        payload_field="job_result",
+    )
+    assert tools["approve_stage"].outputSchema == tools["reject_stage"].outputSchema
+    _assert_union_schema(
+        cast(dict[str, object], tools["approve_stage"].outputSchema),
+        title="ApprovalOutput",
+        success_name="ApprovalSuccessOutput",
+        payload_field="approval",
+    )
+    _assert_union_schema(
+        cast(dict[str, object], tools["validate_asset"].outputSchema),
+        title="ValidationOutput",
+        success_name="ValidationSuccessOutput",
+        payload_field="diagnostics",
+    )
 
 
 async def test_plan_sources_returns_structured_redacted_mcp_error_for_missing_ref_pack(
@@ -152,7 +258,6 @@ async def test_plan_sources_returns_structured_redacted_mcp_error_for_missing_re
                 "where": "missing-pack",
             }
         ],
-        "source_plan": None,
     }
     assert "Traceback" not in _serialized_result(result)
     assert str(data_root) not in _serialized_result(result)
@@ -192,7 +297,6 @@ async def test_build_asset_returns_structured_redacted_mcp_error(
                 "where": job.id,
             }
         ],
-        "job_result": None,
     }
     assert str(tmp_path) not in _serialized_result(result)
 
