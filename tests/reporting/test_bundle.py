@@ -16,6 +16,7 @@ from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.contracts.result import Artifact, StageResult
 from fecreator.core.atomicio import LockTimeoutError, write_json_atomic
 from fecreator.core.hashing import sha256_file
+from fecreator.interop.febuilder_roundtrip import decode_roundtrip
 from fecreator.jobs.model import Job, JobState
 from fecreator.reporting.bundle import (
     BundleError,
@@ -24,7 +25,6 @@ from fecreator.reporting.bundle import (
     verify_bundle,
 )
 from fecreator.reporting.json_report import build_report, write_report
-from fecreator.specs.fire_emblem.gba.portrait_standard.validation import validate_package
 from tests.fixtures.gba import write_valid_package
 
 
@@ -152,6 +152,7 @@ def test_build_bundle_publishes_canonical_files_and_relative_hashes(tmp_path: Pa
     assert (bundle / "report.json").exists()
     assert (bundle / "lineage.json").exists()
     assert (bundle / "hashes.json").exists()
+    assert (bundle / "compat.json").exists()
     assert (bundle / "package" / "hero.png").exists()
     assert (bundle / "package" / "hero.pal").exists()
 
@@ -167,7 +168,29 @@ def test_build_bundle_publishes_canonical_files_and_relative_hashes(tmp_path: Pa
             sha256_file(bundle / "package" / "hero.pal"),
         }
     )
+    compat = json.loads((bundle / "compat.json").read_text(encoding="utf-8"))
+    assert compat["source"] == "deterministic_febuilder_compatible_roundtrip"
+    assert compat["validated_by_cli"] is False
+    assert compat["roundtrip"]["ok"] is True
+    assert compat["roundtrip"]["pixel_sha256"] == compat["roundtrip"]["roundtrip_pixel_sha256"]
+    assert compat["roundtrip"]["palette_sha256"] == compat["roundtrip"]["roundtrip_palette_sha256"]
+    assert str(tmp_path) not in json.dumps(compat)
     assert verify_bundle(bundle) == []
+
+
+def test_bundle_roundtrip_evidence_is_reproducible_across_workspaces(tmp_path: Path) -> None:
+    first_job, first_workspace = _workspace(tmp_path / "first")
+    second_job, second_workspace = _workspace(tmp_path / "second")
+
+    first_bundle = build_bundle(first_job, first_workspace, tmp_path / "first-bundle")
+    second_bundle = build_bundle(second_job, second_workspace, tmp_path / "second-bundle")
+
+    assert (first_bundle / "compat.json").read_bytes() == (
+        second_bundle / "compat.json"
+    ).read_bytes()
+    assert (first_bundle / "hashes.json").read_bytes() == (
+        second_bundle / "hashes.json"
+    ).read_bytes()
 
 
 def test_build_bundle_refuses_existing_destination_and_secret_manifest_keys(tmp_path: Path) -> None:
@@ -309,6 +332,32 @@ def test_verify_bundle_reports_cross_file_inconsistencies(tmp_path: Path) -> Non
     assert "BUNDLE_INCONSISTENT_OUTPUT_HASHES" in codes
 
 
+def test_verify_bundle_requires_valid_deterministic_roundtrip_evidence(tmp_path: Path) -> None:
+    job, workspace = _workspace(tmp_path)
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+    compat = json.loads((bundle / "compat.json").read_text(encoding="utf-8"))
+    compat["roundtrip"]["ok"] = False
+    write_json_atomic(bundle / "compat.json", compat)
+
+    codes = {diagnostic.code for diagnostic in verify_bundle(bundle)}
+
+    assert "BUNDLE_HASH_MISMATCH" in codes
+    assert "BUNDLE_COMPAT_FAILURE" in codes
+
+
+def test_verify_bundle_rejects_missing_or_invalid_roundtrip_evidence(tmp_path: Path) -> None:
+    job, workspace = _workspace(tmp_path)
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+    (bundle / "compat.json").unlink()
+
+    diagnostics = verify_bundle(bundle)
+
+    assert any(
+        diagnostic.code == "BUNDLE_MISSING_FILE" and diagnostic.where == "compat.json"
+        for diagnostic in diagnostics
+    )
+
+
 def test_verify_bundle_sanitizes_missing_root_where(tmp_path: Path) -> None:
     missing = tmp_path / "missing-bundle"
 
@@ -400,12 +449,13 @@ def test_febuilder_compat_report_preserves_diagnostics_without_claiming_cli_proo
     package_dir = tmp_path / "package"
     write_valid_package(package_dir)
     (package_dir / "hero.pal").unlink()
-    diagnostics = validate_package(package_dir)
+    evidence = decode_roundtrip(package_dir)
 
-    report = febuilder_compat_report(diagnostics)
+    report = febuilder_compat_report(evidence)
 
     assert report["validated_by_cli"] is False
-    assert report["source"] == "canonical_gba_validation"
+    assert report["source"] == "deterministic_febuilder_compatible_roundtrip"
+    assert report["roundtrip"]["ok"] is False
     assert report["errors"] >= 1
     assert "MISSING_PALETTE" in report["codes"]
     assert report["diagnostics"][0]["severity"] in {"error", "warning", "info"}

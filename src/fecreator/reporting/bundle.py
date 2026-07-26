@@ -24,6 +24,7 @@ from fecreator.core.atomicio import (
 from fecreator.core.hashing import sha256_file
 from fecreator.core.paths import PathEscapeError, safe_join
 from fecreator.core.redaction import contains_secret_key
+from fecreator.interop.febuilder_roundtrip import RoundtripEvidence, decode_roundtrip
 from fecreator.jobs.approvals import ApprovalRecord
 from fecreator.jobs.model import Job
 from fecreator.reporting.sanitize import (
@@ -40,7 +41,10 @@ MAX_BUNDLE_BYTES = 32 * 1024 * 1024
 STAGING_PREFIX = ".bundle-stage-"
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-_REQUIRED_BUNDLE_FILES = frozenset({"manifest.json", "report.json", "lineage.json", "hashes.json"})
+_COMPAT_SOURCE = "deterministic_febuilder_compatible_roundtrip"
+_REQUIRED_BUNDLE_FILES = frozenset(
+    {"compat.json", "manifest.json", "report.json", "lineage.json", "hashes.json"}
+)
 _REQUIRED_REPORT_KEYS = frozenset(
     {
         "job_id",
@@ -396,6 +400,7 @@ def build_bundle(job: Job, workspace: Path, out_dir: Path) -> Path:
     raw_report_payload = _read_json_object(report_path, label="report")
     raw_lineage_payload = _read_json_list(lineage_path, label="lineage")
     lineage_payload = _validated_lineage_payload(raw_lineage_payload)
+    compat_payload = febuilder_compat_report(decode_roundtrip(package_dir))
     _check_resource_limits([*package_files, report_path, lineage_path])
 
     try:
@@ -413,6 +418,7 @@ def build_bundle(job: Job, workspace: Path, out_dir: Path) -> Path:
                 staging_dir.mkdir(parents=True, exist_ok=False)
                 _write_json_atomic_unlocked(staging_dir / "manifest.json", manifest_payload)
                 _write_json_atomic_unlocked(staging_dir / "lineage.json", lineage_payload)
+                _write_json_atomic_unlocked(staging_dir / "compat.json", compat_payload)
                 for source in package_files:
                     relative = source.relative_to(package_dir)
                     _copy_regular_file(source, staging_dir / "package" / relative)
@@ -531,6 +537,66 @@ def _validate_hashes_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> Js
     return payload
 
 
+def _validate_compat_file(
+    bundle_dir: Path, diagnostics: list[Diagnostic]
+) -> RoundtripEvidence | None:
+    path = bundle_dir / "compat.json"
+    try:
+        payload = _read_json_object(path, label="compatibility evidence")
+    except FileNotFoundError:
+        diagnostics.append(error("BUNDLE_MISSING_FILE", "missing compat.json", where="compat.json"))
+        return None
+    except BundleError as exc:
+        diagnostics.append(
+            error("BUNDLE_INVALID_COMPAT", sanitize_text(str(exc)), where="compat.json")
+        )
+        return None
+
+    if payload.get("source") != _COMPAT_SOURCE:
+        diagnostics.append(
+            error(
+                "BUNDLE_INVALID_COMPAT",
+                "compat.json has an unexpected compatibility source",
+                where="compat.json",
+            )
+        )
+        return None
+    if payload.get("validated_by_cli") is not False:
+        diagnostics.append(
+            error(
+                "BUNDLE_INVALID_COMPAT",
+                "compat.json must not claim external CLI validation",
+                where="compat.json",
+            )
+        )
+        return None
+    try:
+        evidence = RoundtripEvidence.model_validate(payload["roundtrip"])
+    except (KeyError, ValueError) as exc:
+        diagnostics.append(
+            error(
+                "BUNDLE_INVALID_COMPAT",
+                sanitize_text(f"compat.json roundtrip evidence is invalid: {exc}"),
+                where="compat.json",
+            )
+        )
+        return None
+    if any(
+        diagnostic.message != sanitize_text(diagnostic.message)
+        or (diagnostic.where is not None and diagnostic.where != sanitize_path(diagnostic.where))
+        for diagnostic in evidence.diagnostics
+    ):
+        diagnostics.append(
+            error(
+                "BUNDLE_INVALID_COMPAT",
+                "compat.json roundtrip diagnostics contain unsafe text or paths",
+                where="compat.json",
+            )
+        )
+        return None
+    return evidence
+
+
 def _append_casefold_collision_diagnostics(
     collisions: dict[str, list[str]], diagnostics: list[Diagnostic]
 ) -> set[str]:
@@ -562,6 +628,7 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
     manifest = _validate_manifest_file(bundle_dir, diagnostics)
     report = _validate_report_file(bundle_dir, diagnostics)
     lineage = _validate_lineage_file(bundle_dir, diagnostics)
+    compat = _validate_compat_file(bundle_dir, diagnostics)
     hashes_payload = _validate_hashes_file(bundle_dir, diagnostics)
     if hashes_payload is None:
         return diagnostics
@@ -676,6 +743,15 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
             )
         )
 
+    if compat is not None and not compat.ok:
+        diagnostics.append(
+            error(
+                "BUNDLE_COMPAT_FAILURE",
+                "deterministic compatibility roundtrip did not succeed",
+                where="compat.json",
+            )
+        )
+
     if manifest is not None and report is not None and lineage is not None:
         expected_manifest_hash = manifest.content_hash()
         if report.get("manifest_hash") != expected_manifest_hash:
@@ -713,9 +789,9 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
     return diagnostics
 
 
-def febuilder_compat_report(diags: Iterable[Diagnostic]) -> dict[str, object]:
+def febuilder_compat_report(evidence: RoundtripEvidence) -> dict[str, object]:
     diagnostics = sorted(
-        diags,
+        evidence.diagnostics,
         key=lambda diagnostic: (
             diagnostic.severity.value,
             diagnostic.code,
@@ -724,8 +800,9 @@ def febuilder_compat_report(diags: Iterable[Diagnostic]) -> dict[str, object]:
         ),
     )
     return {
-        "source": "canonical_gba_validation",
+        "source": _COMPAT_SOURCE,
         "validated_by_cli": False,
+        "roundtrip": evidence.model_dump(mode="json"),
         "errors": sum(1 for diagnostic in diagnostics if diagnostic.severity is Severity.ERROR),
         "warnings": sum(1 for diagnostic in diagnostics if diagnostic.severity is Severity.WARNING),
         "infos": sum(1 for diagnostic in diagnostics if diagnostic.severity is Severity.INFO),
