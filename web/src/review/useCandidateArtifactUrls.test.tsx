@@ -4,7 +4,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { ApiClient } from "../api/client";
 import type { CandidateSnapshot } from "../api/types";
 import { createStubApiClient } from "../test/util";
-import { useCandidateArtifactUrls } from "./useCandidateArtifactUrls";
+import { parseJascPalette, useCandidateArtifactUrls } from "./useCandidateArtifactUrls";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -82,4 +82,56 @@ test("loads artifacts through the API and revokes stale and removed object URLs"
 
   unmount();
   expect(revokeObjectURL).toHaveBeenCalledWith("blob:5");
+});
+
+test("parses the persisted candidate JASC palette sidecar", () => {
+  expect(
+    parseJascPalette(`JASC-PAL
+0100
+2
+0 248 0
+80 96 200
+`),
+  ).toEqual([
+    [0, 248, 0],
+    [80, 96, 200],
+  ]);
+});
+
+test("loads a candidate palette sidecar through the artifact API", async () => {
+  const createObjectURL = vi.fn(() => "blob:portrait");
+  const revokeObjectURL = vi.fn();
+  vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
+  const snapshot: CandidateSnapshot = {
+    ...candidate("job-a", "candidate/package/portrait.png"),
+    artifacts: [
+      {
+        role: "portrait",
+        path: "candidate/package/portrait.png",
+        sha256: "0".repeat(64),
+        media_type: "image/png",
+      },
+      {
+        role: "palette",
+        path: "candidate/package/portrait.pal",
+        sha256: "1".repeat(64),
+        media_type: "text/plain",
+      },
+    ],
+  };
+  const api = createStubApiClient({
+    getArtifact: async (_jobId, path) =>
+      path.endsWith(".pal")
+        ? new Blob(["JASC-PAL\n0100\n1\n0 248 0\n"], { type: "text/plain" })
+        : new Blob(["image"], { type: "image/png" }),
+  });
+
+  function PaletteEntries() {
+    const { palette } = useCandidateArtifactUrls(api, "job-a", snapshot);
+    return <p>{JSON.stringify(palette)}</p>;
+  }
+
+  render(<PaletteEntries />);
+
+  expect(await screen.findByText("[[0,248,0]]")).toBeInTheDocument();
 });

@@ -59,3 +59,18 @@ test("shows parent lineage and explicit empty state", () => {
   rerender(<LineageView nodes={[]} onApprove={vi.fn()} onReject={vi.fn()} />);
   expect(screen.getByText("No lineage nodes available.")).toBeInTheDocument();
 });
+
+test("groups the selected asset, ancestors, and children for traversal", () => {
+  render(
+    <LineageView
+      selected={node({ asset_id: "candidate", parents: ["root"] })}
+      ancestors={[node({ asset_id: "root" })]}
+      children={[node({ asset_id: "export", operation: "export_spec", parents: ["candidate"] })]}
+    />,
+  );
+
+  expect(screen.getByRole("heading", { name: "Selected asset" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Ancestors" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Children" })).toBeInTheDocument();
+  expect(screen.getByText("export")).toBeInTheDocument();
+});

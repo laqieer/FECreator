@@ -66,9 +66,19 @@ const DEMO_PNG_BYTES = Uint8Array.from([
   6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 144, 215, 52, 255,
   15, 0, 2, 105, 1, 127, 229, 103, 186, 4, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ]);
+const DEMO_JASC_PALETTE = `JASC-PAL
+0100
+2
+0 248 0
+80 96 200
+`;
 
 function newPngBlob(): Blob {
   return new Blob([DEMO_PNG_BYTES], { type: "image/png" });
+}
+
+function newPaletteBlob(): Blob {
+  return newBlob(DEMO_JASC_PALETTE, "text/plain");
 }
 
 function cloneDiagnostics(): Diagnostic[] {
@@ -141,6 +151,12 @@ function createCandidate(job: Job): CandidateSnapshot {
         path: "candidate/package/portrait.png",
         sha256: "5".repeat(64),
         media_type: "image/png",
+      },
+      {
+        role: "palette",
+        path: "candidate/package/portrait.pal",
+        sha256: "8".repeat(64),
+        media_type: "text/plain",
       },
     ],
     diagnostics: [],
@@ -288,10 +304,13 @@ function createBundleEntries(bundleFiles: Map<string, string>): BundleEntry[] {
 }
 
 function createSeedState(): DemoJobState {
-  const artifactFiles = new Map<string, Blob>([
-    [demoCandidate.artifacts[0]!.path, newPngBlob()],
-    ["package/portrait.png", newPngBlob()],
-  ]);
+  const artifactFiles = new Map<string, Blob>(
+    demoCandidate.artifacts.map((artifact) => [
+      artifact.path,
+      artifact.role === "palette" ? newPaletteBlob() : newPngBlob(),
+    ]),
+  );
+  artifactFiles.set("package/portrait.png", newPngBlob());
   const bundleFiles = new Map<string, string>([
     ["hashes.json", JSON.stringify({ output_hashes: demoReport.output_hashes })],
     ["lineage.json", JSON.stringify(demoLineage)],
@@ -454,7 +473,10 @@ export function demoClient(): ApiClient {
       const fileNames = files.map((file) => file.name).sort().join(", ");
       state.candidate = candidate;
       for (const artifact of candidate.artifacts) {
-        state.artifactFiles.set(artifact.path, newPngBlob());
+        state.artifactFiles.set(
+          artifact.path,
+          artifact.role === "palette" ? newPaletteBlob() : newPngBlob(),
+        );
       }
       state.job = {
         ...state.job,

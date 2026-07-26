@@ -137,6 +137,12 @@ test("demo lifecycle stays in memory, clones state, and never touches fetch, web
   const candidate = await client.getJobCandidate(created.id);
   candidate.metrics.score = 0;
   expect((await client.getJobCandidate(created.id)).metrics.score).toBe(0.95);
+  expect(candidate.artifacts).toEqual(
+    expect.arrayContaining([expect.objectContaining({ role: "palette", media_type: "text/plain" })]),
+  );
+  expect(await (await client.getArtifact(created.id, "candidate/package/portrait.pal")).text()).toContain(
+    "JASC-PAL",
+  );
   expect(await client.listApprovals(created.id)).toEqual([]);
   expect(await client.validate("fe-gba-portrait-standard", "pkg")).toHaveLength(1);
   expect(await client.validateJob(created.id)).toHaveLength(1);

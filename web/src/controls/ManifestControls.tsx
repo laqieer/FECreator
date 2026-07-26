@@ -6,6 +6,8 @@ export interface ManifestControlsProps {
   specs: string[];
   providers: string[];
   references: ReferencePack[];
+  selectedReference?: { id: string; revision: number } | null;
+  onSelectedReferenceChange?: (selection: { id: string; revision: number } | null) => void;
   submitting: boolean;
   onSubmit: (manifest: Manifest) => void;
 }
@@ -94,6 +96,8 @@ export function ManifestControls({
   specs,
   providers,
   references,
+  selectedReference,
+  onSelectedReferenceChange,
   submitting,
   onSubmit,
 }: ManifestControlsProps) {
@@ -121,6 +125,13 @@ export function ManifestControls({
       setProvider(providers[0]);
     }
   }, [provider, providers]);
+
+  useEffect(() => {
+    if (selectedReference !== undefined) {
+      setReferencePack(selectedReference?.id ?? "");
+      setReferenceRevision(selectedReference ? String(selectedReference.revision) : "");
+    }
+  }, [selectedReference]);
 
   const handleSubmit = () => {
     const parsedParams = parseParams(params);
@@ -213,8 +224,13 @@ export function ManifestControls({
         <select
           value={referencePack}
           onChange={(event) => {
-            setReferencePack(event.target.value);
-            setReferenceRevision("");
+            const nextPack = event.target.value;
+            const firstRevision = referenceOptions.find((reference) => reference.id === nextPack);
+            setReferencePack(nextPack);
+            setReferenceRevision(firstRevision ? String(firstRevision.revision) : "");
+            onSelectedReferenceChange?.(
+              firstRevision ? { id: firstRevision.id, revision: firstRevision.revision } : null,
+            );
           }}
         >
           <option value="">None</option>
@@ -230,7 +246,13 @@ export function ManifestControls({
         <select
           value={referenceRevision}
           disabled={referencePack === ""}
-          onChange={(event) => setReferenceRevision(event.target.value)}
+          onChange={(event) => {
+            setReferenceRevision(event.target.value);
+            const revision = Number(event.target.value);
+            if (referencePack !== "" && Number.isInteger(revision)) {
+              onSelectedReferenceChange?.({ id: referencePack, revision });
+            }
+          }}
         >
           <option value="">Select revision</option>
           {revisions.map((reference) => (

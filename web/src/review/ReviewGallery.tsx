@@ -1,6 +1,8 @@
+import { useState } from "react";
+import type { ApprovalRecord } from "../api/types";
 import { clipRectToBounds, rectToPercentages, type Rect } from "./cropMath";
 
-interface Candidate {
+export interface ReviewCandidate {
   id: string;
   src: string;
   imageWidth: number;
@@ -10,15 +12,52 @@ interface Candidate {
 }
 
 interface ReviewGalleryProps {
-  candidates: Candidate[];
-  onApprove: (id: string) => void;
-  onReject: (id: string) => void;
+  candidates: ReviewCandidate[];
+  onApprove: (id: string) => void | Promise<void>;
+  onReject: (id: string, reason: string) => void | Promise<void>;
+  onFinalize?: () => void | Promise<void>;
+  onRetry?: () => void | Promise<void>;
+  approvals?: ApprovalRecord[];
+  pendingAction?: "approve" | "reject" | "finalize" | "retry" | null;
+  error?: string | null;
 }
 
-export function ReviewGallery({ candidates, onApprove, onReject }: ReviewGalleryProps) {
+export function ReviewGallery({
+  candidates,
+  onApprove,
+  onReject,
+  onFinalize,
+  onRetry,
+  approvals = [],
+  pendingAction = null,
+  error = null,
+}: ReviewGalleryProps) {
+  const [rejectionReasons, setRejectionReasons] = useState<Record<string, string>>({});
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const disabled = pendingAction !== null;
+  const latestApproval = approvals.at(-1);
+
+  const reject = (candidateId: string) => {
+    const reason = rejectionReasons[candidateId]?.trim() ?? "";
+    if (reason === "") {
+      setValidationError("A rejection reason is required.");
+      return;
+    }
+    setValidationError(null);
+    void onReject(candidateId, reason);
+  };
+
   return (
     <section aria-label="review-gallery">
       <h2>Candidate review</h2>
+      {pendingAction ? <p role="status">Review action in progress: {pendingAction}.</p> : null}
+      {validationError ?? error ? <p role="alert">{validationError ?? error}</p> : null}
+      {latestApproval ? (
+        <p>
+          Latest review: {latestApproval.decision} by {latestApproval.actor}.
+          {latestApproval.reason ? ` Reason: ${latestApproval.reason}` : ""}
+        </p>
+      ) : null}
       {candidates.length === 0 ? (
         <p>No review candidates available.</p>
       ) : (
@@ -69,10 +108,22 @@ export function ReviewGallery({ candidates, onApprove, onReject }: ReviewGallery
                   <figcaption>{candidate.id}</figcaption>
                 </figure>
                 <div>
-                  <button type="button" onClick={() => onApprove(candidate.id)}>
+                  <button type="button" disabled={disabled} onClick={() => void onApprove(candidate.id)}>
                     Approve {candidate.id}
                   </button>
-                  <button type="button" onClick={() => onReject(candidate.id)}>
+                  <label>
+                    Rejection reason for {candidate.id}
+                    <input
+                      value={rejectionReasons[candidate.id] ?? ""}
+                      onChange={(event) =>
+                        setRejectionReasons((current) => ({
+                          ...current,
+                          [candidate.id]: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <button type="button" disabled={disabled} onClick={() => reject(candidate.id)}>
                     Reject {candidate.id}
                   </button>
                 </div>
@@ -81,6 +132,14 @@ export function ReviewGallery({ candidates, onApprove, onReject }: ReviewGallery
           })}
         </ul>
       )}
+      <div>
+        <button type="button" disabled={disabled || onFinalize === undefined} onClick={() => void onFinalize?.()}>
+          Finalize review
+        </button>
+        <button type="button" disabled={disabled || onRetry === undefined} onClick={() => void onRetry?.()}>
+          Retry job
+        </button>
+      </div>
     </section>
   );
 }

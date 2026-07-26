@@ -43,3 +43,35 @@ test("shows an explicit empty state when no candidates are available", () => {
   render(<ReviewGallery candidates={[]} onApprove={vi.fn()} onReject={vi.fn()} />);
   expect(screen.getByText("No review candidates available.")).toBeInTheDocument();
 });
+
+test("requires a rejection reason and exposes persisted review action status", async () => {
+  const onReject = vi.fn();
+  const onFinalize = vi.fn();
+  const onRetry = vi.fn();
+  render(
+    <ReviewGallery
+      candidates={[
+        {
+          id: "c1",
+          src: "a.png",
+          imageWidth: 80,
+          imageHeight: 48,
+          cropRect: { x: 0, y: 0, w: 80, h: 48 },
+          specRect: { x: 0, y: 0, w: 80, h: 48 },
+        },
+      ]}
+      onApprove={vi.fn()}
+      onReject={onReject}
+      onFinalize={onFinalize}
+      onRetry={onRetry}
+    />,
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: "Reject c1" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("A rejection reason is required.");
+  expect(onReject).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: "Finalize review" }));
+  await userEvent.click(screen.getByRole("button", { name: "Retry job" }));
+  expect(onFinalize).toHaveBeenCalled();
+  expect(onRetry).toHaveBeenCalled();
+});

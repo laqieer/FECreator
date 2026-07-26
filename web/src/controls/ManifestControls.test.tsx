@@ -134,3 +134,22 @@ test("rejects protected regions with missing, wrong, or empty fields before emit
   expect(screen.getByRole("alert")).toHaveTextContent("Protected regions must be a JSON array of valid regions.");
   expect(onSubmit).not.toHaveBeenCalled();
 });
+
+test("uses a selected reference board revision in the manifest controls", async () => {
+  const onSelectionChange = vi.fn();
+  render(
+    <ManifestControls
+      assets={["portrait"]}
+      specs={["fe-gba-portrait-standard"]}
+      providers={["fake"]}
+      references={references}
+      selectedReference={{ id: "hero-pack", revision: 2 }}
+      onSelectedReferenceChange={onSelectionChange}
+      submitting={false}
+      onSubmit={vi.fn()}
+    />,
+  );
+
+  expect(screen.getByLabelText("Reference pack")).toHaveValue("hero-pack");
+  expect(screen.getByLabelText("Reference revision")).toHaveValue("2");
+});

@@ -120,7 +120,7 @@ test("implements roving tabindex keyboard navigation for tabs", async () => {
 
   const review = screen.getByRole("tab", { name: "Review" });
   const references = screen.getByRole("tab", { name: "References" });
-  const lineage = screen.getByRole("tab", { name: "Lineage" });
+  const report = screen.getByRole("tab", { name: "Report" });
   const panel = screen.getByRole("tabpanel");
 
   expect(review).toHaveAttribute("tabindex", "0");
@@ -134,10 +134,10 @@ test("implements roving tabindex keyboard navigation for tabs", async () => {
   expect(references).toHaveAttribute("aria-selected", "true");
 
   await user.keyboard("{End}");
-  expect(lineage).toHaveFocus();
+  expect(report).toHaveFocus();
 
   await user.keyboard("{ArrowLeft}");
-  expect(screen.getByRole("tab", { name: "Timeline" })).toHaveFocus();
+  expect(screen.getByRole("tab", { name: "Validation" })).toHaveFocus();
 
   await user.keyboard("{Home}");
   expect(review).toHaveFocus();

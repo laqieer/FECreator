@@ -53,3 +53,30 @@ test("shows an explicit empty state when no palette or frames are loaded", () =>
   expect(screen.getByText("No palette entries loaded.")).toBeInTheDocument();
   expect(screen.getByText("No eye or mouth frames available.")).toBeInTheDocument();
 });
+
+test("uses candidate artifact URLs for native target and expression previews", () => {
+  render(
+    <PalettePreview
+      artifacts={[
+        { role: "portrait", path: "package/portrait.png", url: "blob:portrait" },
+        { role: "eyes_open", path: "package/eyes.png", url: "blob:eyes" },
+        { role: "palette", path: "package/portrait.pal.png", url: "blob:palette" },
+      ]}
+    />,
+  );
+
+  expect(screen.getByRole("img", { name: "Candidate native-size preview" })).toHaveAttribute(
+    "src",
+    "blob:portrait",
+  );
+  expect(screen.getByLabelText("target-spec-overlay")).toBeInTheDocument();
+  expect(screen.getByLabelText("mouth1 expression cell")).toBeInTheDocument();
+  expect(screen.getByRole("img", { name: "eyes_open package/eyes.png" })).toHaveAttribute(
+    "src",
+    "blob:eyes",
+  );
+  expect(screen.getByRole("img", { name: "Palette package/portrait.pal.png" })).toHaveAttribute(
+    "src",
+    "blob:palette",
+  );
+});

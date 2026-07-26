@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent } from "react";
-import type { JobState, ReferencePack } from "../api/types";
-import type { IndexedFrame } from "../palette/framePreview";
+import type { EditSpec, JobState, ReferencePack } from "../api/types";
 import { useApiClient } from "../api/context";
 import { clearMask, emptyMask, type MaskGrid } from "../canvas/maskModel";
 import { ManifestControls } from "../controls/ManifestControls";
@@ -10,10 +9,13 @@ import { JobQueue } from "../dashboard/JobQueue";
 import { JobTimeline } from "../jobs/JobTimeline";
 import { useJobEventSource } from "../jobs/eventSourceContext";
 import { LineageView } from "../lineage/LineageView";
+import { useLineage } from "../lineage/useLineage";
 import { PalettePreview } from "../palette/PalettePreview";
-import { ReferenceBoard } from "../references/ReferenceBoard";
+import { ReferenceBoard, type ReferenceSelection } from "../references/ReferenceBoard";
+import { ReportBundlePanel } from "../reports/ReportBundlePanel";
 import { ReviewGallery } from "../review/ReviewGallery";
 import { useCandidateArtifactUrls } from "../review/useCandidateArtifactUrls";
+import { ValidationPanel } from "../validation/ValidationPanel";
 import { useWorkbench } from "../workbench/useWorkbench";
 
 const LazyMaskEditor = lazy(async () => {
@@ -21,44 +23,19 @@ const LazyMaskEditor = lazy(async () => {
   return { default: module.MaskEditor };
 });
 
-const tabs = ["Review", "References", "Mask", "Palette", "Timeline", "Lineage"] as const;
+const tabs = [
+  "Review",
+  "References",
+  "Mask",
+  "Palette",
+  "Timeline",
+  "Lineage",
+  "Validation",
+  "Report",
+] as const;
 const terminalStates: JobState[] = ["completed", "failed", "cancelled"];
 const sampleMaskWidth = 96;
 const sampleMaskHeight = 80;
-const samplePalette: [number, number, number][] = [
-  [0, 0, 0],
-  [0, 248, 0],
-  [80, 96, 200],
-  [248, 248, 248],
-];
-const sampleFrames: IndexedFrame[] = [
-  {
-    id: "eyes-open",
-    label: "Eyes open",
-    kind: "eyes",
-    width: 4,
-    height: 4,
-    pixels: [
-      [0, 1, 1, 0],
-      [0, 3, 3, 0],
-      [0, 1, 1, 0],
-      [0, 0, 0, 0],
-    ],
-  },
-  {
-    id: "mouth-talk",
-    label: "Mouth talk",
-    kind: "mouth",
-    width: 4,
-    height: 4,
-    pixels: [
-      [0, 0, 0, 0],
-      [0, 2, 2, 0],
-      [0, 3, 3, 0],
-      [0, 0, 0, 0],
-    ],
-  },
-];
 
 type TabName = (typeof tabs)[number];
 type RegistryQuery = ReturnType<typeof useQuery<string[]>>;
@@ -100,10 +77,11 @@ export function App() {
   );
   const [activeTab, setActiveTab] = useState<TabName>("Review");
   const [manifestText, setManifestText] = useState("{}\n");
+  const [referenceSelection, setReferenceSelection] = useState<ReferenceSelection | null>(null);
+  const [maskDraft, setMaskDraft] = useState<EditSpec | null>(null);
   const [maskHistory, setMaskHistory] = useState<MaskGrid[]>(() => [
     emptyMask(sampleMaskWidth, sampleMaskHeight),
   ]);
-  const [selectedFrameId, setSelectedFrameId] = useState(sampleFrames[0]?.id ?? "");
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const assetsQuery = useQuery({ queryKey: ["assets"], queryFn: () => client.listAssets() });
@@ -120,10 +98,27 @@ export function App() {
     queryFn: async (): Promise<ReferencePack[]> =>
       (await Promise.all(referenceIds.map((id) => client.listReferenceHistory(id)))).flat(),
   });
+  const lineage = useLineage(
+    client,
+    workbench.candidate?.lineage_id ?? null,
+    workbench.selectedJob?.revision ?? 0,
+  );
 
   useEffect(() => {
     if (workbench.selectedJob !== null) {
       setManifestText(JSON.stringify(workbench.selectedJob.manifest, null, 2));
+      setMaskDraft(workbench.selectedJob.manifest.edit);
+      if (
+        workbench.selectedJob.manifest.character_ref_pack !== null &&
+        workbench.selectedJob.manifest.character_ref_pack_rev !== null
+      ) {
+        setReferenceSelection({
+          id: workbench.selectedJob.manifest.character_ref_pack,
+          revision: workbench.selectedJob.manifest.character_ref_pack_rev,
+        });
+      } else {
+        setReferenceSelection(null);
+      }
     }
   }, [workbench.selectedJob]);
 
@@ -133,11 +128,20 @@ export function App() {
     workbench.selectedJob && isTerminalState(workbench.selectedJob.state)
       ? workbench.selectedJob.state
       : null;
-  const selectedReference = referenceHistoryQuery.data?.find(
-    (reference) =>
-      reference.id === workbench.selectedJob?.manifest.character_ref_pack &&
-      reference.revision === workbench.selectedJob?.manifest.character_ref_pack_rev,
-  );
+  const displayedMaskPath =
+    maskDraft?.mask_path ?? workbench.selectedJob?.manifest.edit?.mask_path ?? "masks/draft.png";
+  const displayedProtectedRegions =
+    maskDraft?.protected_regions ?? workbench.selectedJob?.manifest.edit?.protected_regions ?? [];
+  const pendingReviewAction =
+    workbench.action === "approving"
+      ? "approve"
+      : workbench.action === "rejecting"
+        ? "reject"
+        : workbench.action === "finalizing"
+          ? "finalize"
+          : workbench.action === "retrying"
+            ? "retry"
+            : null;
 
   const selectTab = (index: number) => {
     setActiveTab(tabs[index]);
@@ -187,8 +191,16 @@ export function App() {
           specs={specsQuery.data ?? []}
           providers={providersQuery.data ?? []}
           references={referenceHistoryQuery.data ?? []}
+          selectedReference={referenceSelection}
+          onSelectedReferenceChange={setReferenceSelection}
           submitting={workbench.action === "creating"}
-          onSubmit={workbench.createJob}
+          onSubmit={(manifest) =>
+            workbench.createJob(
+              manifest.workflow === "masked_variant" && maskDraft !== null
+                ? { ...manifest, edit: maskDraft }
+                : manifest,
+            )
+          }
         />
         <SourceStatus
           jobId={workbench.selectedJobId}
@@ -252,14 +264,21 @@ export function App() {
                 cropRect: { x: 0, y: 0, w: 128, h: 112 },
                 specRect: { x: 0, y: 0, w: 128, h: 112 },
               }))}
-              onApprove={() => undefined}
-              onReject={() => undefined}
+              onApprove={() => workbench.approveReview("local-user")}
+              onReject={(_candidateId, reason) => workbench.rejectReview("local-user", reason)}
+              onFinalize={workbench.finalizeJob}
+              onRetry={() => workbench.retryJob("local-user")}
+              approvals={workbench.approvals}
+              pendingAction={pendingReviewAction}
+              error={workbench.actionError}
             />
           </>
         ) : null}
         {activeTab === "References" ? (
           <ReferenceBoard
-            swatches={selectedReference?.swatches ?? []}
+            references={referenceHistoryQuery.data ?? []}
+            selectedReference={referenceSelection}
+            onSelectReference={setReferenceSelection}
             manifestText={manifestText}
             onManifestChange={setManifestText}
           />
@@ -270,7 +289,12 @@ export function App() {
               width={sampleMaskWidth}
               height={sampleMaskHeight}
               mask={currentMask}
-              protectedRegions={workbench.selectedJob?.manifest.edit?.protected_regions ?? []}
+              maskPath={displayedMaskPath}
+              protectedRegions={displayedProtectedRegions}
+              onDraftChange={setMaskDraft}
+              onProtectedRegionsChange={(protectedRegions) =>
+                setMaskDraft({ mask_path: displayedMaskPath, protected_regions: protectedRegions })
+              }
               onChange={(nextMask) => setMaskHistory((history) => [...history, nextMask])}
               onClear={() =>
                 setMaskHistory((history) => [
@@ -287,11 +311,9 @@ export function App() {
         ) : null}
         {activeTab === "Palette" ? (
           <PalettePreview
-            palette={samplePalette}
-            frames={sampleFrames}
-            selectedFrameId={selectedFrameId}
-            onSelectFrame={setSelectedFrameId}
-            scale={8}
+            artifacts={reviewArtifacts.artifacts}
+            palette={reviewArtifacts.palette}
+            scale={1}
           />
         ) : null}
         {activeTab === "Timeline" ? (
@@ -310,7 +332,26 @@ export function App() {
           </section>
         ) : null}
         {activeTab === "Lineage" ? (
-          <LineageView nodes={[]} onApprove={() => undefined} onReject={() => undefined} />
+          <LineageView
+            selected={workbench.candidate ? lineage.data?.selected ?? null : null}
+            ancestors={lineage.data?.ancestors ?? []}
+            children={lineage.data?.children ?? []}
+            loading={lineage.isPending}
+            error={lineage.isError ? "Unable to load lineage." : null}
+          />
+        ) : null}
+        {activeTab === "Validation" ? (
+          <ValidationPanel
+            jobId={workbench.selectedJobId}
+            targetSpec={workbench.selectedJob?.manifest.target_spec ?? null}
+            refreshKey={workbench.selectedJob?.revision ?? 0}
+          />
+        ) : null}
+        {activeTab === "Report" ? (
+          <ReportBundlePanel
+            jobId={workbench.selectedJobId}
+            refreshKey={workbench.selectedJob?.revision ?? 0}
+          />
         ) : null}
       </main>
     </div>

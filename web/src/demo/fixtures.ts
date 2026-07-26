@@ -102,6 +102,12 @@ export const demoCandidate: CandidateSnapshot = {
       sha256: "3".repeat(64),
       media_type: "image/png",
     },
+    {
+      role: "palette",
+      path: "candidate/package/portrait.pal",
+      sha256: "5".repeat(64),
+      media_type: "text/plain",
+    },
   ],
   diagnostics: [],
   metrics: { score: 0.97 },

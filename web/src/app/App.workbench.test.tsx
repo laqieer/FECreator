@@ -262,3 +262,227 @@ test("loads review images through the selected job artifact API", async () => {
   ).toHaveAttribute("src", "blob:review-image");
   expect(getArtifact).toHaveBeenCalledWith("review-job", "candidate/package/portrait.png");
 });
+
+test("persists review actions and refreshes the selected job after each success", async () => {
+  let job: Job = { ...createdJob, id: "review-job", state: "waiting_for_review" };
+  const listJobs = vi.fn(async () => [job]);
+  const getJob = vi.fn(async () => job);
+  const listApprovals = vi.fn(async () =>
+    job.state === "waiting_for_review"
+      ? []
+      : [
+          {
+            job_id: job.id,
+            stage: "candidate",
+            decision: "approved" as const,
+            actor: "local-user",
+            reason: null,
+            at: job.updated_at,
+          },
+        ],
+  );
+  const getJobCandidate = vi.fn(async () => ({
+    version: "1.0" as const,
+    job_id: job.id,
+    lineage_id: "review-candidate",
+    artifacts: [
+      {
+        role: "portrait",
+        path: "candidate/package/portrait.png",
+        sha256: "0".repeat(64),
+        media_type: "image/png",
+      },
+    ],
+    diagnostics: [],
+    metrics: {},
+    created_at: job.created_at,
+  }));
+  const approveReview = vi.fn(async () => {
+    job = { ...job, state: "validating", revision: 2 };
+    return {
+      job_id: job.id,
+      stage: "candidate",
+      decision: "approved" as const,
+      actor: "local-user",
+      reason: null,
+      at: job.updated_at,
+    };
+  });
+  const finalizeJob = vi.fn(async () => {
+    job = { ...job, state: "completed", revision: 3 };
+    return { job_id: job.id, ok: true, artifacts: [], diagnostics: [], lineage_id: "review-candidate" };
+  });
+  class ReviewUrl extends URL {
+    static createObjectURL = vi.fn(() => "blob:review-image");
+    static revokeObjectURL = vi.fn();
+  }
+  vi.stubGlobal("URL", ReviewUrl);
+  const user = userEvent.setup();
+  renderWithProviders(
+    <App />,
+    createStubApiClient({
+      listJobs,
+      getJob,
+      getJobCandidate,
+      listApprovals,
+      approveReview,
+      finalizeJob,
+    }),
+  );
+
+  await screen.findByAltText("Candidate candidate/package/portrait.png");
+  await user.click(screen.getByRole("button", { name: /approve candidate\/package\/portrait\.png/i }));
+  await waitFor(() => expect(approveReview).toHaveBeenCalledWith("review-job", "local-user"));
+  expect(await screen.findByText("Selected job review-job is validating.")).toBeInTheDocument();
+  expect(await screen.findByText("Latest review: approved by local-user.")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Finalize review" }));
+  await waitFor(() => expect(finalizeJob).toHaveBeenCalledWith("review-job"));
+  expect(await screen.findByText("Selected job review-job is completed.")).toBeInTheDocument();
+  expect(approveReview.mock.invocationCallOrder[0]).toBeLessThan(finalizeJob.mock.invocationCallOrder[0]!);
+  expect(listJobs.mock.calls.length).toBeGreaterThanOrEqual(3);
+  expect(getJobCandidate.mock.calls.length).toBeGreaterThanOrEqual(3);
+});
+
+test("keeps a review failure visible without presenting a successful state", async () => {
+  const reviewJob = { ...createdJob, id: "review-job", state: "waiting_for_review" as const };
+  class ReviewUrl extends URL {
+    static createObjectURL = vi.fn(() => "blob:review-image");
+    static revokeObjectURL = vi.fn();
+  }
+  vi.stubGlobal("URL", ReviewUrl);
+  const user = userEvent.setup();
+  renderWithProviders(
+    <App />,
+    createStubApiClient({
+      listJobs: async () => [reviewJob],
+      getJob: async () => reviewJob,
+      getJobCandidate: async () => ({
+        version: "1.0",
+        job_id: reviewJob.id,
+        lineage_id: "review-candidate",
+        artifacts: [
+          {
+            role: "portrait",
+            path: "candidate/package/portrait.png",
+            sha256: "0".repeat(64),
+            media_type: "image/png",
+          },
+        ],
+        diagnostics: [],
+        metrics: {},
+        created_at: reviewJob.created_at,
+      }),
+      approveReview: async () => {
+        throw new Error("approval unavailable");
+      },
+    }),
+  );
+
+  await screen.findByAltText("Candidate candidate/package/portrait.png");
+  await user.click(screen.getByRole("button", { name: /approve candidate\/package\/portrait\.png/i }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("approval unavailable");
+  expect(screen.getByText("Selected job review-job is waiting_for_review.")).toBeInTheDocument();
+});
+
+test("persists a non-empty rejection reason for the selected review job", async () => {
+  const reviewJob = { ...createdJob, id: "review-job", state: "waiting_for_review" as const };
+  const rejectReview = vi.fn(async () => ({
+    job_id: reviewJob.id,
+    stage: "candidate",
+    decision: "rejected" as const,
+    actor: "local-user",
+    reason: "bad eyes",
+    at: reviewJob.updated_at,
+  }));
+  class ReviewUrl extends URL {
+    static createObjectURL = vi.fn(() => "blob:review-image");
+    static revokeObjectURL = vi.fn();
+  }
+  vi.stubGlobal("URL", ReviewUrl);
+  const user = userEvent.setup();
+  renderWithProviders(
+    <App />,
+    createStubApiClient({
+      listJobs: async () => [reviewJob],
+      getJob: async () => reviewJob,
+      getJobCandidate: async () => ({
+        version: "1.0",
+        job_id: reviewJob.id,
+        lineage_id: "review-candidate",
+        artifacts: [
+          {
+            role: "portrait",
+            path: "candidate/package/portrait.png",
+            sha256: "0".repeat(64),
+            media_type: "image/png",
+          },
+        ],
+        diagnostics: [],
+        metrics: {},
+        created_at: reviewJob.created_at,
+      }),
+      rejectReview,
+    }),
+  );
+
+  await screen.findByAltText("Candidate candidate/package/portrait.png");
+  await user.type(
+    screen.getByLabelText("Rejection reason for candidate/package/portrait.png"),
+    "bad eyes",
+  );
+  await user.click(screen.getByRole("button", { name: /reject candidate\/package\/portrait\.png/i }));
+
+  await waitFor(() =>
+    expect(rejectReview).toHaveBeenCalledWith("review-job", "local-user", "bad eyes"),
+  );
+});
+
+test("surfaces a non-throwing finalization rejection without refreshing the job", async () => {
+  const reviewJob = { ...createdJob, id: "review-job", state: "waiting_for_review" as const };
+  class ReviewUrl extends URL {
+    static createObjectURL = vi.fn(() => "blob:review-image");
+    static revokeObjectURL = vi.fn();
+  }
+  vi.stubGlobal("URL", ReviewUrl);
+  const user = userEvent.setup();
+  renderWithProviders(
+    <App />,
+    createStubApiClient({
+      listJobs: async () => [reviewJob],
+      getJob: async () => reviewJob,
+      getJobCandidate: async () => ({
+        version: "1.0",
+        job_id: reviewJob.id,
+        lineage_id: "review-candidate",
+        artifacts: [
+          {
+            role: "portrait",
+            path: "candidate/package/portrait.png",
+            sha256: "0".repeat(64),
+            media_type: "image/png",
+          },
+        ],
+        diagnostics: [],
+        metrics: {},
+        created_at: reviewJob.created_at,
+      }),
+      finalizeJob: async () => ({
+        job_id: reviewJob.id,
+        ok: false,
+        artifacts: [],
+        diagnostics: [
+          { code: "APPROVAL_MISSING", severity: "error", message: "candidate is not approved" },
+        ],
+        lineage_id: null,
+      }),
+    }),
+  );
+
+  await screen.findByAltText("Candidate candidate/package/portrait.png");
+  await user.click(screen.getByRole("button", { name: "Finalize review" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("candidate is not approved");
+  expect(screen.getByText("Selected job review-job is waiting_for_review.")).toBeInTheDocument();
+});

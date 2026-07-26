@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { emptyMask } from "./maskModel";
 
@@ -63,4 +64,73 @@ test("paints through pointer input and exposes clear/undo controls", () => {
   fireEvent.click(screen.getByRole("button", { name: "Undo mask stroke" }));
   expect(onClear).toHaveBeenCalled();
   expect(onUndo).toHaveBeenCalled();
+});
+
+test("supports keyboard painting and emits protected regions in the mask draft", async () => {
+  const onChange = vi.fn();
+  const onDraftChange = vi.fn();
+  const user = userEvent.setup();
+
+  render(
+    <MaskEditor
+      width={4}
+      height={4}
+      mask={emptyMask(4, 4)}
+      maskPath="masks/hero.png"
+      protectedRegions={[{ x: 1, y: 1, w: 2, h: 2, label: "face" }]}
+      onChange={onChange}
+      onDraftChange={onDraftChange}
+      onClear={vi.fn()}
+    />,
+  );
+
+  const surface = screen.getByRole("application", { name: "mask-paint-surface" });
+  surface.focus();
+  await user.keyboard("{ArrowRight}{ArrowDown}{Space}");
+
+  expect(onChange).toHaveBeenCalledWith(expect.any(Array));
+  expect(onDraftChange).toHaveBeenLastCalledWith({
+    mask_path: "masks/hero.png",
+    protected_regions: [{ x: 1, y: 1, w: 2, h: 2, label: "face" }],
+  });
+
+  await user.type(screen.getByLabelText("x"), "0");
+  await user.type(screen.getByLabelText("y"), "2");
+  await user.type(screen.getByLabelText("w"), "1");
+  await user.type(screen.getByLabelText("h"), "1");
+  await user.type(screen.getByLabelText("label"), "hair");
+  await user.click(screen.getByRole("button", { name: "Add protected region" }));
+
+  expect(onDraftChange).toHaveBeenLastCalledWith({
+    mask_path: "masks/hero.png",
+    protected_regions: [
+      { x: 1, y: 1, w: 2, h: 2, label: "face" },
+      { x: 0, y: 2, w: 1, h: 1, label: "hair" },
+    ],
+  });
+});
+
+test("rejects a protected region with blank coordinates", async () => {
+  const onDraftChange = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <MaskEditor
+      width={4}
+      height={4}
+      mask={emptyMask(4, 4)}
+      maskPath="masks/hero.png"
+      protectedRegions={[]}
+      onChange={vi.fn()}
+      onDraftChange={onDraftChange}
+      onClear={vi.fn()}
+    />,
+  );
+
+  await user.type(screen.getByLabelText("w"), "1");
+  await user.type(screen.getByLabelText("h"), "1");
+  await user.type(screen.getByLabelText("label"), "hair");
+  await user.click(screen.getByRole("button", { name: "Add protected region" }));
+
+  expect(screen.getByRole("alert")).toHaveTextContent("Enter a label and non-negative integer region bounds.");
+  expect(onDraftChange).not.toHaveBeenCalled();
 });
