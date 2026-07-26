@@ -177,7 +177,7 @@ def _concept_inputs(
     submitted = tuple(
         _submitted_concept_artifact(workspace, source.kind, source.ref)
         for source in manifest.sources
-        if source.kind != "text"
+        if source.kind == "concept_art"
     )
     return (*submitted, *(concept_art_artifacts(pack) if pack else ()))
 

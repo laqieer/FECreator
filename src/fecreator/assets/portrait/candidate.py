@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -52,17 +52,27 @@ class CandidateValidationError(Exception):
         self.diagnostics = diagnostics
 
 
-@dataclass(frozen=True)
+@dataclass
 class CandidatePublication:
     snapshot: CandidateSnapshot
     lineage: LineageNode
     staged_root: Path
+    candidate_published: bool = field(init=False, default=False)
+    lineage_published: bool = field(init=False, default=False)
 
     def publish(self, workspace: Path) -> None:
         publish_candidate_atomically(workspace, self.snapshot, self.lineage, self.staged_root)
+        self.candidate_published = True
+        self.lineage_published = True
 
     def rollback(self, workspace: Path) -> None:
-        rollback_candidate_publication(workspace, self.lineage.asset_id, self.staged_root)
+        rollback_candidate_publication(
+            workspace,
+            self.lineage.asset_id,
+            self.staged_root,
+            candidate_published=self.candidate_published,
+            lineage_published=self.lineage_published,
+        )
 
 
 def prepare_candidate(
@@ -96,8 +106,11 @@ def prepare_candidate(
             created_at=lineage.created_at,
         )
         return CandidatePublication(snapshot, lineage, staged_root)
-    except Exception:
-        shutil.rmtree(staged_root, ignore_errors=True)
+    except Exception as exc:
+        try:
+            _remove_tree(staged_root)
+        except Exception as cleanup_exc:
+            raise cleanup_exc from exc
         raise
 
 
@@ -214,20 +227,40 @@ def publish_candidate_atomically(
         CandidateStore(data_root).create_while_job_locked(snapshot)
         LineageStore(data_root).add(lineage)
         lineage_created = True
-    except Exception:
-        if lineage_created:
-            LineageStore(data_root).discard_pending(lineage.asset_id)
-        if moved:
-            shutil.rmtree(candidate_root, ignore_errors=True)
-        elif staged_root.exists():
-            shutil.rmtree(staged_root, ignore_errors=True)
+    except Exception as exc:
+        try:
+            rollback_candidate_publication(
+                workspace,
+                lineage.asset_id,
+                staged_root,
+                candidate_published=moved,
+                lineage_published=lineage_created,
+            )
+        except Exception as cleanup_exc:
+            raise cleanup_exc from exc
         raise
 
 
-def rollback_candidate_publication(workspace: Path, lineage_id: str, staged_root: Path) -> None:
-    LineageStore(workspace.parents[1]).discard_pending(lineage_id)
-    shutil.rmtree(safe_join(workspace, "candidate"), ignore_errors=True)
-    shutil.rmtree(staged_root, ignore_errors=True)
+def rollback_candidate_publication(
+    workspace: Path,
+    lineage_id: str,
+    staged_root: Path,
+    *,
+    candidate_published: bool,
+    lineage_published: bool,
+) -> None:
+    if candidate_published:
+        _remove_tree(safe_join(workspace, "candidate"))
+    if lineage_published:
+        LineageStore(workspace.parents[1]).discard_pending(lineage_id)
+    _remove_tree(staged_root)
+
+
+def _remove_tree(path: Path) -> None:
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        return
 
 
 def _slot_slice(name: str) -> tuple[slice, slice]:

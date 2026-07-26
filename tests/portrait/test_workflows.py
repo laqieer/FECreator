@@ -116,3 +116,24 @@ def test_concept_workflow_rejects_missing_concept_input(tmp_path: Path) -> None:
             provider,
             tmp_path / "workspace",
         )
+
+
+def test_concept_workflow_does_not_accept_approved_portrait_as_concept_input(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    save_png(workspace / "submitted" / "approved.png", _portrait_rgb())
+    provider = _Provider()
+
+    with pytest.raises(WorkflowInputError, match="concept"):
+        prepare_concept_to_portrait(
+            _manifest(
+                "concept_to_portrait",
+                (SourceSpec(kind="approved_portrait", ref="approved.png"),),
+            ),
+            None,
+            provider,
+            workspace,
+        )
+
+    assert provider.requests == []

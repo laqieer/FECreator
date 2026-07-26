@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -17,6 +19,7 @@ from fecreator.contracts.result import Artifact
 from fecreator.core.pipeline import PipelineContext
 from fecreator.imaging.io import save_png
 from fecreator.jobs.events import EventLog
+from fecreator.jobs.model import JobState
 from fecreator.jobs.service import InvalidTransitionError, JobService
 from fecreator.jobs.store import JobStore
 from fecreator.lineage.store import LineageStore
@@ -615,6 +618,9 @@ def test_repeated_build_preserves_review_job_state_and_history(data_root: Path) 
     first_result = plugin.build(ctx, job.manifest)
     events_before = [event.message for event in EventLog(data_root).read(job.id)]
     stored_before = JobStore(data_root).load(job.id)
+    candidate_before = (ctx.workspace / "candidate" / "candidate.json").read_bytes()
+    package_before = (ctx.workspace / "candidate" / "package" / "hero.png").read_bytes()
+    lineage_before = LineageStore(data_root).get(f"{job.id}-candidate")
 
     assert first_result.ok is True
     with pytest.raises(InvalidTransitionError, match="waiting_for_review -> processing"):
@@ -624,6 +630,213 @@ def test_repeated_build_preserves_review_job_state_and_history(data_root: Path) 
     assert stored_after.state.value == "waiting_for_review"
     assert stored_after.revision == stored_before.revision
     assert [event.message for event in EventLog(data_root).read(job.id)] == events_before
+    assert (ctx.workspace / "candidate" / "candidate.json").read_bytes() == candidate_before
+    assert (ctx.workspace / "candidate" / "package" / "hero.png").read_bytes() == package_before
+    assert LineageStore(data_root).get(f"{job.id}-candidate") == lineage_before
+
+
+def test_concurrent_build_serializes_candidate_creation(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    provider_started = threading.Event()
+    allow_first_provider_call = threading.Event()
+    calls_lock = threading.Lock()
+    provider_calls = 0
+
+    class _BlockingProvider:
+        id = "blocking-provider"
+        capabilities = CapabilitySet(capabilities=frozenset(Capability))
+
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            nonlocal provider_calls
+            del request
+            with calls_lock:
+                provider_calls += 1
+                call_number = provider_calls
+            if call_number == 1:
+                provider_started.set()
+                assert allow_first_provider_call.wait(timeout=5)
+            save_png(workspace / "generated" / "neutral.png", _portrait_rgb())
+            return GenResponse(
+                ok=True,
+                artifacts=(
+                    Artifact(
+                        role="neutral",
+                        path="generated/neutral.png",
+                        sha256="8" * 64,
+                        media_type="image/png",
+                    ),
+                ),
+            )
+
+    job = JobStore(data_root).create(_manifest())
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    monkeypatch.setattr(
+        plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _BlockingProvider()
+    )
+    plugin = PortraitPlugin()
+    results = []
+    errors = []
+
+    def build() -> None:
+        try:
+            results.append(plugin.build(ctx, job.manifest))
+        except Exception as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=build)
+    second = threading.Thread(target=build)
+    first.start()
+    assert provider_started.wait(timeout=5)
+    second.start()
+    time.sleep(0.1)
+    with calls_lock:
+        assert provider_calls == 1
+    allow_first_provider_call.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert len(errors) == 1
+    assert isinstance(errors[0], InvalidTransitionError)
+    assert JobStore(data_root).load(job.id).state is JobState.WAITING_FOR_REVIEW
+    assert (ctx.workspace / "candidate" / "candidate.json").exists()
+    assert LineageStore(data_root).get(f"{job.id}-candidate").asset_id == f"{job.id}-candidate"
+
+
+def test_concurrent_build_cannot_process_while_first_build_is_failing(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    provider_started = threading.Event()
+    allow_provider_failure = threading.Event()
+    failure_finalization_started = threading.Event()
+    allow_failure_finalization = threading.Event()
+    second_provider_started = threading.Event()
+    provider_calls = 0
+    provider_calls_lock = threading.Lock()
+
+    class _FailingProvider:
+        id = "failing-provider"
+        capabilities = CapabilitySet(capabilities=frozenset(Capability))
+
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            nonlocal provider_calls
+            del request, workspace
+            with provider_calls_lock:
+                provider_calls += 1
+                call_number = provider_calls
+            if call_number == 1:
+                provider_started.set()
+                assert allow_provider_failure.wait(timeout=5)
+                raise RuntimeError("provider crash")
+            second_provider_started.set()
+            raise AssertionError("second build reached provider while failure was finalizing")
+
+    job = JobStore(data_root).create(_manifest())
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    monkeypatch.setattr(
+        plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _FailingProvider()
+    )
+    plugin = PortraitPlugin()
+    original_mark_failed = plugin._mark_job_failed_if_possible
+
+    def pause_failure_finalization(data_root: Path, job_id: str, *, job_locked: bool = False):
+        failure_finalization_started.set()
+        assert allow_failure_finalization.wait(timeout=5)
+        return original_mark_failed(data_root, job_id, job_locked=job_locked)
+
+    monkeypatch.setattr(plugin, "_mark_job_failed_if_possible", pause_failure_finalization)
+    errors = []
+
+    def build() -> None:
+        try:
+            plugin.build(ctx, job.manifest)
+        except Exception as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=build)
+    second = threading.Thread(target=build)
+    first.start()
+    assert provider_started.wait(timeout=5)
+    second.start()
+    allow_provider_failure.set()
+    assert failure_finalization_started.wait(timeout=5)
+    assert not second_provider_started.wait(timeout=0.1)
+    allow_failure_finalization.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert len(errors) == 2
+    assert all(isinstance(exc, (InvalidTransitionError, RuntimeError)) for exc in errors)
+    assert JobStore(data_root).load(job.id).state is JobState.FAILED
+
+
+def test_build_surfaces_candidate_rollback_cleanup_failure(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fecreator.assets.portrait.candidate as candidate_module
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    class _Provider:
+        id = "rollback-cleanup-provider"
+        capabilities = CapabilitySet(capabilities=frozenset(Capability))
+
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            del request
+            save_png(workspace / "generated" / "neutral.png", _portrait_rgb())
+            return GenResponse(
+                ok=True,
+                artifacts=(
+                    Artifact(
+                        role="neutral",
+                        path="generated/neutral.png",
+                        sha256="9" * 64,
+                        media_type="image/png",
+                    ),
+                ),
+            )
+
+    original_append_many = plugin_module.EventLog.append_many
+    original_unlink = candidate_module.os.unlink
+
+    def fail_review_transition(self, job_id: str, events):
+        if any(
+            kind == "transition" and message == "processing->waiting_for_review"
+            for kind, message, _ in events
+        ):
+            raise OSError("transition event failed")
+        return original_append_many(self, job_id, events)
+
+    job = JobStore(data_root).create(_manifest())
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+
+    def fail_snapshot_removal(path, *args, **kwargs):
+        if Path(path).name == "candidate.json":
+            raise PermissionError("candidate deletion denied")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
+    monkeypatch.setattr(plugin_module.EventLog, "append_many", fail_review_transition)
+    monkeypatch.setattr(candidate_module.os, "unlink", fail_snapshot_removal)
+
+    with pytest.raises(PermissionError, match="candidate deletion denied") as raised:
+        PortraitPlugin().build(ctx, job.manifest)
+
+    assert isinstance(raised.value.__cause__, OSError)
+    assert str(raised.value.__cause__) == "transition event failed"
+    assert (ctx.workspace / "candidate" / "candidate.json").exists()
 
 
 def test_build_from_cancelled_job_preserves_cancelled_state_and_history(data_root: Path) -> None:
