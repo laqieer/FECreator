@@ -19,6 +19,29 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+test("demo candidate artifacts are valid PNG bytes with the expected IHDR chunk", async () => {
+  const client = demoClient();
+  const created = await client.createJob(validManifest);
+
+  await client.planSources(created.id);
+  await client.submitSources(created.id, [new File(["candidate-bytes"], "neutral.png", { type: "image/png" })]);
+
+  const blob = await client.getArtifact(created.id, "candidate/package/portrait.png");
+  expect(blob.type).toBe("image/png");
+
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  expect(Array.from(bytes.slice(0, 8))).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+  expect(String.fromCharCode(...bytes.slice(12, 16))).toBe("IHDR");
+  expect(bytes[16]).toBe(0);
+  expect(bytes[17]).toBe(0);
+  expect(bytes[18]).toBe(0);
+  expect(bytes[19]).toBe(1);
+  expect(bytes[20]).toBe(0);
+  expect(bytes[21]).toBe(0);
+  expect(bytes[22]).toBe(0);
+  expect(bytes[23]).toBe(1);
+});
+
 test("registries are deterministic and match the frozen v1 surface", async () => {
   const client = demoClient();
   expect(await client.listAssets()).toEqual(["portrait"]);
@@ -85,12 +108,8 @@ test("demo lifecycle stays in memory, clones state, and never touches fetch, web
   const bundle = await client.listBundleEntries(created.id);
   expect(bundle.map((entry) => entry.path)).toEqual(["hashes.json", "lineage.json", "manifest.json", "report.json"]);
   expect((await client.getBundleFile(created.id, "manifest.json")).size).toBeGreaterThan(0);
-  await expect((await client.getArtifact(created.id, "candidate/package/portrait.png")).text()).resolves.toContain(
-    created.id,
-  );
-  await expect((await client.getArtifact(created.id, "package/portrait.png")).text()).resolves.toContain(
-    created.id,
-  );
+  expect((await client.getArtifact(created.id, "candidate/package/portrait.png")).type).toBe("image/png");
+  expect((await client.getArtifact(created.id, "package/portrait.png")).type).toBe("image/png");
 
   expect(await client.listJobs()).toEqual(
     expect.arrayContaining([expect.objectContaining({ id: created.id })]),

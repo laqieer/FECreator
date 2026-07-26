@@ -34,8 +34,9 @@ test("demo composition shows the banner, runs an in-memory timeline, and makes n
 test("demo composition loads the seeded candidate review image without network errors", async () => {
   const fetchSpy = vi.fn();
   const webSocketSpy = vi.fn();
+  const createObjectURL = vi.fn(() => "blob:demo-review-image");
   class ReviewUrl extends URL {
-    static createObjectURL = vi.fn(() => "blob:demo-review-image");
+    static createObjectURL = createObjectURL;
     static revokeObjectURL = vi.fn();
   }
 
@@ -49,6 +50,7 @@ test("demo composition loads the seeded candidate review image without network e
     "src",
     "blob:demo-review-image",
   );
+  expect(createObjectURL).toHaveBeenCalledWith(expect.objectContaining({ type: "image/png" }));
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(fetchSpy).not.toHaveBeenCalled();
   expect(webSocketSpy).not.toHaveBeenCalled();

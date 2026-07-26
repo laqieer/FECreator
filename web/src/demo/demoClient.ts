@@ -44,7 +44,7 @@ interface DemoJobState {
   approvals: ApprovalRecord[];
   report: Report | null;
   bundleEntries: BundleEntry[];
-  artifactFiles: Map<string, string>;
+  artifactFiles: Map<string, Blob>;
   bundleFiles: Map<string, string>;
   retryJobId: string | null;
 }
@@ -59,6 +59,15 @@ function utf8Size(text: string): number {
 
 function newBlob(text: string, type = "application/octet-stream"): Blob {
   return new Blob([text], { type });
+}
+
+const DEMO_PNG_BYTES = Uint8Array.from([
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0, 0, 0, 181, 28, 12, 2, 0, 0, 0,
+  11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3, 2, 0, 238, 254, 31, 101, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+]);
+
+function newPngBlob(): Blob {
+  return new Blob([DEMO_PNG_BYTES], { type: "image/png" });
 }
 
 function cloneDiagnostics(): Diagnostic[] {
@@ -278,9 +287,9 @@ function createBundleEntries(bundleFiles: Map<string, string>): BundleEntry[] {
 }
 
 function createSeedState(): DemoJobState {
-  const artifactFiles = new Map<string, string>([
-    [demoCandidate.artifacts[0]!.path, "demo candidate portrait for demo-portrait-neutral"],
-    ["package/portrait.png", "demo final portrait for demo-portrait-neutral"],
+  const artifactFiles = new Map<string, Blob>([
+    [demoCandidate.artifacts[0]!.path, newPngBlob()],
+    ["package/portrait.png", newPngBlob()],
   ]);
   const bundleFiles = new Map<string, string>([
     ["hashes.json", JSON.stringify({ output_hashes: demoReport.output_hashes })],
@@ -444,7 +453,7 @@ export function demoClient(): ApiClient {
       const fileNames = files.map((file) => file.name).sort().join(", ");
       state.candidate = candidate;
       for (const artifact of candidate.artifacts) {
-        state.artifactFiles.set(artifact.path, `demo candidate portrait for ${jobId}`);
+        state.artifactFiles.set(artifact.path, newPngBlob());
       }
       state.job = {
         ...state.job,
@@ -458,7 +467,7 @@ export function demoClient(): ApiClient {
       }
       state.artifactFiles.set(
         "candidate/source-summary.txt",
-        fileNames.length > 0 ? fileNames : "no files submitted",
+        newBlob(fileNames.length > 0 ? fileNames : "no files submitted", "text/plain"),
       );
       return clone(state.job);
     },
@@ -480,7 +489,7 @@ export function demoClient(): ApiClient {
       if (content === undefined) {
         throw new Error(`Demo artifact ${path} does not exist for job ${jobId}.`);
       }
-      return newBlob(content, "image/png");
+      return content;
     },
     getJobReport: async (jobId) => {
       const report = getState(jobId).report;
@@ -557,7 +566,7 @@ export function demoClient(): ApiClient {
         revision: state.job.revision + 1,
         updated_at: DEMO_PUBLISHED_AT,
       };
-      state.artifactFiles.set("package/portrait.png", `demo final portrait for ${jobId}`);
+      state.artifactFiles.set("package/portrait.png", newPngBlob());
       state.report = createReport(
         state.job,
         state.candidate,
@@ -611,7 +620,7 @@ export function demoClient(): ApiClient {
         retryJobId: null,
       });
       state.retryJobId = retryJob.id;
-      state.artifactFiles.set("retry-created-by.txt", actor);
+      state.artifactFiles.set("retry-created-by.txt", newBlob(actor, "text/plain"));
       return clone(retryJob);
     },
     cancelJob: async (jobId) => {
