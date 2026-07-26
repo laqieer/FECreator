@@ -454,7 +454,7 @@ async def test_repeated_build_asset_returns_structured_redacted_transition_error
         "diagnostics": [
             {
                 "code": "BUILD_ASSET_FAILED",
-                "data": {"detail": "completed -> processing is not allowed"},
+                "data": {"detail": "waiting_for_review -> processing is not allowed"},
                 "message": "could not build asset",
                 "severity": "error",
                 "where": job.id,

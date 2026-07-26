@@ -339,19 +339,19 @@ def test_cli_and_mcp_build_match_app_for_manual_jobs_after_source_handoff(
         cast(dict[str, object], _mcp_payload(mcp_result)["job_result"])
     ) == _without_job_identity(direct_payload)
     _assert_matching_files(
-        data_root / "cli" / "jobs" / cli_job.id / "package",
-        data_root / "mcp" / "jobs" / mcp_job.id / "package",
-        data_root / "app" / "jobs" / direct_job.id / "package",
+        data_root / "cli" / "jobs" / cli_job.id / "candidate" / "package",
+        data_root / "mcp" / "jobs" / mcp_job.id / "candidate" / "package",
+        data_root / "app" / "jobs" / direct_job.id / "candidate" / "package",
     )
     for workspace in (
         data_root / "cli" / "jobs" / cli_job.id,
         data_root / "mcp" / "jobs" / mcp_job.id,
         data_root / "app" / "jobs" / direct_job.id,
     ):
-        assert (workspace / "report.json").exists()
-        assert (workspace / "lineage.json").exists()
-        assert (workspace / "bundle" / "manifest.json").exists()
-        assert (workspace / "bundle" / "lineage.json").exists()
+        assert (workspace / "candidate" / "candidate.json").exists()
+        assert not (workspace / "report.json").exists()
+        assert not (workspace / "lineage.json").exists()
+        assert not (workspace / "bundle").exists()
 
 
 def test_cli_and_mcp_build_failure_match_before_manual_sources_are_submitted(

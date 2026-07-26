@@ -1,7 +1,8 @@
 # Neutral portrait recipe
 
-This recipe covers the currently implemented build workflow "text_to_portrait".
-"concept_to_portrait", "expression_refine", and "masked_variant" stay unavailable
+This recipe covers the currently implemented build workflows "text_to_portrait" and
+"concept_to_portrait".
+"expression_refine" and "masked_variant" stay unavailable
 until build orchestration exists.
 
 Use this as a thin orchestration pattern for a standard neutral portrait request.

@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+import os
+import shutil
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+
+from fecreator.assets.portrait.manifest import GREEN_BG
+from fecreator.assets.portrait.workflows import PreparedPortrait
+from fecreator.contracts.diagnostics import Diagnostic, has_errors
+from fecreator.contracts.lineage import LineageNode
+from fecreator.contracts.manifest import Manifest
+from fecreator.contracts.result import Artifact
+from fecreator.contracts.review import CandidateSnapshot
+from fecreator.core.atomicio import _fsync_directory
+from fecreator.core.clock import utc_now_iso
+from fecreator.core.hashing import sha256_file
+from fecreator.core.paths import safe_join
+from fecreator.core.pipeline import PipelineContext
+from fecreator.imaging.io import save_indexed_png
+from fecreator.imaging.quantize import quantize_median_cut
+from fecreator.imaging.resize import ResizeMode, resize
+from fecreator.jobs.candidates import CandidateStore
+from fecreator.lineage.store import LineageStore
+from fecreator.references.model import ReferencePack
+from fecreator.specs.fire_emblem.gba.portrait_standard.layout import (
+    BACKGROUND_ZONES,
+    SAFE_ZONES,
+    SHEET_H,
+    SHEET_W,
+    SLOTS,
+)
+from fecreator.specs.fire_emblem.gba.portrait_standard.palette import snap_gba_5bit, write_jasc
+from fecreator.specs.fire_emblem.gba.portrait_standard.spec import FeGbaPortraitStandard
+
+_BY_NAME = {slot.name: slot for slot in SLOTS}
+_MAIN_SLOT = _BY_NAME["main"]
+_UPPER_CONTENT, _LOWER_CONTENT = SAFE_ZONES
+_EYE_SLOTS = ("half_closed_eyes", "closed_eyes")
+_MOUTH_SLOTS = ("mouth1", "mouth2", "mouth3", "mouth4_status", "mouth5", "mouth6", "mouth7")
+_CANDIDATE_STAGE_PREFIX = ".candidate-stage-"
+
+
+class CandidateValidationError(Exception):
+    """The assembled candidate does not satisfy the target specification."""
+
+    def __init__(self, diagnostics: tuple[Diagnostic, ...]) -> None:
+        super().__init__("candidate package validation failed")
+        self.diagnostics = diagnostics
+
+
+@dataclass(frozen=True)
+class CandidatePublication:
+    snapshot: CandidateSnapshot
+    lineage: LineageNode
+    staged_root: Path
+
+    def publish(self, workspace: Path) -> None:
+        publish_candidate_atomically(workspace, self.snapshot, self.lineage, self.staged_root)
+
+    def rollback(self, workspace: Path) -> None:
+        rollback_candidate_publication(workspace, self.lineage.asset_id, self.staged_root)
+
+
+def prepare_candidate(
+    *,
+    ctx: PipelineContext,
+    manifest: Manifest,
+    prepared: PreparedPortrait,
+    reference_pack: ReferencePack | None,
+) -> CandidatePublication:
+    staged_root = safe_join(ctx.workspace, f"{_CANDIDATE_STAGE_PREFIX}{uuid.uuid4().hex}")
+    package_dir = safe_join(staged_root, "package")
+    try:
+        export_candidate_package(package_dir, prepared.sheet_rgb, GREEN_BG)
+        diagnostics = tuple(FeGbaPortraitStandard().validate(package_dir))
+        if has_errors(diagnostics):
+            raise CandidateValidationError(diagnostics)
+        artifacts = candidate_artifacts(ctx.workspace, package_dir)
+        lineage = candidate_lineage(
+            job_id=ctx.job_id,
+            manifest=manifest,
+            prepared=prepared,
+            reference_pack=reference_pack,
+            artifacts=artifacts,
+        )
+        snapshot = CandidateSnapshot(
+            job_id=ctx.job_id,
+            lineage_id=lineage.asset_id,
+            artifacts=artifacts,
+            diagnostics=prepared.diagnostics + diagnostics,
+            metrics=prepared.metrics,
+            created_at=lineage.created_at,
+        )
+        return CandidatePublication(snapshot, lineage, staged_root)
+    except Exception:
+        shutil.rmtree(staged_root, ignore_errors=True)
+        raise
+
+
+def assemble_candidate_sheet(main_rgb: np.ndarray, bg_rgb: tuple[int, int, int]) -> np.ndarray:
+    if tuple(main_rgb.shape) != (_MAIN_SLOT.h, _MAIN_SLOT.w, 3):
+        raise ValueError(
+            f"main_rgb must be {_MAIN_SLOT.h}x{_MAIN_SLOT.w} RGB, got {main_rgb.shape}"
+        )
+    canvas = np.full((SHEET_H, SHEET_W, 3), bg_rgb, dtype=np.uint8)
+    canvas[_slot_slice("main")] = main_rgb
+    upper = _crop(
+        main_rgb,
+        _UPPER_CONTENT.x,
+        _UPPER_CONTENT.y,
+        _UPPER_CONTENT.w,
+        _UPPER_CONTENT.h,
+    )
+    lower = _crop(
+        main_rgb,
+        _LOWER_CONTENT.x,
+        _LOWER_CONTENT.y,
+        _LOWER_CONTENT.w,
+        _LOWER_CONTENT.h,
+    )
+    canvas[_slot_slice("mini")] = _render_slot(main_rgb, "mini")
+    for name in _EYE_SLOTS:
+        canvas[_slot_slice(name)] = _render_slot(upper, name)
+    for name in _MOUTH_SLOTS:
+        canvas[_slot_slice(name)] = _render_slot(lower, name)
+    for zone in BACKGROUND_ZONES:
+        canvas[zone.y : zone.y + zone.h, zone.x : zone.x + zone.w] = bg_rgb
+    return canvas
+
+
+def export_candidate_package(
+    package_dir: Path, sheet_rgb: np.ndarray, bg_rgb: tuple[int, int, int]
+) -> Path:
+    snapped = (sheet_rgb >> 3) << 3
+    distinct = np.unique(snapped.reshape(-1, 3), axis=0)
+    indices, palette = quantize_median_cut(
+        snapped,
+        min(16, len(distinct)),
+        locked=(snap_gba_5bit(bg_rgb),),
+    )
+    indices, palette = _background_first(indices, palette, snap_gba_5bit(bg_rgb))
+    package_dir.mkdir(parents=True, exist_ok=True)
+    save_indexed_png(safe_join(package_dir, "hero.png"), indices, palette)
+    write_jasc(
+        safe_join(package_dir, "hero.pal"),
+        [(int(row[0]), int(row[1]), int(row[2])) for row in palette],
+    )
+    return package_dir
+
+
+def candidate_artifacts(workspace: Path, package_dir: Path) -> tuple[Artifact, ...]:
+    del workspace
+    return tuple(
+        Artifact(
+            role=role,
+            path=f"candidate/package/{path.relative_to(package_dir).as_posix()}",
+            sha256=sha256_file(path),
+            media_type=media_type,
+        )
+        for role, path, media_type in (
+            ("sheet", safe_join(package_dir, "hero.png"), "image/png"),
+            ("palette", safe_join(package_dir, "hero.pal"), "text/plain"),
+        )
+    )
+
+
+def candidate_lineage(
+    *,
+    job_id: str,
+    manifest: Manifest,
+    prepared: PreparedPortrait,
+    reference_pack: ReferencePack | None,
+    artifacts: tuple[Artifact, ...],
+) -> LineageNode:
+    return LineageNode(
+        asset_id=f"{job_id}-candidate",
+        operation=prepared.operation,
+        parents=prepared.parents,
+        provider=manifest.provider,
+        model=prepared.provider_model,
+        prompt=prepared.prompt,
+        reference_pack=reference_pack.id if reference_pack else None,
+        reference_pack_rev=reference_pack.revision if reference_pack else None,
+        seed=prepared.seed,
+        params=manifest.params,
+        mask=prepared.mask,
+        protected_regions=prepared.protected_regions,
+        metrics=prepared.metrics,
+        output_hashes=tuple(sorted(artifact.sha256 for artifact in artifacts)),
+        created_at=utc_now_iso(),
+    )
+
+
+def publish_candidate_atomically(
+    workspace: Path,
+    snapshot: CandidateSnapshot,
+    lineage: LineageNode,
+    staged_root: Path,
+) -> None:
+    candidate_root = safe_join(workspace, "candidate")
+    if candidate_root.exists():
+        raise FileExistsError(f"candidate already exists for job {snapshot.job_id}")
+    data_root = workspace.parents[1]
+    moved = False
+    lineage_created = False
+    try:
+        os.replace(staged_root, candidate_root)
+        moved = True
+        _fsync_directory(workspace)
+        CandidateStore(data_root).create_while_job_locked(snapshot)
+        LineageStore(data_root).add(lineage)
+        lineage_created = True
+    except Exception:
+        if lineage_created:
+            LineageStore(data_root).discard_pending(lineage.asset_id)
+        if moved:
+            shutil.rmtree(candidate_root, ignore_errors=True)
+        elif staged_root.exists():
+            shutil.rmtree(staged_root, ignore_errors=True)
+        raise
+
+
+def rollback_candidate_publication(workspace: Path, lineage_id: str, staged_root: Path) -> None:
+    LineageStore(workspace.parents[1]).discard_pending(lineage_id)
+    shutil.rmtree(safe_join(workspace, "candidate"), ignore_errors=True)
+    shutil.rmtree(staged_root, ignore_errors=True)
+
+
+def _slot_slice(name: str) -> tuple[slice, slice]:
+    slot = _BY_NAME[name]
+    return slice(slot.y, slot.y + slot.h), slice(slot.x, slot.x + slot.w)
+
+
+def _crop(rgb: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndarray:
+    return rgb[y : y + h, x : x + w]
+
+
+def _render_slot(source: np.ndarray, name: str) -> np.ndarray:
+    slot = _BY_NAME[name]
+    return resize(source, (slot.w, slot.h), ResizeMode.ILLUSTRATION_FIT)
+
+
+def _background_first(
+    indices: np.ndarray, palette: np.ndarray, bg_rgb: tuple[int, int, int]
+) -> tuple[np.ndarray, np.ndarray]:
+    bg = np.array(bg_rgb, dtype=np.uint8)
+    matches = np.nonzero(np.all(palette == bg, axis=1))[0]
+    if matches.size == 0 or matches[0] == 0:
+        return indices, palette
+    bg_index = int(matches[0])
+    swapped_indices = indices.copy()
+    swapped_indices[indices == 0] = bg_index
+    swapped_indices[indices == bg_index] = 0
+    swapped_palette = palette.copy()
+    swapped_palette[[0, bg_index]] = swapped_palette[[bg_index, 0]]
+    return swapped_indices, swapped_palette

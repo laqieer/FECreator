@@ -48,16 +48,25 @@ class CandidateStore:
             self._job_dir(normalized_job_id),
             lock_path=self._lock_path(normalized_job_id),
         ):
-            if self._path(normalized_job_id).exists():
-                self._read_locked(normalized_job_id)
-                raise FileExistsError(
-                    f"candidate snapshot already exists for job {normalized_job_id}"
-                )
-            _write_json_atomic_unlocked(
-                self._path(normalized_job_id),
-                normalized_snapshot.model_dump(mode="json"),
-            )
+            self._create_locked(normalized_snapshot)
         return normalized_snapshot
+
+    def create_while_job_locked(self, snapshot: CandidateSnapshot) -> CandidateSnapshot:
+        """Create a snapshot while JobService owns this job's sidecar lock."""
+
+        normalized_job_id = self._normalize_job_id(snapshot.job_id)
+        normalized_snapshot = snapshot.model_copy(update={"job_id": normalized_job_id})
+        self._create_locked(normalized_snapshot)
+        return normalized_snapshot
+
+    def _create_locked(self, snapshot: CandidateSnapshot) -> None:
+        if self._path(snapshot.job_id).exists():
+            self._read_locked(snapshot.job_id)
+            raise FileExistsError(f"candidate snapshot already exists for job {snapshot.job_id}")
+        _write_json_atomic_unlocked(
+            self._path(snapshot.job_id),
+            snapshot.model_dump(mode="json"),
+        )
 
     def load(self, job_id: str) -> CandidateSnapshot:
         normalized_job_id = self._normalize_job_id(job_id)

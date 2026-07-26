@@ -82,15 +82,15 @@ def test_mcp_build_only_publishes_lineage_after_manual_sources_are_submitted(
 
     result = cast(CallToolResult, make_handlers(app)["build_asset"](job.id))
     payload = cast(dict[str, object], result.structuredContent)
-    package_dir = workspace / "package"
+    package_dir = workspace / "candidate" / "package"
 
     assert result.isError is False
     assert payload["ok"] is True
     assert cast(dict[str, object], payload["job_result"])["ok"] is True
-    assert cast(dict[str, object], payload["job_result"])["lineage_id"] == job.id
-    assert app.get_job(job.id).state is JobState.COMPLETED
+    assert cast(dict[str, object], payload["job_result"])["lineage_id"] == f"{job.id}-candidate"
+    assert app.get_job(job.id).state is JobState.WAITING_FOR_REVIEW
     assert not has_errors(app.validate("fe-gba-portrait-standard", package_dir))
-    assert (workspace / "report.json").exists()
-    assert (workspace / "lineage.json").exists()
-    assert (workspace / "bundle" / "manifest.json").exists()
-    assert (workspace / "bundle" / "lineage.json").exists()
+    assert (workspace / "candidate" / "candidate.json").exists()
+    assert not (workspace / "report.json").exists()
+    assert not (workspace / "lineage.json").exists()
+    assert not (workspace / "bundle").exists()
