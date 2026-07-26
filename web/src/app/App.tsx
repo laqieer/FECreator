@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent } from "react";
-import type { CandidateSnapshot, JobState, ReferencePack } from "../api/types";
+import type { JobState, ReferencePack } from "../api/types";
 import type { IndexedFrame } from "../palette/framePreview";
 import { useApiClient } from "../api/context";
 import { clearMask, emptyMask, type MaskGrid } from "../canvas/maskModel";
@@ -13,6 +13,7 @@ import { LineageView } from "../lineage/LineageView";
 import { PalettePreview } from "../palette/PalettePreview";
 import { ReferenceBoard } from "../references/ReferenceBoard";
 import { ReviewGallery } from "../review/ReviewGallery";
+import { useCandidateArtifactUrls } from "../review/useCandidateArtifactUrls";
 import { useWorkbench } from "../workbench/useWorkbench";
 
 const LazyMaskEditor = lazy(async () => {
@@ -88,24 +89,15 @@ function isTerminalState(state: JobState): state is Extract<JobState, "completed
   return terminalStates.includes(state);
 }
 
-function candidateCards(candidate: CandidateSnapshot | null) {
-  if (candidate === null) {
-    return [];
-  }
-  return candidate.artifacts.map((artifact) => ({
-    id: artifact.path,
-    src: artifact.path,
-    imageWidth: 128,
-    imageHeight: 112,
-    cropRect: { x: 0, y: 0, w: 128, h: 112 },
-    specRect: { x: 0, y: 0, w: 128, h: 112 },
-  }));
-}
-
 export function App() {
   const client = useApiClient();
   const eventSource = useJobEventSource();
   const workbench = useWorkbench(client, eventSource);
+  const reviewArtifacts = useCandidateArtifactUrls(
+    client,
+    workbench.selectedJobId,
+    workbench.candidate,
+  );
   const [activeTab, setActiveTab] = useState<TabName>("Review");
   const [manifestText, setManifestText] = useState("{}\n");
   const [maskHistory, setMaskHistory] = useState<MaskGrid[]>(() => [
@@ -204,7 +196,7 @@ export function App() {
           loading={
             workbench.action === "planning-sources" || workbench.action === "submitting-sources"
           }
-          error={null}
+          error={workbench.sourceError}
           onPlan={workbench.planSources}
           onSubmit={workbench.submitSources}
         />
@@ -248,7 +240,22 @@ export function App() {
         aria-labelledby={`${activeTab.toLowerCase()}-tab`}
       >
         {activeTab === "Review" ? (
-          <ReviewGallery candidates={candidateCards(workbench.candidate)} onApprove={() => undefined} onReject={() => undefined} />
+          <>
+            {reviewArtifacts.loading ? <p role="status">Loading review images…</p> : null}
+            {reviewArtifacts.error ? <p role="alert">{reviewArtifacts.error}</p> : null}
+            <ReviewGallery
+              candidates={reviewArtifacts.artifacts.map((artifact) => ({
+                id: artifact.path,
+                src: artifact.url,
+                imageWidth: 128,
+                imageHeight: 112,
+                cropRect: { x: 0, y: 0, w: 128, h: 112 },
+                specRect: { x: 0, y: 0, w: 128, h: 112 },
+              }))}
+              onApprove={() => undefined}
+              onReject={() => undefined}
+            />
+          </>
         ) : null}
         {activeTab === "References" ? (
           <ReferenceBoard

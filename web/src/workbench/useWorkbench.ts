@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiClient } from "../api/client";
 import type { CandidateSnapshot, Job, Manifest, SourcePlan } from "../api/types";
 import type { JobEventSource } from "../jobs/eventSource";
@@ -24,8 +24,10 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [candidate, setCandidate] = useState<CandidateSnapshot | null>(null);
   const [sourcePlan, setSourcePlan] = useState<SourcePlan | null>(null);
+  const [sourceError, setSourceError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [action, setAction] = useState<WorkbenchAction>("idle");
+  const selectedJobIdRef = useRef<string | null>(null);
   const jobEvents = useJobEvents(selectedJobId ?? "", events);
 
   const refreshJobs = useCallback(async () => {
@@ -33,7 +35,11 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
     try {
       const next = sortJobs(await api.listJobs());
       setJobs(next);
-      setSelectedJobId((current) => current ?? next[0]?.id ?? null);
+      setSelectedJobId((current) => {
+        const selected = current ?? next[0]?.id ?? null;
+        selectedJobIdRef.current = selected;
+        return selected;
+      });
       setError(null);
     } catch (cause) {
       setError(toErrorMessage(cause));
@@ -45,23 +51,33 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
   const loadSelectedJob = useCallback(
     async (jobId: string) => {
       setAction("loading");
-      setError(null);
-      setSourcePlan(null);
       try {
         const job = await api.getJob(jobId);
+        if (selectedJobIdRef.current !== jobId) {
+          return;
+        }
         setSelectedJob(job);
         setJobs((current) => replaceJob(current, job));
         try {
-          setCandidate(await api.getJobCandidate(jobId));
+          const nextCandidate = await api.getJobCandidate(jobId);
+          if (selectedJobIdRef.current === jobId) {
+            setCandidate(nextCandidate);
+          }
         } catch {
-          setCandidate(null);
+          if (selectedJobIdRef.current === jobId) {
+            setCandidate(null);
+          }
         }
       } catch (cause) {
-        setSelectedJob(null);
-        setCandidate(null);
-        setError(toErrorMessage(cause));
+        if (selectedJobIdRef.current === jobId) {
+          setSelectedJob(null);
+          setCandidate(null);
+          setError(toErrorMessage(cause));
+        }
       } finally {
-        setAction("idle");
+        if (selectedJobIdRef.current === jobId) {
+          setAction("idle");
+        }
       }
     },
     [api],
@@ -73,6 +89,7 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
 
   useEffect(() => {
     if (selectedJobId === null) {
+      selectedJobIdRef.current = null;
       setSelectedJob(null);
       setCandidate(null);
       return;
@@ -82,22 +99,35 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
 
   useEffect(() => {
     if (selectedJobId !== null && jobEvents.events.length > 0) {
-      void refreshJobs();
+      void (async () => {
+        await refreshJobs();
+        if (selectedJobIdRef.current === selectedJobId) {
+          await loadSelectedJob(selectedJobId);
+        }
+      })();
     }
-  }, [jobEvents.events, refreshJobs, selectedJobId]);
+  }, [jobEvents.events, loadSelectedJob, refreshJobs, selectedJobId]);
 
   const selectJob = useCallback((jobId: string) => {
+    selectedJobIdRef.current = jobId;
     setSelectedJobId(jobId);
+    setSelectedJob(null);
+    setCandidate(null);
+    setSourcePlan(null);
+    setSourceError(null);
   }, []);
 
   const createJob = useCallback(
     async (manifest: Manifest) => {
       setAction("creating");
-      setError(null);
       try {
         const job = await api.createJob(manifest);
         setJobs((current) => replaceJob(current, job));
+        selectedJobIdRef.current = job.id;
         setSelectedJobId(job.id);
+        setSourcePlan(null);
+        setSourceError(null);
+        setError(null);
       } catch (cause) {
         setError(toErrorMessage(cause));
       } finally {
@@ -112,17 +142,25 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
       return;
     }
     setAction("planning-sources");
-    setError(null);
     try {
-      setSourcePlan(await api.planSources(selectedJobId));
+      const plan = await api.planSources(selectedJobId);
+      if (selectedJobIdRef.current !== selectedJobId) {
+        return;
+      }
+      setSourcePlan(plan);
+      setSourceError(null);
       await refreshJobs();
-    await loadSelectedJob(selectedJobId);
+      await loadSelectedJob(selectedJobId);
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      if (selectedJobIdRef.current === selectedJobId) {
+        setSourceError(toErrorMessage(cause));
+      }
     } finally {
-      setAction("idle");
+      if (selectedJobIdRef.current === selectedJobId) {
+        setAction("idle");
+      }
     }
-  }, [api, refreshJobs, selectedJobId]);
+  }, [api, loadSelectedJob, refreshJobs, selectedJobId]);
 
   const submitSources = useCallback(
     async (files: File[]) => {
@@ -130,21 +168,33 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
         return;
       }
       setAction("submitting-sources");
-      setError(null);
       try {
         const job = await api.submitSources(selectedJobId, files);
+        if (selectedJobIdRef.current !== selectedJobId) {
+          return;
+        }
         setJobs((current) => replaceJob(current, job));
         setSelectedJob(job);
+        setSourceError(null);
         try {
-          setCandidate(await api.getJobCandidate(job.id));
+          const nextCandidate = await api.getJobCandidate(job.id);
+          if (selectedJobIdRef.current === selectedJobId) {
+            setCandidate(nextCandidate);
+          }
         } catch {
-          setCandidate(null);
+          if (selectedJobIdRef.current === selectedJobId) {
+            setCandidate(null);
+          }
         }
         await refreshJobs();
       } catch (cause) {
-        setError(toErrorMessage(cause));
+        if (selectedJobIdRef.current === selectedJobId) {
+          setSourceError(toErrorMessage(cause));
+        }
       } finally {
-        setAction("idle");
+        if (selectedJobIdRef.current === selectedJobId) {
+          setAction("idle");
+        }
       }
     },
     [api, refreshJobs, selectedJobId],
@@ -156,6 +206,7 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
     selectedJob,
     candidate,
     sourcePlan,
+    sourceError,
     error,
     action,
     events: jobEvents,

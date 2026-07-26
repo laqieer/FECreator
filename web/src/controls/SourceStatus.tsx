@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 import type { SourcePlan } from "../api/types";
 
 export interface SourceStatusProps {
@@ -19,6 +19,10 @@ export function SourceStatus({
   onSubmit,
 }: SourceStatusProps) {
   const [files, setFiles] = useState<File[]>([]);
+
+  useEffect(() => {
+    setFiles([]);
+  }, [jobId]);
 
   const handleFiles = (event: ChangeEvent<HTMLInputElement>) => {
     setFiles(Array.from(event.target.files ?? []));
@@ -51,7 +55,7 @@ export function SourceStatus({
           </ul>
           <label>
             Source files
-            <input type="file" multiple onChange={handleFiles} />
+            <input key={jobId} type="file" multiple onChange={handleFiles} />
           </label>
           <button type="button" disabled={loading || files.length === 0} onClick={() => onSubmit(files)}>
             Submit sources

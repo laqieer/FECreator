@@ -58,3 +58,33 @@ test("explains why source actions are unavailable without a job", () => {
   );
   expect(screen.getByText("Create or select a job to plan sources.")).toBeInTheDocument();
 });
+
+test("clears selected source files when the selected job changes", async () => {
+  const user = userEvent.setup();
+  const { rerender } = render(
+    <SourceStatus
+      jobId="job-a"
+      plan={plan}
+      loading={false}
+      error={null}
+      onPlan={() => undefined}
+      onSubmit={() => undefined}
+    />,
+  );
+
+  await user.upload(screen.getByLabelText("Source files"), new File(["image"], "job-a.png"));
+  expect(screen.getByRole("button", { name: "Submit sources" })).toBeEnabled();
+
+  rerender(
+    <SourceStatus
+      jobId="job-b"
+      plan={plan}
+      loading={false}
+      error={null}
+      onPlan={() => undefined}
+      onSubmit={() => undefined}
+    />,
+  );
+
+  expect(screen.getByRole("button", { name: "Submit sources" })).toBeDisabled();
+});
