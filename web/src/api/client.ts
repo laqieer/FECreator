@@ -114,6 +114,19 @@ export class ApiError extends Error {
   }
 }
 
+export class NotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotFoundError";
+  }
+}
+
+export function isNotFoundError(cause: unknown): boolean {
+  return (
+    cause instanceof NotFoundError || (cause instanceof ApiError && cause.status === 404)
+  );
+}
+
 async function ensureOk(response: Response, method: string, url: string): Promise<Response> {
   if (response.ok) {
     return response;

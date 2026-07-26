@@ -60,17 +60,26 @@ test("shows parent lineage and explicit empty state", () => {
   expect(screen.getByText("No lineage nodes available.")).toBeInTheDocument();
 });
 
-test("groups the selected asset, ancestors, and children for traversal", () => {
+test("groups the selected asset, ancestors, and descendants for traversal", () => {
   render(
     <LineageView
       selected={node({ asset_id: "candidate", parents: ["root"] })}
       ancestors={[node({ asset_id: "root" })]}
-      children={[node({ asset_id: "export", operation: "export_spec", parents: ["candidate"] })]}
+      descendants={[node({ asset_id: "export", operation: "export_spec", parents: ["candidate"] })]}
     />,
   );
 
   expect(screen.getByRole("heading", { name: "Selected asset" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Ancestors" })).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "Children" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Descendants" })).toBeInTheDocument();
   expect(screen.getByText("export")).toBeInTheDocument();
+});
+
+test("keeps traversal data separate from React children", () => {
+  // @ts-expect-error LineageView must not accept React children that could clobber data.
+  const invalid = <LineageView nodes={[]}>clobbered</LineageView>;
+  expect(invalid).toBeTruthy();
+
+  render(<LineageView selected={null} ancestors={[]} descendants={[]} />);
+  expect(screen.getByText("No lineage node selected.")).toBeInTheDocument();
 });

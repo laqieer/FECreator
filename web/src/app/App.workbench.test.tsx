@@ -3,8 +3,9 @@ import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { App } from "./App";
+import { NotFoundError } from "../api/client";
 import { createStubApiClient, renderWithProviders } from "../test/util";
-import type { Job, SourcePlan } from "../api/types";
+import type { ApprovalRecord, Job, SourcePlan } from "../api/types";
 
 const createdJob: Job = {
   id: "created-job",
@@ -485,4 +486,219 @@ test("surfaces a non-throwing finalization rejection without refreshing the job"
 
   expect(await screen.findByRole("alert")).toHaveTextContent("candidate is not approved");
   expect(screen.getByText("Selected job review-job is waiting_for_review.")).toBeInTheDocument();
+});
+
+const reviewJob: Job = { ...createdJob, id: "review-job", state: "waiting_for_review" };
+
+const reviewCandidate = {
+  version: "1.0" as const,
+  job_id: reviewJob.id,
+  lineage_id: "review-candidate",
+  artifacts: [
+    {
+      role: "sheet",
+      path: "candidate/package/portrait.png",
+      sha256: "0".repeat(64),
+      media_type: "image/png",
+    },
+  ],
+  diagnostics: [],
+  metrics: {},
+  created_at: reviewJob.created_at,
+};
+
+function stubObjectUrls() {
+  class ReviewUrl extends URL {
+    static createObjectURL = vi.fn(() => "blob:review-image");
+    static revokeObjectURL = vi.fn();
+  }
+  vi.stubGlobal("URL", ReviewUrl);
+}
+
+test("surfaces an approval history failure without success-shaped history", async () => {
+  stubObjectUrls();
+  renderWithProviders(
+    <App />,
+    createStubApiClient({
+      listJobs: async () => [reviewJob],
+      getJob: async () => reviewJob,
+      getJobCandidate: async () => reviewCandidate,
+      listApprovals: async () => {
+        throw new Error("approval store is locked");
+      },
+    }),
+  );
+
+  expect(await screen.findByText(/approval store is locked/)).toBeInTheDocument();
+  expect(screen.queryByText("No review decisions recorded.")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Latest review/)).not.toBeInTheDocument();
+});
+
+test("treats a missing candidate as an expected empty review state", async () => {
+  stubObjectUrls();
+  renderWithProviders(
+    <App />,
+    createStubApiClient({
+      listJobs: async () => [reviewJob],
+      getJob: async () => reviewJob,
+      getJobCandidate: async () => {
+        throw new NotFoundError("candidate for job review-job does not exist");
+      },
+    }),
+  );
+
+  expect(await screen.findByText("No review candidates available.")).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("surfaces an unexpected candidate load failure", async () => {
+  stubObjectUrls();
+  renderWithProviders(
+    <App />,
+    createStubApiClient({
+      listJobs: async () => [reviewJob],
+      getJob: async () => reviewJob,
+      getJobCandidate: async () => {
+        throw new Error("candidate store is corrupt");
+      },
+    }),
+  );
+
+  expect(await screen.findByText(/candidate store is corrupt/)).toBeInTheDocument();
+});
+
+test("keeps review controls disabled through the post-action refresh and ignores repeat clicks", async () => {
+  stubObjectUrls();
+  const approveGate = deferred<ApprovalRecord>();
+  const refreshGate = deferred<Job>();
+  let jobLoads = 0;
+  const approveReview = vi.fn(() => approveGate.promise);
+  const getJob = vi.fn(() => {
+    jobLoads += 1;
+    return jobLoads <= 1 ? Promise.resolve(reviewJob) : refreshGate.promise;
+  });
+  const user = userEvent.setup();
+  renderWithProviders(
+    <App />,
+    createStubApiClient({
+      listJobs: async () => [reviewJob],
+      getJob,
+      getJobCandidate: async () => reviewCandidate,
+      approveReview,
+    }),
+  );
+
+  const approve = await screen.findByRole("button", { name: /approve candidate/i });
+  await user.click(approve);
+  await user.click(approve);
+  expect(approveReview).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("button", { name: "Finalize review" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Retry job" })).toBeDisabled();
+
+  approveGate.resolve({
+    job_id: reviewJob.id,
+    stage: "candidate",
+    decision: "approved",
+    actor: "local-user",
+    reason: null,
+    at: reviewJob.updated_at,
+  });
+
+  await waitFor(() => expect(getJob.mock.calls.length).toBeGreaterThanOrEqual(2));
+  expect(screen.getByRole("button", { name: /approve candidate/i })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Finalize review" })).toBeDisabled();
+
+  refreshGate.resolve({ ...reviewJob, state: "validating", revision: 2 });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: /approve candidate/i })).toBeEnabled(),
+  );
+  expect(approveReview).toHaveBeenCalledTimes(1);
+});
+
+test("retries a rejected candidate and follows the retry job", async () => {
+  stubObjectUrls();
+  const retried: Job = { ...createdJob, id: "retry-job", parent_candidate_id: "review-candidate" };
+  let listed: Job[] = [reviewJob];
+  const retryJob = vi.fn(async () => {
+    listed = [reviewJob, retried];
+    return retried;
+  });
+  const user = userEvent.setup();
+  renderWithProviders(
+    <App />,
+    createStubApiClient({
+      listJobs: async () => listed,
+      getJob: async (id) => (id === retried.id ? retried : reviewJob),
+      getJobCandidate: async () => reviewCandidate,
+      retryJob,
+    }),
+  );
+
+  await screen.findByRole("button", { name: /approve candidate/i });
+  await user.click(screen.getByRole("button", { name: "Retry job" }));
+
+  await waitFor(() => expect(retryJob).toHaveBeenCalledWith("review-job", "local-user"));
+  expect(await screen.findByText("Selected job retry-job is created.")).toBeInTheDocument();
+});
+
+test("does not follow a retry result when a newer job is already selected", async () => {
+  stubObjectUrls();
+  const otherJob: Job = { ...createdJob, id: "other-job" };
+  const retried: Job = { ...createdJob, id: "retry-job" };
+  const retryGate = deferred<Job>();
+  const retryJob = vi.fn(() => retryGate.promise);
+  const user = userEvent.setup();
+  renderWithProviders(
+    <App />,
+    createStubApiClient({
+      listJobs: async () => [otherJob, reviewJob],
+      getJob: async (id) =>
+        id === reviewJob.id ? reviewJob : id === retried.id ? retried : otherJob,
+      getJobCandidate: async () => reviewCandidate,
+      retryJob,
+    }),
+  );
+
+  await user.click(await screen.findByRole("button", { name: /review-job.*waiting_for_review/i }));
+  await screen.findByText("Selected job review-job is waiting_for_review.");
+  await user.click(screen.getByRole("button", { name: "Retry job" }));
+  await waitFor(() => expect(retryJob).toHaveBeenCalledWith("review-job", "local-user"));
+
+  await user.click(screen.getByRole("button", { name: /other-job.*created/i }));
+  await screen.findByText("Selected job other-job is created.");
+  retryGate.resolve(retried);
+
+  await waitFor(() =>
+    expect(screen.getByText("Selected job other-job is created.")).toBeInTheDocument(),
+  );
+  expect(screen.queryByText("Selected job retry-job is created.")).not.toBeInTheDocument();
+});
+
+test("does not announce panel loading without a selected job", async () => {
+  const user = userEvent.setup();
+  renderWithProviders(<App />, createStubApiClient({ listJobs: async () => [] }));
+
+  await user.click(screen.getByRole("tab", { name: "Validation" }));
+  expect(screen.queryByText("Validating selected job…")).not.toBeInTheDocument();
+  expect(screen.getByText("Select a job to validate.")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("tab", { name: "Report" }));
+  expect(screen.queryByText("Loading sanitized report…")).not.toBeInTheDocument();
+  expect(screen.queryByText("Loading bundle entries…")).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("tab", { name: "Lineage" }));
+  expect(screen.queryByText("Loading lineage…")).not.toBeInTheDocument();
+  expect(screen.getByText("No lineage node selected.")).toBeInTheDocument();
+});
+
+test("gives the manifest and reference-board selectors unique accessible names", async () => {
+  const user = userEvent.setup();
+  renderWithProviders(<App />, createStubApiClient({ listJobs: async () => [] }));
+
+  await user.click(screen.getByRole("tab", { name: "References" }));
+
+  expect(await screen.findByLabelText("Reference pack for new job")).toBeInTheDocument();
+  expect(await screen.findByLabelText("Reference pack to inspect")).toBeInTheDocument();
+  expect(screen.getByLabelText("Reference revision for new job")).toBeInTheDocument();
+  expect(screen.getByLabelText("Reference revision to inspect")).toBeInTheDocument();
 });

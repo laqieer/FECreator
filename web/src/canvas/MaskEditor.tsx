@@ -53,12 +53,21 @@ export function MaskEditor({
   const [regionError, setRegionError] = useState<string | null>(null);
   const paintedCount = countPainted(mask);
   const draftMaskPath = maskPath ?? localMaskPath;
+  const columns = mask[0]?.length ?? 0;
+  const rows = mask.length;
 
   useEffect(() => {
     if (maskPath !== undefined) {
       setLocalMaskPath(maskPath);
     }
   }, [maskPath]);
+
+  useEffect(() => {
+    setCursor((current) => ({
+      x: Math.min(Math.max(0, current.x), Math.max(0, columns - 1)),
+      y: Math.min(Math.max(0, current.y), Math.max(0, rows - 1)),
+    }));
+  }, [columns, rows]);
 
   const emitDraft = (regions = protectedRegions, nextMaskPath = draftMaskPath) => {
     onDraftChange?.({ mask_path: nextMaskPath, protected_regions: regions });
@@ -78,13 +87,13 @@ export function MaskEditor({
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "ArrowRight") {
       event.preventDefault();
-      setCursor((current) => ({ ...current, x: Math.min(width - 1, current.x + 1) }));
+      setCursor((current) => ({ ...current, x: Math.min(Math.max(0, columns - 1), current.x + 1) }));
     } else if (event.key === "ArrowLeft") {
       event.preventDefault();
       setCursor((current) => ({ ...current, x: Math.max(0, current.x - 1) }));
     } else if (event.key === "ArrowDown") {
       event.preventDefault();
-      setCursor((current) => ({ ...current, y: Math.min(height - 1, current.y + 1) }));
+      setCursor((current) => ({ ...current, y: Math.min(Math.max(0, rows - 1), current.y + 1) }));
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       setCursor((current) => ({ ...current, y: Math.max(0, current.y - 1) }));
@@ -144,6 +153,9 @@ export function MaskEditor({
       </div>
       <p>Painted mask cells: {paintedCount}</p>
       <p>Protected regions: {protectedRegions.length}</p>
+      <p role="status">
+        Mask cursor at column {cursor.x}, row {cursor.y}. Grid is {columns} by {rows} cells.
+      </p>
       <label>
         Mask path
         <input
@@ -173,10 +185,10 @@ export function MaskEditor({
       <div style={{ position: "relative", width, height }}>
         <Stage width={width} height={height}>
           <Layer>
-            {protectedRegions.map((region) => (
+            {protectedRegions.map((region, index) => (
               <Rect
-                key={region.label}
-                name={region.label}
+                key={`${region.label}-${index}`}
+                name={`Protected region ${region.label} at x ${region.x}, y ${region.y}, width ${region.w}, height ${region.h}`}
                 x={region.x}
                 y={region.y}
                 width={region.w}

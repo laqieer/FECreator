@@ -1,4 +1,5 @@
 import type { ApiClient } from "../api/client";
+import { NotFoundError } from "../api/client";
 import type {
   ApprovalRecord,
   Artifact,
@@ -452,7 +453,7 @@ export function demoClient(): ApiClient {
     getJobCandidate: async (jobId) => {
       const candidate = getState(jobId).candidate;
       if (!candidate) {
-        throw new Error(`Demo candidate for job ${jobId} does not exist.`);
+        throw new NotFoundError(`Demo candidate for job ${jobId} does not exist.`);
       }
       return clone(candidate);
     },

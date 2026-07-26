@@ -5,7 +5,7 @@ import { expect, test, vi } from "vitest";
 import { createStubApiClient } from "../test/util";
 import { useLineage } from "./useLineage";
 
-test("loads the selected lineage node with its ancestors and children", async () => {
+test("loads the selected lineage node with its ancestors and descendants", async () => {
   const selected = await createStubApiClient().getLineage("candidate");
   const ancestor = { ...selected, asset_id: "root", parents: [] };
   const child = { ...selected, asset_id: "export", parents: ["candidate"] };
@@ -20,7 +20,7 @@ test("loads the selected lineage node with its ancestors and children", async ()
 
   const { result } = renderHook(() => useLineage(client, "candidate"), { wrapper });
 
-  await waitFor(() => expect(result.current.data?.children).toEqual([child]));
+  await waitFor(() => expect(result.current.data?.descendants).toEqual([child]));
   expect(getLineage).toHaveBeenCalledWith("candidate");
   expect(getLineageAncestors).toHaveBeenCalledWith("candidate");
   expect(getLineageChildren).toHaveBeenCalledWith("candidate");

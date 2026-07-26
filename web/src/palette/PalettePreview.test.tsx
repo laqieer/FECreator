@@ -60,7 +60,6 @@ test("uses candidate artifact URLs for native target and expression previews", (
       artifacts={[
         { role: "portrait", path: "package/portrait.png", url: "blob:portrait" },
         { role: "eyes_open", path: "package/eyes.png", url: "blob:eyes" },
-        { role: "palette", path: "package/portrait.pal.png", url: "blob:palette" },
       ]}
     />,
   );
@@ -75,8 +74,33 @@ test("uses candidate artifact URLs for native target and expression previews", (
     "src",
     "blob:eyes",
   );
-  expect(screen.getByRole("img", { name: "Palette package/portrait.pal.png" })).toHaveAttribute(
-    "src",
-    "blob:palette",
+});
+
+test("prefers the backend sheet artifact and never renders palette artifacts as images", () => {
+  render(
+    <PalettePreview
+      palette={[[8, 16, 24]]}
+      artifacts={[
+        { role: "portrait", path: "package/other.png", url: "blob:portrait" },
+        { role: "sheet", path: "candidate/package/hero.png", url: "blob:sheet" },
+      ]}
+    />,
   );
+
+  expect(screen.getByRole("img", { name: "Candidate native-size preview" })).toHaveAttribute(
+    "src",
+    "blob:sheet",
+  );
+  expect(screen.queryByRole("img", { name: /^Palette / })).not.toBeInTheDocument();
+});
+
+test("reports an empty palette when only image artifacts are available", () => {
+  render(
+    <PalettePreview
+      palette={[]}
+      artifacts={[{ role: "sheet", path: "candidate/package/hero.png", url: "blob:sheet" }]}
+    />,
+  );
+
+  expect(screen.getByText("No palette entries loaded.")).toBeInTheDocument();
 });

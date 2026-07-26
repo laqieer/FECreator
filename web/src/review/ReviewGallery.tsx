@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ApprovalRecord } from "../api/types";
 import { clipRectToBounds, rectToPercentages, type Rect } from "./cropMath";
 
@@ -17,7 +17,8 @@ interface ReviewGalleryProps {
   onReject: (id: string, reason: string) => void | Promise<void>;
   onFinalize?: () => void | Promise<void>;
   onRetry?: () => void | Promise<void>;
-  approvals?: ApprovalRecord[];
+  approvals?: ApprovalRecord[] | null;
+  approvalsError?: string | null;
   pendingAction?: "approve" | "reject" | "finalize" | "retry" | null;
   error?: string | null;
 }
@@ -28,14 +29,30 @@ export function ReviewGallery({
   onReject,
   onFinalize,
   onRetry,
-  approvals = [],
+  approvals = null,
+  approvalsError = null,
   pendingAction = null,
   error = null,
 }: ReviewGalleryProps) {
   const [rejectionReasons, setRejectionReasons] = useState<Record<string, string>>({});
   const [validationError, setValidationError] = useState<string | null>(null);
+  const previousError = useRef<string | null>(error);
   const disabled = pendingAction !== null;
-  const latestApproval = approvals.at(-1);
+  const latestApproval = approvals?.at(-1);
+
+  useEffect(() => {
+    if (error !== previousError.current) {
+      previousError.current = error;
+      if (error !== null) {
+        setValidationError(null);
+      }
+    }
+  }, [error]);
+
+  const approve = (candidateId: string) => {
+    setValidationError(null);
+    void onApprove(candidateId);
+  };
 
   const reject = (candidateId: string) => {
     const reason = rejectionReasons[candidateId]?.trim() ?? "";
@@ -52,12 +69,16 @@ export function ReviewGallery({
       <h2>Candidate review</h2>
       {pendingAction ? <p role="status">Review action in progress: {pendingAction}.</p> : null}
       {validationError ?? error ? <p role="alert">{validationError ?? error}</p> : null}
-      {latestApproval ? (
+      {approvalsError ? (
+        <p role="alert">Unable to load the review history: {approvalsError}</p>
+      ) : approvals === null ? null : latestApproval ? (
         <p>
           Latest review: {latestApproval.decision} by {latestApproval.actor}.
           {latestApproval.reason ? ` Reason: ${latestApproval.reason}` : ""}
         </p>
-      ) : null}
+      ) : (
+        <p>No review decisions recorded.</p>
+      )}
       {candidates.length === 0 ? (
         <p>No review candidates available.</p>
       ) : (
@@ -108,19 +129,20 @@ export function ReviewGallery({
                   <figcaption>{candidate.id}</figcaption>
                 </figure>
                 <div>
-                  <button type="button" disabled={disabled} onClick={() => void onApprove(candidate.id)}>
+                  <button type="button" disabled={disabled} onClick={() => approve(candidate.id)}>
                     Approve {candidate.id}
                   </button>
                   <label>
                     Rejection reason for {candidate.id}
                     <input
                       value={rejectionReasons[candidate.id] ?? ""}
-                      onChange={(event) =>
+                      onChange={(event) => {
+                        setValidationError(null);
                         setRejectionReasons((current) => ({
                           ...current,
                           [candidate.id]: event.target.value,
-                        }))
-                      }
+                        }));
+                      }}
                     />
                   </label>
                   <button type="button" disabled={disabled} onClick={() => reject(candidate.id)}>

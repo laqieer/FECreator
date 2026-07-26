@@ -48,7 +48,7 @@ export function ReferenceBoard({
       {references.length > 0 ? (
         <div>
           <label>
-            Reference pack
+            Reference pack to inspect
             <select
               value={selection?.id ?? ""}
               onChange={(event) => {
@@ -71,7 +71,7 @@ export function ReferenceBoard({
             </select>
           </label>
           <label>
-            Reference revision
+            Reference revision to inspect
             <select
               value={selection?.revision ?? ""}
               onChange={(event) => {

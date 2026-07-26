@@ -132,16 +132,6 @@ export function App() {
     maskDraft?.mask_path ?? workbench.selectedJob?.manifest.edit?.mask_path ?? "masks/draft.png";
   const displayedProtectedRegions =
     maskDraft?.protected_regions ?? workbench.selectedJob?.manifest.edit?.protected_regions ?? [];
-  const pendingReviewAction =
-    workbench.action === "approving"
-      ? "approve"
-      : workbench.action === "rejecting"
-        ? "reject"
-        : workbench.action === "finalizing"
-          ? "finalize"
-          : workbench.action === "retrying"
-            ? "retry"
-            : null;
 
   const selectTab = (index: number) => {
     setActiveTab(tabs[index]);
@@ -255,6 +245,9 @@ export function App() {
           <>
             {reviewArtifacts.loading ? <p role="status">Loading review images…</p> : null}
             {reviewArtifacts.error ? <p role="alert">{reviewArtifacts.error}</p> : null}
+            {workbench.candidateError ? (
+              <p role="alert">Unable to load the review candidate: {workbench.candidateError}</p>
+            ) : null}
             <ReviewGallery
               candidates={reviewArtifacts.artifacts.map((artifact) => ({
                 id: artifact.path,
@@ -269,7 +262,8 @@ export function App() {
               onFinalize={workbench.finalizeJob}
               onRetry={() => workbench.retryJob("local-user")}
               approvals={workbench.approvals}
-              pendingAction={pendingReviewAction}
+              approvalsError={workbench.approvalsError}
+              pendingAction={workbench.reviewAction}
               error={workbench.actionError}
             />
           </>
@@ -335,8 +329,8 @@ export function App() {
           <LineageView
             selected={workbench.candidate ? lineage.data?.selected ?? null : null}
             ancestors={lineage.data?.ancestors ?? []}
-            children={lineage.data?.children ?? []}
-            loading={lineage.isPending}
+            descendants={lineage.data?.descendants ?? []}
+            loading={lineage.isLoading}
             error={lineage.isError ? "Unable to load lineage." : null}
           />
         ) : null}

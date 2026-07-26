@@ -34,9 +34,9 @@ test("submits the selected workflow and pinned reference revision", async () => 
   );
 
   await user.selectOptions(screen.getByLabelText("Workflow"), "masked_variant");
-  await user.selectOptions(screen.getByLabelText("Reference pack"), "hero-pack");
-  await user.selectOptions(screen.getByLabelText("Reference revision"), "2");
-  await user.type(screen.getByLabelText("Mask path"), "masks/face.png");
+  await user.selectOptions(screen.getByLabelText("Reference pack for new job"), "hero-pack");
+  await user.selectOptions(screen.getByLabelText("Reference revision for new job"), "2");
+  await user.type(screen.getByLabelText("Mask path for new job"), "masks/face.png");
   await user.click(screen.getByRole("button", { name: "Create job" }));
 
   expect(onSubmit).toHaveBeenCalledWith<Parameters<(value: Manifest) => void>>(
@@ -97,7 +97,7 @@ test("rejects protected regions with extra keys before emitting a manifest", asy
       ]),
     },
   });
-  await user.type(screen.getByLabelText("Mask path"), "masks/face.png");
+  await user.type(screen.getByLabelText("Mask path for new job"), "masks/face.png");
   await user.click(screen.getByRole("button", { name: "Create job" }));
 
   expect(screen.getByRole("alert")).toHaveTextContent("Protected regions must be a JSON array of valid regions.");
@@ -128,7 +128,7 @@ test("rejects protected regions with missing, wrong, or empty fields before emit
       ]),
     },
   });
-  await user.type(screen.getByLabelText("Mask path"), "masks/face.png");
+  await user.type(screen.getByLabelText("Mask path for new job"), "masks/face.png");
   await user.click(screen.getByRole("button", { name: "Create job" }));
 
   expect(screen.getByRole("alert")).toHaveTextContent("Protected regions must be a JSON array of valid regions.");
@@ -150,6 +150,6 @@ test("uses a selected reference board revision in the manifest controls", async 
     />,
   );
 
-  expect(screen.getByLabelText("Reference pack")).toHaveValue("hero-pack");
-  expect(screen.getByLabelText("Reference revision")).toHaveValue("2");
+  expect(screen.getByLabelText("Reference pack for new job")).toHaveValue("hero-pack");
+  expect(screen.getByLabelText("Reference revision for new job")).toHaveValue("2");
 });

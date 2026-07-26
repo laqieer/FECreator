@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiClient } from "../api/client";
+import { isNotFoundError } from "../api/client";
 import type { ApprovalRecord, CandidateSnapshot, Job, Manifest, SourcePlan } from "../api/types";
 import type { JobEventSource } from "../jobs/eventSource";
 import { useJobEvents } from "../jobs/useJobEvents";
@@ -9,11 +10,9 @@ type WorkbenchAction =
   | "creating"
   | "loading"
   | "planning-sources"
-  | "submitting-sources"
-  | "approving"
-  | "rejecting"
-  | "finalizing"
-  | "retrying";
+  | "submitting-sources";
+
+export type ReviewAction = "approve" | "reject" | "finalize" | "retry";
 
 function toErrorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : "The requested workbench action failed.";
@@ -37,12 +36,16 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [candidate, setCandidate] = useState<CandidateSnapshot | null>(null);
-  const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
+  const [candidateError, setCandidateError] = useState<string | null>(null);
+  const [approvals, setApprovals] = useState<ApprovalRecord[] | null>(null);
+  const [approvalsError, setApprovalsError] = useState<string | null>(null);
   const [sourcePlan, setSourcePlan] = useState<SourcePlan | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [action, setAction] = useState<WorkbenchAction>("idle");
+  const [reviewAction, setReviewAction] = useState<ReviewAction | null>(null);
+  const reviewActionRef = useRef<ReviewAction | null>(null);
   const selectedJobIdRef = useRef<string | null>(null);
   const jobEvents = useJobEvents(selectedJobId ?? "", events);
 
@@ -78,27 +81,33 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
           const nextCandidate = await api.getJobCandidate(jobId);
           if (selectedJobIdRef.current === jobId) {
             setCandidate(nextCandidate);
+            setCandidateError(null);
           }
-        } catch {
+        } catch (cause) {
           if (selectedJobIdRef.current === jobId) {
             setCandidate(null);
+            setCandidateError(isNotFoundError(cause) ? null : toErrorMessage(cause));
           }
         }
         try {
           const nextApprovals = await api.listApprovals(jobId);
           if (selectedJobIdRef.current === jobId) {
             setApprovals(nextApprovals);
+            setApprovalsError(null);
           }
-        } catch {
+        } catch (cause) {
           if (selectedJobIdRef.current === jobId) {
-            setApprovals([]);
+            setApprovals(null);
+            setApprovalsError(toErrorMessage(cause));
           }
         }
       } catch (cause) {
         if (selectedJobIdRef.current === jobId) {
           setSelectedJob(null);
           setCandidate(null);
-          setApprovals([]);
+          setCandidateError(null);
+          setApprovals(null);
+          setApprovalsError(null);
           setError(toErrorMessage(cause));
         }
       } finally {
@@ -119,7 +128,9 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
       selectedJobIdRef.current = null;
       setSelectedJob(null);
       setCandidate(null);
-      setApprovals([]);
+      setCandidateError(null);
+      setApprovals(null);
+      setApprovalsError(null);
       return;
     }
     void loadSelectedJob(selectedJobId);
@@ -141,7 +152,9 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
     setSelectedJobId(jobId);
     setSelectedJob(null);
     setCandidate(null);
-    setApprovals([]);
+    setCandidateError(null);
+    setApprovals(null);
+    setApprovalsError(null);
     setSourcePlan(null);
     setSourceError(null);
     setActionError(null);
@@ -244,106 +257,79 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
     [loadSelectedJob, refreshJobs, selectedJobId],
   );
 
-  const approveReview = useCallback(
-    async (actor: string) => {
-      if (selectedJobId === null) {
+  const runReviewAction = useCallback(
+    async (kind: ReviewAction, run: (jobId: string) => Promise<void>) => {
+      const jobId = selectedJobIdRef.current;
+      if (jobId === null || reviewActionRef.current !== null) {
         return;
       }
-      const jobId = selectedJobId;
-      setAction("approving");
+      reviewActionRef.current = kind;
+      setReviewAction(kind);
       setActionError(null);
       try {
-        await api.approveReview(jobId, actor);
-        await refreshSelectedJob(jobId);
+        await run(jobId);
       } catch (cause) {
         if (selectedJobIdRef.current === jobId) {
           setActionError(toErrorMessage(cause));
         }
       } finally {
-        if (selectedJobIdRef.current === jobId) {
-          setAction("idle");
-        }
+        reviewActionRef.current = null;
+        setReviewAction(null);
       }
     },
-    [api, refreshSelectedJob, selectedJobId],
+    [],
+  );
+
+  const approveReview = useCallback(
+    (actor: string) =>
+      runReviewAction("approve", async (jobId) => {
+        await api.approveReview(jobId, actor);
+        await refreshSelectedJob(jobId);
+      }),
+    [api, refreshSelectedJob, runReviewAction],
   );
 
   const rejectReview = useCallback(
-    async (actor: string, reason: string) => {
-      if (selectedJobId === null) {
-        return;
-      }
-      const jobId = selectedJobId;
-      setAction("rejecting");
-      setActionError(null);
-      try {
+    (actor: string, reason: string) =>
+      runReviewAction("reject", async (jobId) => {
         await api.rejectReview(jobId, actor, reason);
         await refreshSelectedJob(jobId);
-      } catch (cause) {
-        if (selectedJobIdRef.current === jobId) {
-          setActionError(toErrorMessage(cause));
-        }
-      } finally {
-        if (selectedJobIdRef.current === jobId) {
-          setAction("idle");
-        }
-      }
-    },
-    [api, refreshSelectedJob, selectedJobId],
+      }),
+    [api, refreshSelectedJob, runReviewAction],
   );
 
-  const finalizeJob = useCallback(async () => {
-    if (selectedJobId === null) {
-      return;
-    }
-    const jobId = selectedJobId;
-    setAction("finalizing");
-    setActionError(null);
-    try {
-      const result = await api.finalizeJob(jobId);
-      if (!result.ok) {
-        throw finalizationError(result.diagnostics);
-      }
-      await refreshSelectedJob(jobId);
-    } catch (cause) {
-      if (selectedJobIdRef.current === jobId) {
-        setActionError(toErrorMessage(cause));
-      }
-    } finally {
-      if (selectedJobIdRef.current === jobId) {
-        setAction("idle");
-      }
-    }
-  }, [api, refreshSelectedJob, selectedJobId]);
+  const finalizeJob = useCallback(
+    () =>
+      runReviewAction("finalize", async (jobId) => {
+        const result = await api.finalizeJob(jobId);
+        if (!result.ok) {
+          throw finalizationError(result.diagnostics);
+        }
+        await refreshSelectedJob(jobId);
+      }),
+    [api, refreshSelectedJob, runReviewAction],
+  );
 
   const retryJob = useCallback(
-    async (actor: string) => {
-      if (selectedJobId === null) {
-        return;
-      }
-      const jobId = selectedJobId;
-      let refreshedJobId = jobId;
-      setAction("retrying");
-      setActionError(null);
-      try {
+    (actor: string) =>
+      runReviewAction("retry", async (jobId) => {
         const retry = await api.retryJob(jobId, actor);
-        refreshedJobId = retry.id;
+        if (selectedJobIdRef.current !== jobId) {
+          return;
+        }
         selectedJobIdRef.current = retry.id;
         setSelectedJobId(retry.id);
         setSelectedJob(retry);
         setCandidate(null);
-        setApprovals([]);
+        setCandidateError(null);
+        setApprovals(null);
+        setApprovalsError(null);
         await refreshJobs();
-        await loadSelectedJob(retry.id);
-      } catch (cause) {
-        if (selectedJobIdRef.current === refreshedJobId) {
-          setActionError(toErrorMessage(cause));
+        if (selectedJobIdRef.current === retry.id) {
+          await loadSelectedJob(retry.id);
         }
-      } finally {
-        setAction("idle");
-      }
-    },
-    [api, loadSelectedJob, refreshJobs, selectedJobId],
+      }),
+    [api, loadSelectedJob, refreshJobs, runReviewAction],
   );
 
   return {
@@ -351,12 +337,15 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
     selectedJobId,
     selectedJob,
     candidate,
+    candidateError,
     approvals,
+    approvalsError,
     sourcePlan,
     sourceError,
     error,
     actionError,
     action,
+    reviewAction,
     events: jobEvents,
     selectJob,
     refreshJobs,

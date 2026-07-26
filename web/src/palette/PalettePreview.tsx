@@ -30,8 +30,10 @@ export function PalettePreview({
   scale = 1,
 }: PalettePreviewProps) {
   const selectedFrame = selectFrame(frames, selectedFrameId);
-  const portrait = artifacts.find((artifact) => artifact.role === "portrait") ?? artifacts[0];
-  const paletteArtifacts = artifacts.filter((artifact) => artifact.role.includes("palette"));
+  const portrait =
+    artifacts.find((artifact) => artifact.role === "sheet") ??
+    artifacts.find((artifact) => artifact.role === "portrait") ??
+    artifacts[0];
   const expressionArtifacts = artifacts.filter((artifact) =>
     /eye|mouth|expression/.test(artifact.role),
   );
@@ -92,32 +94,25 @@ export function PalettePreview({
           </section>
         </>
       ) : null}
-      {palette.length === 0 && paletteArtifacts.length === 0 ? (
+      {palette.length === 0 ? (
         <p>No palette entries loaded.</p>
       ) : (
-        <>
-          {palette.length > 0 ? (
-            <ul aria-label="palette-entries" style={{ display: "flex", gap: 8, padding: 0 }}>
-              {palette.map(([r, g, b], index) => (
-                <li key={`${r}-${g}-${b}-${index}`} style={{ listStyle: "none" }}>
-                  <span
-                    aria-label={`palette-entry-${index}`}
-                    style={{
-                      display: "inline-block",
-                      width: 18,
-                      height: 18,
-                      border: "1px solid currentColor",
-                      backgroundColor: `rgb(${r}, ${g}, ${b})`,
-                    }}
-                  />
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {paletteArtifacts.map((artifact) => (
-            <img key={artifact.path} alt={`Palette ${artifact.path}`} src={artifact.url} />
+        <ul aria-label="palette-entries" style={{ display: "flex", gap: 8, padding: 0 }}>
+          {palette.map(([r, g, b], index) => (
+            <li key={`${r}-${g}-${b}-${index}`} style={{ listStyle: "none" }}>
+              <span
+                aria-label={`palette-entry-${index}`}
+                style={{
+                  display: "inline-block",
+                  width: 18,
+                  height: 18,
+                  border: "1px solid currentColor",
+                  backgroundColor: `rgb(${r}, ${g}, ${b})`,
+                }}
+              />
+            </li>
           ))}
-        </>
+        </ul>
       )}
       {frames.length === 0 ? (
         <p>No eye or mouth frames available.</p>

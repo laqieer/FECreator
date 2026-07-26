@@ -7,12 +7,12 @@ export function useLineage(api: ApiClient, assetId: string | null, refreshKey = 
     enabled: assetId !== null,
     queryFn: async () => {
       const selectedId = assetId!;
-      const [selected, ancestors, children] = await Promise.all([
+      const [selected, ancestors, descendants] = await Promise.all([
         api.getLineage(selectedId),
         api.getLineageAncestors(selectedId),
         api.getLineageChildren(selectedId),
       ]);
-      return { selected, ancestors, children };
+      return { selected, ancestors, descendants };
     },
   });
 }

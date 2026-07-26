@@ -61,7 +61,7 @@ test("selects a persisted reference revision for the manifest", async () => {
     />,
   );
 
-  await userEvent.selectOptions(screen.getByLabelText("Reference revision"), "2");
+  await userEvent.selectOptions(screen.getByLabelText("Reference revision to inspect"), "2");
   expect(onSelect).toHaveBeenCalledWith({ id: "hero", revision: 2 });
   expect(screen.getByLabelText("swatch #aa2222")).toBeInTheDocument();
 });
@@ -76,7 +76,7 @@ test("clears a locally selected revision when the manifest clears its reference"
     />,
   );
 
-  await userEvent.selectOptions(screen.getByLabelText("Reference pack"), "hero");
+  await userEvent.selectOptions(screen.getByLabelText("Reference pack to inspect"), "hero");
   rerender(
     <ReferenceBoard
       references={references}
@@ -86,6 +86,6 @@ test("clears a locally selected revision when the manifest clears its reference"
     />,
   );
 
-  expect(screen.getByLabelText("Reference pack")).toHaveValue("");
+  expect(screen.getByLabelText("Reference pack to inspect")).toHaveValue("");
   expect(screen.getByText("No reference swatches loaded.")).toBeInTheDocument();
 });

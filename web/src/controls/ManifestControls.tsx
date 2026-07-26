@@ -220,7 +220,7 @@ export function ManifestControls({
         </select>
       </label>
       <label>
-        Reference pack
+        Reference pack for new job
         <select
           value={referencePack}
           onChange={(event) => {
@@ -242,7 +242,7 @@ export function ManifestControls({
         </select>
       </label>
       <label>
-        Reference revision
+        Reference revision for new job
         <select
           value={referenceRevision}
           disabled={referencePack === ""}
@@ -280,7 +280,7 @@ export function ManifestControls({
       {workflow === "masked_variant" ? (
         <>
           <label>
-            Mask path
+            Mask path for new job
             <input value={maskPath} onChange={(event) => setMaskPath(event.target.value)} />
           </label>
           <label>

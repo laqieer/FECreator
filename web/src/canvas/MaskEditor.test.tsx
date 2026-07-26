@@ -134,3 +134,47 @@ test("rejects a protected region with blank coordinates", async () => {
   expect(screen.getByRole("alert")).toHaveTextContent("Enter a label and non-negative integer region bounds.");
   expect(onDraftChange).not.toHaveBeenCalled();
 });
+
+test("clamps the keyboard cursor to the mask grid and announces its position", async () => {
+  const onChange = vi.fn();
+  const user = userEvent.setup();
+
+  render(
+    <MaskEditor
+      width={40}
+      height={40}
+      mask={emptyMask(2, 2)}
+      protectedRegions={[]}
+      onChange={onChange}
+      onClear={vi.fn()}
+    />,
+  );
+
+  const surface = screen.getByRole("application", { name: "mask-paint-surface" });
+  surface.focus();
+  expect(screen.getByRole("status")).toHaveTextContent("Mask cursor at column 0, row 0.");
+
+  await user.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}{ArrowDown}{ArrowDown}{ArrowDown}");
+  expect(screen.getByRole("status")).toHaveTextContent("Mask cursor at column 1, row 1.");
+
+  await user.keyboard("{Enter}");
+  expect(onChange).toHaveBeenCalledTimes(1);
+  expect(onChange.mock.calls[0][0][1][1]).toBe(true);
+});
+
+test("labels each protected region with its bounds", () => {
+  render(
+    <MaskEditor
+      width={96}
+      height={80}
+      mask={emptyMask(96, 80)}
+      protectedRegions={[{ x: 4, y: 6, w: 10, h: 12, label: "face" }]}
+      onChange={vi.fn()}
+      onClear={vi.fn()}
+    />,
+  );
+
+  expect(
+    screen.getByLabelText("Protected region face at x 4, y 6, width 10, height 12"),
+  ).toBeInTheDocument();
+});
