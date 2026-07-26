@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -57,23 +58,37 @@ class _FinalPublication:
 
     def rollback(self) -> None:
         workspace = _workspace(self.data_root, self.candidate.job_id)
-        if self.lineage_published:
-            LineageStore(self.data_root).discard_pending(self.lineage.asset_id)
+        cleanup_errors: list[Exception] = []
+
+        def attempt(cleanup: Callable[[], None]) -> bool:
+            try:
+                cleanup()
+            except Exception as exc:
+                cleanup_errors.append(exc)
+                return False
+            return True
+
+        if self.lineage_published and attempt(
+            lambda: LineageStore(self.data_root).discard_pending(self.lineage.asset_id)
+        ):
             self.lineage_published = False
-        if self.bundle_published:
-            _remove_tree(safe_join(workspace, "bundle"))
+        if self.bundle_published and attempt(lambda: _remove_tree(safe_join(workspace, "bundle"))):
             self.bundle_published = False
-        if self.lineage_file_published:
-            safe_join(workspace, "lineage.json").unlink()
+        if self.lineage_file_published and attempt(
+            lambda: safe_join(workspace, "lineage.json").unlink()
+        ):
             self.lineage_file_published = False
-        if self.report_published:
-            safe_join(workspace, "report.json").unlink()
+        if self.report_published and attempt(lambda: safe_join(workspace, "report.json").unlink()):
             self.report_published = False
-        if self.package_published:
-            _remove_tree(safe_join(workspace, "package"))
+        if self.package_published and attempt(
+            lambda: _remove_tree(safe_join(workspace, "package"))
+        ):
             self.package_published = False
-        if self.staged_root is not None:
-            _remove_tree(self.staged_root)
+        staged_root = self.staged_root
+        if staged_root is not None and attempt(lambda: _remove_tree(staged_root)):
+            self.staged_root = None
+        if cleanup_errors:
+            raise ExceptionGroup("final publication rollback failed", cleanup_errors)
 
     def _assert_public_destinations_absent(self, workspace: Path) -> None:
         destinations = (

@@ -6,6 +6,7 @@ build/
 node_modules/
 .playwright-mcp/
 .worktrees/
+.superpowers/
 src/fecreator/_web/
 .pytest_cache/
 .mypy_cache/

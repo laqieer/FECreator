@@ -185,13 +185,18 @@ class FeCreatorApp:
             if record is not None:
                 self._approvals.discard_pending(record)
 
-        self._service.transition(
-            job_id,
-            JobState.FAILED,
-            before_persist=publish_rejection,
-            rollback=rollback_rejection,
-            extra_events=(("review_rejected", "candidate rejected", {"actor": normalized_actor}),),
-        )
+        with self._jobs.locked(job_id):
+            job = self._service.resume_while_job_locked(job_id)
+            self._require_state(job, JobState.WAITING_FOR_REVIEW)
+            self._service.transition_path_while_job_locked(
+                job.id,
+                (JobState.FAILED,),
+                before_persist=publish_rejection,
+                rollback=rollback_rejection,
+                extra_events=(
+                    ("review_rejected", "candidate rejected", {"actor": normalized_actor}),
+                ),
+            )
         if record is None:
             raise RuntimeError("rejection transition completed without an approval record")
         return record

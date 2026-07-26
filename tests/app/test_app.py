@@ -540,9 +540,94 @@ def test_reject_review_preserves_candidate_and_fails_job(data_root: Path) -> Non
     assert app.get_job_candidate(job.id).job_id == job.id
     assert app.events(job.id)[-1].kind == "review_rejected"
     assert app.events(job.id)[-1].data == {"actor": "reviewer"}
-    with pytest.raises(InvalidTransitionError, match="failed -> failed"):
+    with pytest.raises(InvalidTransitionError, match="failed is not waiting_for_review"):
         app.reject_review(job.id, actor="other-reviewer", reason="still bad")
     assert app.list_approval_decisions(job.id) == [rejected]
+
+
+@pytest.mark.parametrize(
+    ("path", "state"),
+    (
+        ((), JobState.CREATED),
+        ((JobState.PLANNING, JobState.PROCESSING), JobState.PROCESSING),
+        ((JobState.PLANNING, JobState.PROCESSING, JobState.FAILED), JobState.FAILED),
+        (
+            (JobState.PLANNING, JobState.PROCESSING, JobState.VALIDATING, JobState.COMPLETED),
+            JobState.COMPLETED,
+        ),
+        ((JobState.CANCELLED,), JobState.CANCELLED),
+    ),
+)
+def test_reject_review_requires_waiting_for_review_without_mutating(
+    data_root: Path,
+    path: tuple[JobState, ...],
+    state: JobState,
+) -> None:
+    app, _plugin = _app(data_root)
+    job = app.create_job(_manifest())
+    if path == (JobState.CANCELLED,):
+        app.cancel(job.id)
+    elif path:
+        app._service.transition_path(job.id, path)
+    before_job = _job_snapshot(app, job.id)
+    before_events = _event_snapshots(app, job.id)
+
+    with pytest.raises(InvalidTransitionError, match="is not waiting_for_review"):
+        app.reject_review(job.id, actor="reviewer", reason="bad silhouette")
+
+    assert app.get_job(job.id).state is state
+    assert _job_snapshot(app, job.id) == before_job
+    assert _event_snapshots(app, job.id) == before_events
+    assert app.list_approval_decisions(job.id) == []
+
+
+def test_reject_review_rechecks_state_after_a_concurrent_transition(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _plugin = _app(data_root)
+    job = _review_candidate(app, data_root)
+    processing_transition_started = threading.Event()
+    allow_processing_transition = threading.Event()
+    rejection_errors: list[Exception] = []
+    original_append_many = EventLog.append_many
+
+    def pause_processing_transition(self, job_id: str, events):
+        if any(message == "waiting_for_review->processing" for _kind, message, _data in events):
+            processing_transition_started.set()
+            assert allow_processing_transition.wait(timeout=5)
+        return original_append_many(self, job_id, events)
+
+    def transition_to_processing() -> None:
+        app._service.transition(job.id, JobState.PROCESSING)
+
+    def reject_review() -> None:
+        try:
+            app.reject_review(job.id, actor="reviewer", reason="bad silhouette")
+        except Exception as exc:  # pragma: no cover - assertion below captures failures
+            rejection_errors.append(exc)
+
+    monkeypatch.setattr(EventLog, "append_many", pause_processing_transition)
+    transition_thread = threading.Thread(target=transition_to_processing)
+    rejection_thread = threading.Thread(target=reject_review)
+    transition_thread.start()
+    try:
+        assert processing_transition_started.wait(timeout=5)
+        rejection_thread.start()
+        assert rejection_thread.is_alive()
+    finally:
+        allow_processing_transition.set()
+        transition_thread.join(timeout=5)
+        rejection_thread.join(timeout=5)
+
+    assert not transition_thread.is_alive()
+    assert not rejection_thread.is_alive()
+    assert len(rejection_errors) == 1
+    assert isinstance(rejection_errors[0], InvalidTransitionError)
+    assert "processing is not waiting_for_review" in str(rejection_errors[0])
+    assert app.get_job(job.id).state is JobState.PROCESSING
+    assert app.list_approval_decisions(job.id) == []
+    assert all(event.kind != "review_rejected" for event in app.events(job.id))
 
 
 def test_reject_review_rolls_back_its_pending_approval_when_event_logging_fails(

@@ -1128,6 +1128,73 @@ def test_finalize_rolls_back_public_artifacts_when_completed_event_fails(
         LineageStore(data_root).get(f"{job.id}-export")
 
 
+def test_finalize_attempts_every_cleanup_after_cleanup_errors(
+    data_root: Path,
+    isolated_app_asset_bootstrap: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fecreator.app import FeCreatorApp
+    from fecreator.core.config import Settings
+
+    publication_module = importlib.import_module("fecreator.assets.portrait.publication")
+    app = FeCreatorApp(Settings(data_root=data_root))
+    job = app.create_job(_manifest())
+    assert app.build(job.id).ok is True
+    app.approve_review(job.id, actor="reviewer")
+    cleanup_order: list[str] = []
+    cleanup_started = False
+    original_append_many = EventLog.append_many
+    original_discard_pending = LineageStore.discard_pending
+    original_remove_tree = publication_module._remove_tree
+
+    def fail_completed_event(self, job_id: str, events):
+        nonlocal cleanup_started
+        if any(message == "validating->completed" for _kind, message, _data in events):
+            cleanup_started = True
+            raise OSError("completed event failed")
+        return original_append_many(self, job_id, events)
+
+    def discard_export_then_fail(self, asset_id: str) -> None:
+        cleanup_order.append("export")
+        original_discard_pending(self, asset_id)
+        raise OSError("export cleanup failed")
+
+    def remove_then_fail_bundle(path: Path) -> None:
+        original_remove_tree(path)
+        if cleanup_started and path.name == "bundle":
+            cleanup_order.append("bundle")
+            raise OSError("bundle cleanup failed")
+        if cleanup_started and path.name == "package":
+            cleanup_order.append("package")
+        if cleanup_started and path.name.startswith(".publication-stage-"):
+            cleanup_order.append("stage")
+
+    monkeypatch.setattr(EventLog, "append_many", fail_completed_event)
+    monkeypatch.setattr(LineageStore, "discard_pending", discard_export_then_fail)
+    monkeypatch.setattr(publication_module, "_remove_tree", remove_then_fail_bundle)
+
+    with pytest.raises(ExceptionGroup, match="final publication rollback failed") as raised:
+        app.finalize_job(job.id)
+
+    assert isinstance(raised.value.__cause__, OSError)
+    assert str(raised.value.__cause__) == "completed event failed"
+    assert {str(exc) for exc in raised.value.exceptions} == {
+        "export cleanup failed",
+        "bundle cleanup failed",
+    }
+    assert cleanup_order == ["export", "bundle", "package", "stage"]
+    workspace = data_root / "jobs" / job.id
+    assert app.get_job(job.id).state is JobState.WAITING_FOR_REVIEW
+    assert (workspace / "candidate" / "candidate.json").exists()
+    assert not (workspace / "package").exists()
+    assert not (workspace / "report.json").exists()
+    assert not (workspace / "lineage.json").exists()
+    assert not (workspace / "bundle").exists()
+    assert not list(workspace.glob(".publication-stage-*"))
+    with pytest.raises(FileNotFoundError):
+        LineageStore(data_root).get(f"{job.id}-export")
+
+
 def test_retry_candidate_lineage_parents_the_rejected_candidate(
     data_root: Path,
     isolated_app_asset_bootstrap: None,
