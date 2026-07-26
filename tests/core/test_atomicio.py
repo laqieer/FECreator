@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import io
 import os
 import subprocess
@@ -19,6 +20,12 @@ from fecreator.core.atomicio import (
     read_jsonl,
     write_json_atomic,
 )
+
+
+def _windows_replace_contention_error() -> PermissionError:
+    error = PermissionError(errno.EACCES, "Access is denied")
+    error.winerror = 5
+    return error
 
 
 def _worker_script(tmp_path: Path) -> Path:
@@ -322,6 +329,160 @@ def test_write_json_atomic_cleans_tmp_after_replace_failure(
     with pytest.raises(OSError, match="replace failed"):
         write_json_atomic(p, {"k": 1})
 
+    assert not p.with_suffix(".json.tmp").exists()
+
+
+def test_write_json_atomic_retries_transient_windows_replace_contention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    p = tmp_path / "x.json"
+    attempts = 0
+    slept: list[float] = []
+    now = 100.0
+    original_replace = atomicio_module.os.replace
+
+    def fake_monotonic() -> float:
+        return now
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        slept.append(seconds)
+        now += seconds
+
+    def fake_replace(source: Path, target: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise _windows_replace_contention_error()
+        original_replace(source, target)
+
+    monkeypatch.setattr(atomicio_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        atomicio_module,
+        "WINDOWS_REPLACE_RETRY_TIMEOUT_SECONDS",
+        2.0,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        atomicio_module,
+        "WINDOWS_REPLACE_RETRY_POLL_INTERVAL_SECONDS",
+        1.0,
+        raising=False,
+    )
+    monkeypatch.setattr(atomicio_module.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(atomicio_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(atomicio_module.os, "replace", fake_replace)
+
+    write_json_atomic(p, {"k": 1})
+
+    assert attempts == 3
+    assert slept == [1.0, 1.0]
+    assert read_json(p) == {"k": 1}
+    assert not p.with_suffix(".json.tmp").exists()
+
+
+def test_write_json_atomic_does_not_retry_non_windows_permission_replace_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    p = tmp_path / "x.json"
+    attempts = 0
+    slept: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    def fake_replace(source: Path, target: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(atomicio_module.sys, "platform", "linux")
+    monkeypatch.setattr(atomicio_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(atomicio_module.os, "replace", fake_replace)
+
+    with pytest.raises(PermissionError, match="Permission denied"):
+        write_json_atomic(p, {"k": 1})
+
+    assert attempts == 1
+    assert slept == []
+    assert not p.with_suffix(".json.tmp").exists()
+
+
+def test_write_json_atomic_does_not_retry_noncontention_windows_replace_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    p = tmp_path / "x.json"
+    attempts = 0
+    slept: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    def fake_replace(source: Path, target: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise FileNotFoundError(errno.ENOENT, "missing destination")
+
+    monkeypatch.setattr(atomicio_module.sys, "platform", "win32")
+    monkeypatch.setattr(atomicio_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(atomicio_module.os, "replace", fake_replace)
+
+    with pytest.raises(FileNotFoundError, match="missing destination"):
+        write_json_atomic(p, {"k": 1})
+
+    assert attempts == 1
+    assert slept == []
+    assert not p.with_suffix(".json.tmp").exists()
+
+
+def test_write_json_atomic_raises_last_transient_windows_replace_error_on_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    p = tmp_path / "x.json"
+    attempts = 0
+    slept: list[float] = []
+    now = 200.0
+
+    def fake_monotonic() -> float:
+        return now
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        slept.append(seconds)
+        now += seconds
+
+    def fake_replace(source: Path, target: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise _windows_replace_contention_error()
+
+    monkeypatch.setattr(atomicio_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        atomicio_module,
+        "WINDOWS_REPLACE_RETRY_TIMEOUT_SECONDS",
+        2.0,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        atomicio_module,
+        "WINDOWS_REPLACE_RETRY_POLL_INTERVAL_SECONDS",
+        1.0,
+        raising=False,
+    )
+    monkeypatch.setattr(atomicio_module.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(atomicio_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(atomicio_module.os, "replace", fake_replace)
+
+    with pytest.raises(PermissionError, match="Access is denied") as exc_info:
+        write_json_atomic(p, {"k": 1})
+
+    assert attempts == 3
+    assert slept == [1.0, 1.0]
+    assert exc_info.value.winerror == 5
     assert not p.with_suffix(".json.tmp").exists()
 
 

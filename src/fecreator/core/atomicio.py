@@ -34,6 +34,8 @@ else:  # pragma: no cover
 
 DEFAULT_LOCK_TIMEOUT_SECONDS = 5.0
 DEFAULT_LOCK_POLL_INTERVAL_SECONDS = 0.01
+WINDOWS_REPLACE_RETRY_TIMEOUT_SECONDS = 0.1
+WINDOWS_REPLACE_RETRY_POLL_INTERVAL_SECONDS = 0.01
 MAX_JSONL_RECORDS = 4_096
 MAX_JSONL_BYTES = 4 * 1024 * 1024
 
@@ -74,6 +76,30 @@ def _is_lock_contention(error: OSError) -> bool:
     if winerror in {32, 33, 36}:
         return True
     return error.errno in {errno.EACCES, errno.EAGAIN, errno.EPERM}
+
+
+def _is_windows_replace_contention(error: OSError) -> bool:
+    if sys.platform != "win32":
+        return False
+
+    winerror = getattr(error, "winerror", None)
+    if winerror is not None:
+        return winerror in {5, 32, 33}
+    return _is_lock_contention(error)
+
+
+def _replace_with_windows_retry(source: Path, target: Path) -> None:
+    deadline = time.monotonic() + WINDOWS_REPLACE_RETRY_TIMEOUT_SECONDS
+    while True:
+        try:
+            os.replace(source, target)
+            return
+        except OSError as exc:
+            if not _is_windows_replace_contention(exc):
+                raise
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(WINDOWS_REPLACE_RETRY_POLL_INTERVAL_SECONDS)
 
 
 @contextmanager
@@ -145,7 +171,7 @@ def _write_bytes_atomic_unlocked(path: Path, payload: bytes) -> None:
     tmp_path = _tmp_path_for(path)
     try:
         _write_tmp_file(tmp_path, payload)
-        os.replace(tmp_path, path)
+        _replace_with_windows_retry(tmp_path, path)
         _fsync_directory(path.parent)
     except Exception:
         tmp_path.unlink(missing_ok=True)
