@@ -35,10 +35,16 @@ from fecreator.specs.fire_emblem.gba.portrait_standard.assembly import (
     extract_rgb_slot,
     replace_rgb_slot,
 )
-from fecreator.specs.fire_emblem.gba.portrait_standard.layout import MAX_COLORS, SHEET_H, SHEET_W
+from fecreator.specs.fire_emblem.gba.portrait_standard.layout import (
+    MAX_COLORS,
+    SHEET_H,
+    SHEET_W,
+    SLOTS,
+)
 from fecreator.specs.fire_emblem.gba.portrait_standard.palette import read_jasc, snap_gba_5bit
 
 _EXPRESSION_ROLES = ("half_closed_eyes", "closed_eyes", "mouth1", "mouth2", "mouth3")
+_SLOTS_BY_NAME = {slot.name: slot for slot in SLOTS}
 
 
 class WorkflowFailure(Exception):
@@ -67,11 +73,16 @@ class PreparedPortrait:
     mask: str | None = None
     protected_regions: tuple[Region, ...] = ()
     metrics: Mapping[str, float] = field(default_factory=dict)
+    approved_indices: np.ndarray | None = None
+    approved_palette: np.ndarray | None = None
+    edited_mask: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
 class _ApprovedSheet:
     rgb: np.ndarray
+    indices: np.ndarray
+    palette: np.ndarray
     artifact: Artifact
 
 
@@ -146,6 +157,9 @@ def prepare_expression_refine(
         prompt=_expression_prompt(plan.expression_prompts),
         seed=response.seed,
         diagnostics=tuple(response.diagnostics),
+        approved_indices=approved.indices,
+        approved_palette=approved.palette,
+        edited_mask=_expression_edit_mask(),
     )
 
 
@@ -209,6 +223,9 @@ def prepare_masked_variant(
         diagnostics=tuple(response.diagnostics) + tuple(diagnostics),
         mask=manifest.edit.mask_path,
         protected_regions=manifest.edit.protected_regions,
+        approved_indices=approved.indices,
+        approved_palette=approved.palette,
+        edited_mask=_main_edit_mask(mask),
     )
 
 
@@ -300,6 +317,8 @@ def _load_approved_sheet(workspace: Path, manifest: Manifest) -> _ApprovedSheet:
         ) from exc
     return _ApprovedSheet(
         rgb=palette[indices],
+        indices=indices,
+        palette=palette,
         artifact=Artifact(
             role="approved_portrait",
             path=f"submitted/{filename}",
@@ -307,6 +326,21 @@ def _load_approved_sheet(workspace: Path, manifest: Manifest) -> _ApprovedSheet:
             media_type="image/png",
         ),
     )
+
+
+def _expression_edit_mask() -> np.ndarray:
+    mask = np.zeros((SHEET_H, SHEET_W), dtype=bool)
+    for role in _EXPRESSION_ROLES:
+        slot = _SLOTS_BY_NAME[role]
+        mask[slot.y + 1 : slot.y + slot.h - 1, slot.x + 1 : slot.x + slot.w - 1] = True
+    return mask
+
+
+def _main_edit_mask(mask: np.ndarray) -> np.ndarray:
+    main = _SLOTS_BY_NAME["main"]
+    sheet_mask = np.zeros((SHEET_H, SHEET_W), dtype=bool)
+    sheet_mask[main.y : main.y + main.h, main.x : main.x + main.w] = mask
+    return sheet_mask
 
 
 def _load_bool_mask(workspace: Path, raw_path: str) -> tuple[np.ndarray, Artifact]:

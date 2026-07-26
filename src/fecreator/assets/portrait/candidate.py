@@ -21,7 +21,7 @@ from fecreator.core.hashing import sha256_file
 from fecreator.core.paths import safe_join
 from fecreator.core.pipeline import PipelineContext
 from fecreator.imaging.io import save_indexed_png
-from fecreator.imaging.quantize import quantize_median_cut
+from fecreator.imaging.quantize import map_to_palette, quantize_median_cut
 from fecreator.imaging.resize import ResizeMode, resize
 from fecreator.jobs.candidates import CandidateStore
 from fecreator.lineage.store import LineageStore
@@ -85,7 +85,14 @@ def prepare_candidate(
     staged_root = safe_join(ctx.workspace, f"{_CANDIDATE_STAGE_PREFIX}{uuid.uuid4().hex}")
     package_dir = safe_join(staged_root, "package")
     try:
-        export_candidate_package(package_dir, prepared.sheet_rgb, GREEN_BG)
+        export_candidate_package(
+            package_dir,
+            prepared.sheet_rgb,
+            GREEN_BG,
+            approved_indices=prepared.approved_indices,
+            approved_palette=prepared.approved_palette,
+            edited_mask=prepared.edited_mask,
+        )
         diagnostics = tuple(FeGbaPortraitStandard().validate(package_dir))
         if has_errors(diagnostics):
             raise CandidateValidationError(diagnostics)
@@ -146,16 +153,32 @@ def assemble_candidate_sheet(main_rgb: np.ndarray, bg_rgb: tuple[int, int, int])
 
 
 def export_candidate_package(
-    package_dir: Path, sheet_rgb: np.ndarray, bg_rgb: tuple[int, int, int]
+    package_dir: Path,
+    sheet_rgb: np.ndarray,
+    bg_rgb: tuple[int, int, int],
+    *,
+    approved_indices: np.ndarray | None = None,
+    approved_palette: np.ndarray | None = None,
+    edited_mask: np.ndarray | None = None,
 ) -> Path:
-    snapped = (sheet_rgb >> 3) << 3
-    distinct = np.unique(snapped.reshape(-1, 3), axis=0)
-    indices, palette = quantize_median_cut(
-        snapped,
-        min(16, len(distinct)),
-        locked=(snap_gba_5bit(bg_rgb),),
-    )
-    indices, palette = _background_first(indices, palette, snap_gba_5bit(bg_rgb))
+    if any(value is not None for value in (approved_indices, approved_palette, edited_mask)):
+        if approved_indices is None or approved_palette is None or edited_mask is None:
+            raise ValueError("approved indices, palette, and edit mask must be supplied together")
+        indices, palette = _preserve_approved_palette(
+            sheet_rgb,
+            approved_indices,
+            approved_palette,
+            edited_mask,
+        )
+    else:
+        snapped = (sheet_rgb >> 3) << 3
+        distinct = np.unique(snapped.reshape(-1, 3), axis=0)
+        indices, palette = quantize_median_cut(
+            snapped,
+            min(16, len(distinct)),
+            locked=(snap_gba_5bit(bg_rgb),),
+        )
+        indices, palette = _background_first(indices, palette, snap_gba_5bit(bg_rgb))
     package_dir.mkdir(parents=True, exist_ok=True)
     save_indexed_png(safe_join(package_dir, "hero.png"), indices, palette)
     write_jasc(
@@ -163,6 +186,34 @@ def export_candidate_package(
         [(int(row[0]), int(row[1]), int(row[2])) for row in palette],
     )
     return package_dir
+
+
+def _preserve_approved_palette(
+    sheet_rgb: np.ndarray,
+    approved_indices: np.ndarray,
+    approved_palette: np.ndarray,
+    edited_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    if sheet_rgb.ndim != 3 or sheet_rgb.shape[2] != 3:
+        raise ValueError(f"sheet_rgb must be (H, W, 3), got {sheet_rgb.shape}")
+    if approved_indices.shape != sheet_rgb.shape[:2]:
+        raise ValueError("approved indices must match sheet dimensions")
+    if edited_mask.shape != approved_indices.shape or edited_mask.dtype != np.dtype(bool):
+        raise ValueError("edited mask must be a bool array matching approved indices")
+    if (
+        approved_palette.ndim != 2
+        or approved_palette.shape[1] != 3
+        or not 1 <= len(approved_palette) <= 16
+    ):
+        raise ValueError("approved palette must be a (1..16, 3) array")
+    if approved_indices.size and int(approved_indices.max()) >= len(approved_palette):
+        raise ValueError("approved indices contain an out-of-range palette entry")
+
+    indices = approved_indices.copy()
+    if bool(np.any(edited_mask)):
+        edited_rgb = sheet_rgb[edited_mask].reshape(1, -1, 3)
+        indices[edited_mask] = map_to_palette(edited_rgb, approved_palette).reshape(-1)
+    return indices, approved_palette.copy()
 
 
 def candidate_artifacts(workspace: Path, package_dir: Path) -> tuple[Artifact, ...]:

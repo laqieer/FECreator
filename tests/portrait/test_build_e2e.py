@@ -19,7 +19,7 @@ from fecreator.contracts.manifest import EditSpec, Manifest, SourceSpec
 from fecreator.contracts.result import Artifact
 from fecreator.core.hashing import sha256_file
 from fecreator.core.pipeline import PipelineContext
-from fecreator.imaging.io import load_rgb, save_png
+from fecreator.imaging.io import load_indexed, save_indexed_png, save_png
 from fecreator.jobs.events import EventLog
 from fecreator.jobs.model import JobState
 from fecreator.jobs.service import InvalidTransitionError, JobService
@@ -28,8 +28,9 @@ from fecreator.lineage.store import LineageStore
 from fecreator.providers.base import GenRequest, GenResponse, ProviderRefusal
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
+from fecreator.specs.fire_emblem.gba.portrait_standard.palette import write_jasc
 from fecreator.specs.fire_emblem.gba.portrait_standard.spec import FeGbaPortraitStandard
-from tests.fixtures.gba import write_valid_package
+from tests.fixtures.gba import build_indices
 
 
 def _manifest(
@@ -53,6 +54,26 @@ def _portrait_rgb() -> np.ndarray:
 
 def _background_rgb() -> np.ndarray:
     return np.full((80, 96, 3), (0, 248, 0), dtype=np.uint8)
+
+
+def _provider_colours(height: int, width: int) -> np.ndarray:
+    colours = np.zeros((height, width, 3), dtype=np.uint8)
+    colours[:, :, 0] = np.arange(width, dtype=np.uint8)[None, :] * 8
+    colours[:, :, 1] = np.arange(height, dtype=np.uint8)[:, None] * 8
+    colours[:, :, 2] = 200
+    assert len(np.unique(colours.reshape(-1, 3), axis=0)) > 16
+    return colours
+
+
+def _write_multicolour_package(directory: Path) -> None:
+    palette_rows = [(0, 248, 0), (80, 96, 200)]
+    palette_rows.extend((i * 8, (i * 7 % 31) * 8, (i * 11 % 31) * 8) for i in range(2, 16))
+    indices = build_indices()
+    foreground = indices != 0
+    indices[foreground] = np.arange(foreground.sum(), dtype=np.uint8) % 15 + 1
+    directory.mkdir(parents=True, exist_ok=True)
+    save_indexed_png(directory / "hero.png", indices, np.array(palette_rows, dtype=np.uint8))
+    write_jasc(directory / "hero.pal", palette_rows)
 
 
 @pytest.fixture
@@ -101,7 +122,7 @@ def test_plugin_required_caps() -> None:
     assert PortraitPlugin().required_capabilities("text_to_portrait") == {Capability.TEXT_TO_IMAGE}
 
 
-def test_expression_refine_build_preserves_the_approved_main_sheet(
+def test_expression_refine_build_preserves_approved_indices_and_palette(
     data_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import fecreator.assets.portrait.plugin as plugin_module
@@ -118,7 +139,7 @@ def test_expression_refine_build_preserves_the_approved_main_sheet(
             artifacts = []
             for role in ("half_closed_eyes", "closed_eyes", "mouth1", "mouth2", "mouth3"):
                 path = workspace / "generated" / f"{role}.png"
-                save_png(path, np.full((16, 32, 3), (80, 96, 200), dtype=np.uint8))
+                save_png(path, _provider_colours(16, 32))
                 artifacts.append(
                     Artifact(
                         role=role,
@@ -135,8 +156,8 @@ def test_expression_refine_build_preserves_the_approved_main_sheet(
         _manifest("expression_refine", (SourceSpec(kind="approved_portrait", ref="hero.png"),))
     )
     ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
-    write_valid_package(ctx.workspace / "submitted")
-    original_main = load_rgb(ctx.workspace / "submitted" / "hero.png")[:80, :96].copy()
+    _write_multicolour_package(ctx.workspace / "submitted")
+    source_indices, source_palette = load_indexed(ctx.workspace / "submitted" / "hero.png")
     monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
 
     result = PortraitPlugin().build(ctx, job.manifest)
@@ -144,12 +165,19 @@ def test_expression_refine_build_preserves_the_approved_main_sheet(
     assert result.ok is True
     assert requests[0].workflow == "expression_refine"
     assert requests[0].references[0].role == "approved_portrait"
-    candidate_main = load_rgb(ctx.workspace / "candidate" / "package" / "hero.png")[:80, :96]
-    assert np.array_equal(candidate_main, original_main)
+    candidate_indices, candidate_palette = load_indexed(
+        ctx.workspace / "candidate" / "package" / "hero.png"
+    )
+    unchanged = np.ones(source_indices.shape, dtype=bool)
+    for x, y in ((96, 48), (96, 64), (0, 80), (32, 80), (64, 80)):
+        unchanged[y + 1 : y + 15, x + 1 : x + 31] = False
+    assert np.array_equal(candidate_palette, source_palette)
+    assert np.array_equal(candidate_indices[unchanged], source_indices[unchanged])
+    assert not has_errors(FeGbaPortraitStandard().validate(ctx.workspace / "candidate" / "package"))
     assert LineageStore(data_root).get(f"{job.id}-candidate").operation.value == "refine_expression"
 
 
-def test_masked_variant_build_replaces_only_the_masked_main_region(
+def test_masked_variant_build_preserves_approved_indices_and_palette_outside_mask(
     data_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import fecreator.assets.portrait.plugin as plugin_module
@@ -163,10 +191,8 @@ def test_masked_variant_build_replaces_only_the_masked_main_region(
 
         def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
             requests.append(request)
-            edited = _portrait_rgb()
-            edited[:, :] = (200, 40, 40)
             path = workspace / "generated" / "variant.png"
-            save_png(path, edited)
+            save_png(path, _provider_colours(80, 96))
             return GenResponse(
                 ok=True,
                 artifacts=(
@@ -195,7 +221,8 @@ def test_masked_variant_build_replaces_only_the_masked_main_region(
         )
     )
     ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
-    write_valid_package(ctx.workspace / "submitted")
+    _write_multicolour_package(ctx.workspace / "submitted")
+    source_indices, source_palette = load_indexed(ctx.workspace / "submitted" / "hero.png")
     mask = np.zeros((80, 96, 3), dtype=np.uint8)
     mask[48:64, 40:56] = 255
     save_png(ctx.workspace / "submitted" / "mask.png", mask)
@@ -207,6 +234,14 @@ def test_masked_variant_build_replaces_only_the_masked_main_region(
     assert requests[0].workflow == "masked_variant"
     assert requests[0].mask is not None and requests[0].mask.role == "mask"
     assert not has_errors(result.diagnostics)
+    candidate_indices, candidate_palette = load_indexed(
+        ctx.workspace / "candidate" / "package" / "hero.png"
+    )
+    unchanged = np.ones(source_indices.shape, dtype=bool)
+    unchanged[48:64, 40:56] = False
+    assert np.array_equal(candidate_palette, source_palette)
+    assert np.array_equal(candidate_indices[unchanged], source_indices[unchanged])
+    assert not has_errors(FeGbaPortraitStandard().validate(ctx.workspace / "candidate" / "package"))
     assert (
         LineageStore(data_root).get(f"{job.id}-candidate").operation.value == "variant_masked_edit"
     )
