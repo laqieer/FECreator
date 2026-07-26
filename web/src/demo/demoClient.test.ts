@@ -2,6 +2,19 @@ import { afterEach, expect, test, vi } from "vitest";
 import { demoClient } from "./demoClient";
 import type { Manifest } from "../api/types";
 
+const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < table.length; i += 1) {
+    let crc = i;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc & 1) !== 0 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+    }
+    table[i] = crc >>> 0;
+  }
+  return table;
+})();
+
 const validManifest: Manifest = {
   version: "1.0",
   asset_type: "portrait",
@@ -19,7 +32,53 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-test("demo candidate artifacts are valid PNG bytes with the expected IHDR chunk", async () => {
+function readUint32BE(bytes: Uint8Array, offset: number): number {
+  return (
+    ((bytes[offset] ?? 0) << 24) |
+    ((bytes[offset + 1] ?? 0) << 16) |
+    ((bytes[offset + 2] ?? 0) << 8) |
+    (bytes[offset + 3] ?? 0)
+  ) >>> 0;
+}
+
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (~crc) >>> 0;
+}
+
+function expectValidPng(bytes: Uint8Array): void {
+  expect(Array.from(bytes.slice(0, 8))).toEqual(PNG_SIGNATURE);
+
+  const chunks: Array<{ type: string }> = [];
+  let offset = PNG_SIGNATURE.length;
+
+  while (offset < bytes.length) {
+    expect(offset + 8).toBeLessThanOrEqual(bytes.length);
+    const length = readUint32BE(bytes, offset);
+    offset += 4;
+    const typeBytes = bytes.slice(offset, offset + 4);
+    const type = String.fromCharCode(...typeBytes);
+    offset += 4;
+    expect(offset + length + 4).toBeLessThanOrEqual(bytes.length);
+
+    const data = bytes.slice(offset, offset + length);
+    offset += length;
+    const expectedCrc = readUint32BE(bytes, offset);
+    offset += 4;
+    const actualCrc = crc32(new Uint8Array([...typeBytes, ...data]));
+
+    expect(actualCrc).toBe(expectedCrc);
+    chunks.push({ type });
+  }
+
+  expect(chunks.map((chunk) => chunk.type)).toEqual(["IHDR", "IDAT", "IEND"]);
+  expect(offset).toBe(bytes.length);
+}
+
+test("demo candidate artifacts are valid PNG bytes with matching chunk CRCs", async () => {
   const client = demoClient();
   const created = await client.createJob(validManifest);
 
@@ -30,16 +89,7 @@ test("demo candidate artifacts are valid PNG bytes with the expected IHDR chunk"
   expect(blob.type).toBe("image/png");
 
   const bytes = new Uint8Array(await blob.arrayBuffer());
-  expect(Array.from(bytes.slice(0, 8))).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
-  expect(String.fromCharCode(...bytes.slice(12, 16))).toBe("IHDR");
-  expect(bytes[16]).toBe(0);
-  expect(bytes[17]).toBe(0);
-  expect(bytes[18]).toBe(0);
-  expect(bytes[19]).toBe(1);
-  expect(bytes[20]).toBe(0);
-  expect(bytes[21]).toBe(0);
-  expect(bytes[22]).toBe(0);
-  expect(bytes[23]).toBe(1);
+  expectValidPng(bytes);
 });
 
 test("registries are deterministic and match the frozen v1 surface", async () => {
