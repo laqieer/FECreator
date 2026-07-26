@@ -6,17 +6,21 @@ import numpy as np
 import pytest
 
 from fecreator.assets.portrait.workflows import (
+    WorkflowFailure,
     WorkflowInputError,
     prepare_concept_to_portrait,
+    prepare_expression_refine,
+    prepare_masked_variant,
     prepare_text_to_portrait,
 )
 from fecreator.contracts.capabilities import Capability, CapabilitySet
-from fecreator.contracts.lineage import Operation
-from fecreator.contracts.manifest import Manifest, SourceSpec
+from fecreator.contracts.lineage import Operation, Region
+from fecreator.contracts.manifest import EditSpec, Manifest, SourceSpec
 from fecreator.contracts.result import Artifact
 from fecreator.core.hashing import sha256_file
 from fecreator.imaging.io import save_png
-from fecreator.providers.base import GenRequest, GenResponse
+from fecreator.providers.base import GenRequest, GenResponse, ProviderRefusal
+from tests.fixtures.gba import write_valid_package
 
 
 def _manifest(workflow: str, sources: tuple[SourceSpec, ...]) -> Manifest:
@@ -137,3 +141,177 @@ def test_concept_workflow_does_not_accept_approved_portrait_as_concept_input(
         )
 
     assert provider.requests == []
+
+
+def _approved_manifest(workflow: str, edit: EditSpec | None = None) -> Manifest:
+    return Manifest(
+        asset_type="portrait",
+        target_spec="fe-gba-portrait-standard",
+        workflow=workflow,
+        provider="test-provider",
+        sources=(SourceSpec(kind="approved_portrait", ref="hero.png"),),
+        edit=edit,
+    )
+
+
+def test_expression_refine_rejects_missing_approved_portrait(tmp_path: Path) -> None:
+    with pytest.raises(WorkflowInputError, match="approved portrait"):
+        prepare_expression_refine(
+            _approved_manifest("expression_refine"),
+            None,
+            _Provider(),
+            tmp_path / "workspace",
+        )
+
+
+def test_expression_refine_requires_image_to_image_capability(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    write_valid_package(workspace / "submitted")
+
+    class _NoImageProvider:
+        id = "no-image"
+        capabilities = CapabilitySet(capabilities=frozenset())
+
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            raise AssertionError("must refuse before generating")
+
+    with pytest.raises(ProviderRefusal, match="image_to_image"):
+        prepare_expression_refine(
+            _approved_manifest("expression_refine"),
+            None,
+            _NoImageProvider(),
+            workspace,
+        )
+
+
+def test_expression_refine_requires_matching_submitted_palette(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    write_valid_package(workspace / "submitted")
+    (workspace / "submitted" / "hero.pal").unlink()
+    provider = _Provider()
+
+    with pytest.raises(WorkflowInputError, match="matching JASC palette"):
+        prepare_expression_refine(
+            _approved_manifest("expression_refine"),
+            None,
+            provider,
+            workspace,
+        )
+
+    assert provider.requests == []
+
+
+def test_expression_refine_rejects_incomplete_expression_roles(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    write_valid_package(workspace / "submitted")
+
+    class _IncompleteProvider(_Provider):
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            del request, workspace
+            return GenResponse(ok=True, artifacts=())
+
+    with pytest.raises(WorkflowFailure, match="complete expression roles"):
+        prepare_expression_refine(
+            _approved_manifest("expression_refine"),
+            None,
+            _IncompleteProvider(),
+            workspace,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mask", "message"),
+    [
+        (None, "mask must be"),
+        (np.full((80, 96, 3), 128, dtype=np.uint8), "black-and-white"),
+        (np.zeros((40, 96, 3), dtype=np.uint8), "mask shape"),
+    ],
+)
+def test_masked_variant_rejects_invalid_submitted_mask(
+    tmp_path: Path,
+    mask: np.ndarray | None,
+    message: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    write_valid_package(workspace / "submitted")
+    if mask is not None:
+        save_png(workspace / "submitted" / "mask.png", mask)
+
+    with pytest.raises(WorkflowInputError, match=message):
+        prepare_masked_variant(
+            _approved_manifest("masked_variant", EditSpec(mask_path="mask.png")),
+            None,
+            _Provider(),
+            workspace,
+        )
+
+
+def test_masked_variant_rejects_protected_region_changes(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    write_valid_package(workspace / "submitted")
+    mask = np.zeros((80, 96, 3), dtype=np.uint8)
+    mask[48:64, 40:56] = 255
+    save_png(workspace / "submitted" / "mask.png", mask)
+
+    class _ProtectedRegionProvider(_Provider):
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            del request
+            output = workspace / "generated" / "variant.png"
+            edited = np.full((80, 96, 3), (200, 40, 40), dtype=np.uint8)
+            save_png(output, edited)
+            return GenResponse(
+                ok=True,
+                artifacts=(
+                    Artifact(
+                        role="variant",
+                        path="generated/variant.png",
+                        sha256=sha256_file(output),
+                        media_type="image/png",
+                    ),
+                ),
+            )
+
+    with pytest.raises(WorkflowFailure, match="PROTECTED_REGION_CHANGED"):
+        prepare_masked_variant(
+            _approved_manifest(
+                "masked_variant",
+                EditSpec(
+                    mask_path="mask.png",
+                    protected_regions=(Region(x=40, y=48, w=16, h=16, label="face"),),
+                ),
+            ),
+            None,
+            _ProtectedRegionProvider(),
+            workspace,
+        )
+
+
+def test_masked_variant_rejects_wrong_sized_provider_artifact(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    write_valid_package(workspace / "submitted")
+    save_png(workspace / "submitted" / "mask.png", np.zeros((80, 96, 3), dtype=np.uint8))
+
+    class _WrongSizedProvider(_Provider):
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            del request
+            output = workspace / "generated" / "variant.png"
+            save_png(output, np.zeros((40, 96, 3), dtype=np.uint8))
+            return GenResponse(
+                ok=True,
+                artifacts=(
+                    Artifact(
+                        role="variant",
+                        path="generated/variant.png",
+                        sha256=sha256_file(output),
+                        media_type="image/png",
+                    ),
+                ),
+            )
+
+    with pytest.raises(WorkflowFailure, match="invalid variant image"):
+        prepare_masked_variant(
+            _approved_manifest("masked_variant", EditSpec(mask_path="mask.png")),
+            None,
+            _WrongSizedProvider(),
+            workspace,
+        )

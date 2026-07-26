@@ -16,11 +16,12 @@ cancellation, switch to the MCP surface. Those actions exist only as MCP tools t
 
 ## Workflow capability requirements
 
-The workflow names below remain valid manifest vocabulary and provider-capability
-targets, but only one build path is wired into the current portrait orchestration.
+The workflow names below are valid manifest vocabulary, provider-capability targets, and
+build paths in the current portrait orchestration.
 
-- Executable today: "text_to_portrait" and "concept_to_portrait".
-- Unavailable until build orchestration exists: "expression_refine" and "masked_variant".
+- Executable today: "text_to_portrait", "concept_to_portrait", "expression_refine", and
+  "masked_variant".
+- Unavailable until build orchestration exists: none.
 
 - "text_to_portrait" requires the provider capability "text_to_image".
 - "concept_to_portrait" requires "image_to_image" and benefits from "multi_reference"

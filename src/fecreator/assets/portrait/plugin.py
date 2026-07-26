@@ -15,6 +15,8 @@ from fecreator.assets.portrait.workflows import (
     PreparedPortrait,
     WorkflowFailure,
     prepare_concept_to_portrait,
+    prepare_expression_refine,
+    prepare_masked_variant,
     prepare_text_to_portrait,
 )
 from fecreator.contracts.capabilities import Capability
@@ -48,7 +50,12 @@ class PortraitPlugin:
 
     def build(self, ctx: PipelineContext, manifest: Manifest) -> JobResult:
         self._assert_manifest_supported(manifest)
-        if manifest.workflow not in {"text_to_portrait", "concept_to_portrait"}:
+        if manifest.workflow not in {
+            "text_to_portrait",
+            "concept_to_portrait",
+            "expression_refine",
+            "masked_variant",
+        }:
             raise NotImplementedError(f"workflow not implemented yet: {manifest.workflow}")
 
         ctx.workspace.mkdir(parents=True, exist_ok=True)
@@ -127,7 +134,11 @@ class PortraitPlugin:
     ) -> PreparedPortrait:
         if manifest.workflow == "text_to_portrait":
             return prepare_text_to_portrait(manifest, pack, provider, workspace)
-        return prepare_concept_to_portrait(manifest, pack, provider, workspace)
+        if manifest.workflow == "concept_to_portrait":
+            return prepare_concept_to_portrait(manifest, pack, provider, workspace)
+        if manifest.workflow == "expression_refine":
+            return prepare_expression_refine(manifest, pack, provider, workspace)
+        return prepare_masked_variant(manifest, pack, provider, workspace)
 
     def _fail(
         self,

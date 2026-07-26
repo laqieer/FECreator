@@ -17,8 +17,9 @@ invents missing commands, bypasses review, bypasses validation, or bypasses line
   service, or non-portrait asset tool.
 - Keep workflow intake vocabulary inside the current portrait set: "text_to_portrait",
   "concept_to_portrait", "expression_refine", and "masked_variant".
-- Executable today: "text_to_portrait" and "concept_to_portrait".
-- Unavailable until build orchestration exists: "expression_refine" and "masked_variant".
+- Executable today: "text_to_portrait", "concept_to_portrait", "expression_refine", and
+  "masked_variant".
+- Unavailable until build orchestration exists: none.
 
 ## Gather intent first
 

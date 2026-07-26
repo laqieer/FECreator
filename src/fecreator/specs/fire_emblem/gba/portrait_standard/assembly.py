@@ -67,3 +67,30 @@ def preserve_cell_border(cell: np.ndarray, base: np.ndarray) -> np.ndarray:
     out[:, 0] = base[:, 0]
     out[:, -1] = base[:, -1]
     return out
+
+
+def extract_rgb_slot(sheet_rgb: np.ndarray, name: str) -> np.ndarray:
+    """Return a copied RGB cell from a canonical portrait sheet."""
+    _validate_rgb_sheet(sheet_rgb)
+    slot = _BY_NAME[name]
+    return sheet_rgb[slot.y : slot.y + slot.h, slot.x : slot.x + slot.w].copy()
+
+
+def replace_rgb_slot(sheet_rgb: np.ndarray, name: str, cell_rgb: np.ndarray) -> np.ndarray:
+    """Return a copied sheet with one complete RGB cell replaced."""
+    _validate_rgb_sheet(sheet_rgb)
+    slot = _BY_NAME[name]
+    expected = (slot.h, slot.w, 3)
+    if cell_rgb.shape != expected:
+        raise ValueError(f"cell {name!r} has shape {cell_rgb.shape}, expected {expected}")
+    out = sheet_rgb.copy()
+    out[slot.y : slot.y + slot.h, slot.x : slot.x + slot.w] = cell_rgb
+    return out
+
+
+def _validate_rgb_sheet(sheet_rgb: np.ndarray) -> None:
+    expected = (SHEET_H, SHEET_W, 3)
+    if sheet_rgb.shape != expected:
+        raise ValueError(f"sheet_rgb must have shape {expected}, got {sheet_rgb.shape}")
+    if sheet_rgb.dtype != np.dtype(np.uint8):
+        raise ValueError(f"sheet_rgb must have uint8 dtype, got {sheet_rgb.dtype}")

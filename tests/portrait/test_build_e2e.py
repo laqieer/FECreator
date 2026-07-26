@@ -14,10 +14,12 @@ import pytest
 import fecreator.references.store as reference_store
 from fecreator.contracts.capabilities import Capability, CapabilitySet
 from fecreator.contracts.diagnostics import has_errors, warning
-from fecreator.contracts.manifest import Manifest, SourceSpec
+from fecreator.contracts.lineage import Region
+from fecreator.contracts.manifest import EditSpec, Manifest, SourceSpec
 from fecreator.contracts.result import Artifact
+from fecreator.core.hashing import sha256_file
 from fecreator.core.pipeline import PipelineContext
-from fecreator.imaging.io import save_png
+from fecreator.imaging.io import load_rgb, save_png
 from fecreator.jobs.events import EventLog
 from fecreator.jobs.model import JobState
 from fecreator.jobs.service import InvalidTransitionError, JobService
@@ -27,6 +29,7 @@ from fecreator.providers.base import GenRequest, GenResponse, ProviderRefusal
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
 from fecreator.specs.fire_emblem.gba.portrait_standard.spec import FeGbaPortraitStandard
+from tests.fixtures.gba import write_valid_package
 
 
 def _manifest(
@@ -96,6 +99,117 @@ def test_plugin_required_caps() -> None:
     from fecreator.assets.portrait.plugin import PortraitPlugin
 
     assert PortraitPlugin().required_capabilities("text_to_portrait") == {Capability.TEXT_TO_IMAGE}
+
+
+def test_expression_refine_build_preserves_the_approved_main_sheet(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    requests: list[GenRequest] = []
+
+    class _Provider:
+        id = "expression-provider"
+        capabilities = CapabilitySet(capabilities=frozenset({Capability.IMAGE_TO_IMAGE}))
+
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            requests.append(request)
+            artifacts = []
+            for role in ("half_closed_eyes", "closed_eyes", "mouth1", "mouth2", "mouth3"):
+                path = workspace / "generated" / f"{role}.png"
+                save_png(path, np.full((16, 32, 3), (80, 96, 200), dtype=np.uint8))
+                artifacts.append(
+                    Artifact(
+                        role=role,
+                        path=f"generated/{role}.png",
+                        sha256=sha256_file(path),
+                        media_type="image/png",
+                    )
+                )
+            return GenResponse(
+                ok=True, artifacts=tuple(artifacts), model="expression-model", seed=3
+            )
+
+    job = JobStore(data_root).create(
+        _manifest("expression_refine", (SourceSpec(kind="approved_portrait", ref="hero.png"),))
+    )
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    write_valid_package(ctx.workspace / "submitted")
+    original_main = load_rgb(ctx.workspace / "submitted" / "hero.png")[:80, :96].copy()
+    monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
+
+    result = PortraitPlugin().build(ctx, job.manifest)
+
+    assert result.ok is True
+    assert requests[0].workflow == "expression_refine"
+    assert requests[0].references[0].role == "approved_portrait"
+    candidate_main = load_rgb(ctx.workspace / "candidate" / "package" / "hero.png")[:80, :96]
+    assert np.array_equal(candidate_main, original_main)
+    assert LineageStore(data_root).get(f"{job.id}-candidate").operation.value == "refine_expression"
+
+
+def test_masked_variant_build_replaces_only_the_masked_main_region(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    requests: list[GenRequest] = []
+
+    class _Provider:
+        id = "masked-provider"
+        capabilities = CapabilitySet(capabilities=frozenset({Capability.MASKED_EDIT}))
+
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            requests.append(request)
+            edited = _portrait_rgb()
+            edited[:, :] = (200, 40, 40)
+            path = workspace / "generated" / "variant.png"
+            save_png(path, edited)
+            return GenResponse(
+                ok=True,
+                artifacts=(
+                    Artifact(
+                        role="variant",
+                        path="generated/variant.png",
+                        sha256=sha256_file(path),
+                        media_type="image/png",
+                    ),
+                ),
+                model="masked-model",
+                seed=5,
+            )
+
+    job = JobStore(data_root).create(
+        Manifest(
+            asset_type="portrait",
+            target_spec="fe-gba-portrait-standard",
+            workflow="masked_variant",
+            provider="fake",
+            sources=(SourceSpec(kind="approved_portrait", ref="hero.png"),),
+            edit=EditSpec(
+                mask_path="mask.png",
+                protected_regions=(Region(x=0, y=0, w=16, h=48, label="upper_left"),),
+            ),
+        )
+    )
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    write_valid_package(ctx.workspace / "submitted")
+    mask = np.zeros((80, 96, 3), dtype=np.uint8)
+    mask[48:64, 40:56] = 255
+    save_png(ctx.workspace / "submitted" / "mask.png", mask)
+    monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
+
+    result = PortraitPlugin().build(ctx, job.manifest)
+
+    assert result.ok is True
+    assert requests[0].workflow == "masked_variant"
+    assert requests[0].mask is not None and requests[0].mask.role == "mask"
+    assert not has_errors(result.diagnostics)
+    assert (
+        LineageStore(data_root).get(f"{job.id}-candidate").operation.value == "variant_masked_edit"
+    )
 
 
 def test_build_produces_valid_candidate_package_and_lineage(data_root: Path) -> None:

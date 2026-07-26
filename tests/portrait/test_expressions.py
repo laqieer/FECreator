@@ -1,7 +1,11 @@
 import numpy as np
 import pytest
 
-from fecreator.assets.portrait.expressions import apply_expression, derive_sequential
+from fecreator.assets.portrait.expressions import (
+    apply_expression,
+    assemble_refined_expressions,
+    derive_sequential,
+)
 
 # ---------------------------------------------------------------------------
 # Basic contract (from brief)
@@ -114,3 +118,43 @@ def test_derive_empty_candidates_returns_empty_list():
     base = np.zeros((16, 32), dtype=np.uint8)
     frames = derive_sequential(base, [])
     assert frames == []
+
+
+def test_assemble_refined_expressions_preserves_other_slots_and_patch_borders():
+    base = np.zeros((112, 128, 3), dtype=np.uint8)
+    base[48:64, 96:128] = 7
+    base[64:80, 96:128] = 8
+    base[80:96, 0:32] = 9
+    base[80:96, 32:64] = 10
+    base[80:96, 64:96] = 11
+    original = base.copy()
+    candidates = {
+        "half_closed_eyes": np.full((16, 32, 3), 40, dtype=np.uint8),
+        "closed_eyes": np.full((16, 32, 3), 41, dtype=np.uint8),
+        "mouth1": np.full((16, 32, 3), 42, dtype=np.uint8),
+        "mouth2": np.full((16, 32, 3), 43, dtype=np.uint8),
+        "mouth3": np.full((16, 32, 3), 44, dtype=np.uint8),
+    }
+
+    refined = assemble_refined_expressions(base, candidates)
+
+    assert np.array_equal(refined[:48], original[:48])
+    assert np.array_equal(refined[48, 96:128], original[48, 96:128])
+    assert np.array_equal(refined[63, 96:128], original[63, 96:128])
+    assert np.array_equal(refined[48:64, 96], original[48:64, 96])
+    assert np.array_equal(refined[48:64, 127], original[48:64, 127])
+    assert np.array_equal(refined[56, 112], candidates["half_closed_eyes"][8, 16])
+    assert np.array_equal(base, original)
+
+
+def test_assemble_refined_expressions_requires_every_expression_role():
+    base = np.zeros((112, 128, 3), dtype=np.uint8)
+    candidates = {
+        "half_closed_eyes": np.zeros((16, 32, 3), dtype=np.uint8),
+        "closed_eyes": np.zeros((16, 32, 3), dtype=np.uint8),
+        "mouth1": np.zeros((16, 32, 3), dtype=np.uint8),
+        "mouth2": np.zeros((16, 32, 3), dtype=np.uint8),
+    }
+
+    with pytest.raises(ValueError, match="missing"):
+        assemble_refined_expressions(base, candidates)
