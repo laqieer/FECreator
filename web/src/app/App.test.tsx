@@ -10,14 +10,12 @@ import type { Job, Manifest } from "../api/types";
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
 
-  url: string;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
 
-  constructor(url: string) {
-    this.url = url;
+  constructor(readonly url: string) {
     MockWebSocket.instances.push(this);
   }
 
@@ -53,8 +51,9 @@ function makeJob(id: string, state: Job["state"]): Job {
 
 function createClient(overrides?: Partial<ApiClient>): ApiClient {
   return createStubApiClient({
+    listJobs: async () => [],
     createJob: async () => makeJob("job 7/alpha", "created"),
-    getJob: async (id) => makeJob(id, "completed"),
+    getJob: async (id) => makeJob(id, "created"),
     ...overrides,
   });
 }
@@ -64,24 +63,13 @@ afterEach(() => {
   MockWebSocket.instances = [];
 });
 
-test("creates a job from the timeline tab and streams a snapshot without a disconnect alert", async () => {
+test("creates a manifest job and streams its selected timeline", async () => {
   vi.stubGlobal("WebSocket", MockWebSocket);
   const createJob = vi.fn(async () => makeJob("job 7/alpha", "created"));
-  const getJob = vi.fn(async (id: string) => makeJob(id, "completed"));
-  const client = createClient({ createJob, getJob });
   const user = userEvent.setup();
+  renderWithProviders(<App />, createClient({ createJob }));
 
-  renderWithProviders(<App />, client);
-
-  await screen.findByText("1 asset type available");
-  await user.click(screen.getByRole("tab", { name: "Timeline" }));
-
-  expect(createJob).not.toHaveBeenCalled();
-  expect(getJob).not.toHaveBeenCalled();
-  expect(screen.getByText("Create or load a job to review timeline events.")).toBeInTheDocument();
-
-  await user.click(screen.getByRole("button", { name: "Create timeline job" }));
-
+  await user.click(await screen.findByRole("button", { name: "Create job" }));
   expect(createJob).toHaveBeenCalledWith(
     expect.objectContaining({
       asset_type: "portrait",
@@ -90,9 +78,10 @@ test("creates a job from the timeline tab and streams a snapshot without a disco
       provider: "fake",
     }),
   );
-  expect(await screen.findByDisplayValue("job 7/alpha")).toBeInTheDocument();
-  expect(MockWebSocket.instances[0]?.url).toBe("ws://localhost:3000/ws/jobs/job%207%2Falpha");
+  await screen.findByText("Selected job job 7/alpha is created.");
 
+  await user.click(screen.getByRole("tab", { name: "Timeline" }));
+  expect(MockWebSocket.instances[0]?.url).toBe("ws://localhost:3000/ws/jobs/job%207%2Falpha");
   act(() => {
     MockWebSocket.instances[0]?.onopen?.();
     MockWebSocket.instances[0]?.onmessage?.({
@@ -106,43 +95,23 @@ test("creates a job from the timeline tab and streams a snapshot without a disco
 
   expect(await screen.findByText("Timeline snapshot complete.")).toBeInTheDocument();
   expect(screen.getByText("created")).toBeInTheDocument();
-  expect(screen.queryByText("Timeline disconnected")).not.toBeInTheDocument();
 });
 
-test("loads a selected job explicitly and shows terminal state", async () => {
-  vi.stubGlobal("WebSocket", MockWebSocket);
-  const getJob = vi.fn(async (id: string) => makeJob(id, "completed"));
+test("shows job loading failures in the dashboard", async () => {
   const user = userEvent.setup();
-
-  renderWithProviders(<App />, createClient({ getJob }));
-  await user.click(screen.getByRole("tab", { name: "Timeline" }));
-  await user.type(screen.getByLabelText("Job ID"), "done/job");
-  await user.click(screen.getByRole("button", { name: "Load job" }));
-
-  expect(getJob).toHaveBeenCalledWith("done/job");
-  expect(MockWebSocket.instances[0]?.url).toBe("ws://localhost:3000/ws/jobs/done%2Fjob");
-  expect(await screen.findByText("Job ended in completed.")).toBeInTheDocument();
-});
-
-test("shows a load error without opening a websocket", async () => {
-  vi.stubGlobal("WebSocket", MockWebSocket);
-  const user = userEvent.setup();
-
   renderWithProviders(
     <App />,
     createClient({
+      listJobs: async () => [makeJob("missing-job", "created")],
       getJob: async () => {
         throw new Error("missing job");
       },
     }),
   );
 
-  await user.click(screen.getByRole("tab", { name: "Timeline" }));
-  await user.type(screen.getByLabelText("Job ID"), "missing job");
-  await user.click(screen.getByRole("button", { name: "Load job" }));
+  await user.click(await screen.findByRole("button", { name: /missing-job.*created/i }));
 
-  expect(await screen.findByRole("alert")).toHaveTextContent("Unable to load job missing job.");
-  expect(MockWebSocket.instances).toHaveLength(0);
+  expect(await screen.findByText("missing job", { selector: '[role="alert"]' })).toBeInTheDocument();
 });
 
 test("implements roving tabindex keyboard navigation for tabs", async () => {

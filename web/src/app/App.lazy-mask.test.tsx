@@ -21,6 +21,6 @@ test("shows a loading fallback before the lazy mask editor resolves", async () =
 
   await user.click(screen.getByRole("tab", { name: "Mask" }));
 
-  expect(screen.getByRole("status")).toHaveTextContent("Loading mask editor…");
+  expect(screen.getByText("Loading mask editor…")).toBeInTheDocument();
   expect(await screen.findByText("Mask editor ready")).toBeInTheDocument();
 });

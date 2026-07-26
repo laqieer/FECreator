@@ -2,6 +2,7 @@ import type { JobEvent, JobEventsPayload } from "../api/types";
 import { useEffect, useState } from "react";
 import type { JobConnectionState } from "./JobTimeline";
 import { useJobEventSource } from "./eventSourceContext";
+import type { JobEventSource } from "./eventSource";
 
 export interface JobEventsSnapshot {
   events: JobEvent[];
@@ -89,8 +90,9 @@ export function parseJobEventsPayload(rawData: unknown, expectedJobId: string): 
   };
 }
 
-export function useJobEvents(jobId: string): JobEventsSnapshot {
-  const source = useJobEventSource();
+export function useJobEvents(jobId: string, injectedSource?: JobEventSource): JobEventsSnapshot {
+  const contextSource = useJobEventSource();
+  const source = injectedSource ?? contextSource;
   const [snapshot, setSnapshot] = useState<JobEventsSnapshot>(initialSnapshot);
 
   useEffect(() => {

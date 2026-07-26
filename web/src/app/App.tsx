@@ -1,21 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
-import {
-  lazy,
-  Suspense,
-  useRef,
-  useState,
-  type KeyboardEvent,
-} from "react";
-import type { Manifest, Job, JobState } from "../api/types";
+import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import type { CandidateSnapshot, JobState, ReferencePack } from "../api/types";
 import type { IndexedFrame } from "../palette/framePreview";
 import { useApiClient } from "../api/context";
 import { clearMask, emptyMask, type MaskGrid } from "../canvas/maskModel";
+import { ManifestControls } from "../controls/ManifestControls";
+import { SourceStatus } from "../controls/SourceStatus";
+import { JobQueue } from "../dashboard/JobQueue";
 import { JobTimeline } from "../jobs/JobTimeline";
-import { useJobEvents } from "../jobs/useJobEvents";
+import { useJobEventSource } from "../jobs/eventSourceContext";
 import { LineageView } from "../lineage/LineageView";
 import { PalettePreview } from "../palette/PalettePreview";
 import { ReferenceBoard } from "../references/ReferenceBoard";
 import { ReviewGallery } from "../review/ReviewGallery";
+import { useWorkbench } from "../workbench/useWorkbench";
 
 const LazyMaskEditor = lazy(async () => {
   const module = await import("../canvas/MaskEditor");
@@ -26,7 +24,6 @@ const tabs = ["Review", "References", "Mask", "Palette", "Timeline", "Lineage"] 
 const terminalStates: JobState[] = ["completed", "failed", "cancelled"];
 const sampleMaskWidth = 96;
 const sampleMaskHeight = 80;
-const sampleCandidateSrc = "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='48'%3E%3Crect width='80' height='48' fill='%23d9d9d9'/%3E%3C/svg%3E";
 const samplePalette: [number, number, number][] = [
   [0, 0, 0],
   [0, 248, 0],
@@ -77,74 +74,78 @@ function RegistryStatus({
   if (query.isPending) {
     return <li role="status">Loading {plural}…</li>;
   }
-
   if (query.isError) {
     return <li role="alert">Unable to load {plural}.</li>;
   }
-
   const count = query.data.length;
   if (count === 0) {
     return <li>No {plural} available.</li>;
   }
-
-  const label = count === 1 ? singular : plural;
-  return <li>{count} {label} available</li>;
-}
-
-function buildDefaultManifest(assets: string[], specs: string[], providers: string[]): Manifest | null {
-  const [assetType] = assets;
-  const [targetSpec] = specs;
-  const [provider] = providers;
-
-  if (!assetType || !targetSpec || !provider) {
-    return null;
-  }
-
-  return {
-    version: "1.0",
-    asset_type: assetType as Manifest["asset_type"],
-    target_spec: targetSpec as Manifest["target_spec"],
-    workflow: "text_to_portrait",
-    provider,
-    character_ref_pack: null,
-    character_ref_pack_rev: null,
-    sources: [],
-    edit: null,
-    params: {},
-  };
+  return <li>{count} {count === 1 ? singular : plural} available</li>;
 }
 
 function isTerminalState(state: JobState): state is Extract<JobState, "completed" | "failed" | "cancelled"> {
   return terminalStates.includes(state);
 }
 
+function candidateCards(candidate: CandidateSnapshot | null) {
+  if (candidate === null) {
+    return [];
+  }
+  return candidate.artifacts.map((artifact) => ({
+    id: artifact.path,
+    src: artifact.path,
+    imageWidth: 128,
+    imageHeight: 112,
+    cropRect: { x: 0, y: 0, w: 128, h: 112 },
+    specRect: { x: 0, y: 0, w: 128, h: 112 },
+  }));
+}
+
 export function App() {
   const client = useApiClient();
+  const eventSource = useJobEventSource();
+  const workbench = useWorkbench(client, eventSource);
   const [activeTab, setActiveTab] = useState<TabName>("Review");
   const [manifestText, setManifestText] = useState("{}\n");
-  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
-  const [selectedJobId, setSelectedJobId] = useState("");
-  const [jobIdInput, setJobIdInput] = useState("");
-  const [jobAction, setJobAction] = useState<"idle" | "creating" | "loading">("idle");
-  const [jobError, setJobError] = useState<string | null>(null);
-  const [maskHistory, setMaskHistory] = useState<MaskGrid[]>(() => [emptyMask(sampleMaskWidth, sampleMaskHeight)]);
+  const [maskHistory, setMaskHistory] = useState<MaskGrid[]>(() => [
+    emptyMask(sampleMaskWidth, sampleMaskHeight),
+  ]);
   const [selectedFrameId, setSelectedFrameId] = useState(sampleFrames[0]?.id ?? "");
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const assetsQuery = useQuery({ queryKey: ["assets"], queryFn: () => client.listAssets() });
   const specsQuery = useQuery({ queryKey: ["specs"], queryFn: () => client.listSpecs() });
-  const providersQuery = useQuery({
-    queryKey: ["providers"],
-    queryFn: () => client.listProviders(),
+  const providersQuery = useQuery({ queryKey: ["providers"], queryFn: () => client.listProviders() });
+  const referencePacksQuery = useQuery({
+    queryKey: ["reference-packs"],
+    queryFn: () => client.listReferencePacks(),
   });
-  const jobEvents = useJobEvents(selectedJobId);
+  const referenceIds = referencePacksQuery.data ?? [];
+  const referenceHistoryQuery = useQuery({
+    queryKey: ["reference-history", referenceIds],
+    enabled: referencePacksQuery.isSuccess,
+    queryFn: async (): Promise<ReferencePack[]> =>
+      (await Promise.all(referenceIds.map((id) => client.listReferenceHistory(id)))).flat(),
+  });
 
-  const assetOptions = assetsQuery.data ?? [];
-  const specOptions = specsQuery.data ?? [];
-  const providerOptions = providersQuery.data ?? [];
-  const defaultManifest = buildDefaultManifest(assetOptions, specOptions, providerOptions);
-  const selectedTerminalState = selectedJob && isTerminalState(selectedJob.state) ? selectedJob.state : null;
-  const currentMask = maskHistory[maskHistory.length - 1] ?? emptyMask(sampleMaskWidth, sampleMaskHeight);
+  useEffect(() => {
+    if (workbench.selectedJob !== null) {
+      setManifestText(JSON.stringify(workbench.selectedJob.manifest, null, 2));
+    }
+  }, [workbench.selectedJob]);
+
+  const currentMask =
+    maskHistory[maskHistory.length - 1] ?? emptyMask(sampleMaskWidth, sampleMaskHeight);
+  const selectedTerminalState =
+    workbench.selectedJob && isTerminalState(workbench.selectedJob.state)
+      ? workbench.selectedJob.state
+      : null;
+  const selectedReference = referenceHistoryQuery.data?.find(
+    (reference) =>
+      reference.id === workbench.selectedJob?.manifest.character_ref_pack &&
+      reference.revision === workbench.selectedJob?.manifest.character_ref_pack_rev,
+  );
 
   const selectTab = (index: number) => {
     setActiveTab(tabs[index]);
@@ -155,82 +156,16 @@ export function App() {
     if (event.key === "ArrowRight") {
       event.preventDefault();
       selectTab((index + 1) % tabs.length);
-      return;
-    }
-
-    if (event.key === "ArrowLeft") {
+    } else if (event.key === "ArrowLeft") {
       event.preventDefault();
       selectTab((index - 1 + tabs.length) % tabs.length);
-      return;
-    }
-
-    if (event.key === "Home") {
+    } else if (event.key === "Home") {
       event.preventDefault();
       selectTab(0);
-      return;
-    }
-
-    if (event.key === "End") {
+    } else if (event.key === "End") {
       event.preventDefault();
       selectTab(tabs.length - 1);
     }
-  };
-
-  const handleCreateJob = async () => {
-    if (!defaultManifest) {
-      setJobError("Unable to create a timeline job from empty registries.");
-      return;
-    }
-
-    setJobAction("creating");
-    setJobError(null);
-    try {
-      const job = await client.createJob(defaultManifest);
-      setSelectedJob(job);
-      setSelectedJobId(job.id);
-      setJobIdInput(job.id);
-    } catch {
-      setSelectedJob(null);
-      setSelectedJobId("");
-      setJobError("Unable to create a timeline job.");
-    } finally {
-      setJobAction("idle");
-    }
-  };
-
-  const handleLoadJob = async () => {
-    const normalizedJobId = jobIdInput.trim();
-    if (!normalizedJobId) {
-      setJobError("Enter a job ID to load.");
-      return;
-    }
-
-    setJobAction("loading");
-    setJobError(null);
-    try {
-      const job = await client.getJob(normalizedJobId);
-      setSelectedJob(job);
-      setSelectedJobId(job.id);
-      setJobIdInput(job.id);
-    } catch {
-      setSelectedJob(null);
-      setSelectedJobId("");
-      setJobError(`Unable to load job ${normalizedJobId}.`);
-    } finally {
-      setJobAction("idle");
-    }
-  };
-
-  const handleMaskChange = (nextMask: MaskGrid) => {
-    setMaskHistory((history) => [...history, nextMask]);
-  };
-
-  const handleMaskClear = () => {
-    setMaskHistory((history) => [...history, clearMask(history[history.length - 1] ?? currentMask)]);
-  };
-
-  const handleMaskUndo = () => {
-    setMaskHistory((history) => (history.length > 1 ? history.slice(0, -1) : history));
   };
 
   return (
@@ -247,6 +182,38 @@ export function App() {
           </ul>
         </section>
       </header>
+      <section aria-label="job-workbench">
+        <JobQueue
+          jobs={workbench.jobs}
+          selectedJobId={workbench.selectedJobId}
+          loading={workbench.action === "loading" && workbench.jobs.length === 0}
+          error={workbench.error}
+          onSelect={workbench.selectJob}
+        />
+        <ManifestControls
+          assets={assetsQuery.data ?? []}
+          specs={specsQuery.data ?? []}
+          providers={providersQuery.data ?? []}
+          references={referenceHistoryQuery.data ?? []}
+          submitting={workbench.action === "creating"}
+          onSubmit={workbench.createJob}
+        />
+        <SourceStatus
+          jobId={workbench.selectedJobId}
+          plan={workbench.sourcePlan}
+          loading={
+            workbench.action === "planning-sources" || workbench.action === "submitting-sources"
+          }
+          error={null}
+          onPlan={workbench.planSources}
+          onSubmit={workbench.submitSources}
+        />
+        {workbench.selectedJob ? (
+          <p role="status">
+            Selected job {workbench.selectedJob.id} is {workbench.selectedJob.state}.
+          </p>
+        ) : null}
+      </section>
       <nav aria-label="Workbench sections">
         <div role="tablist" aria-label="Workbench sections">
           {tabs.map((tab, index) => {
@@ -274,25 +241,21 @@ export function App() {
           })}
         </div>
       </nav>
-      <main id={`${activeTab.toLowerCase()}-panel`} role="tabpanel" tabIndex={0} aria-labelledby={`${activeTab.toLowerCase()}-tab`}>
+      <main
+        id={`${activeTab.toLowerCase()}-panel`}
+        role="tabpanel"
+        tabIndex={0}
+        aria-labelledby={`${activeTab.toLowerCase()}-tab`}
+      >
         {activeTab === "Review" ? (
-          <ReviewGallery
-            candidates={[
-              {
-                id: "c1",
-                src: sampleCandidateSrc,
-                imageWidth: 80,
-                imageHeight: 48,
-                cropRect: { x: -10, y: 8, w: 50, h: 24 },
-                specRect: { x: 20, y: 4, w: 24, h: 24 },
-              },
-            ]}
-            onApprove={() => undefined}
-            onReject={() => undefined}
-          />
+          <ReviewGallery candidates={candidateCards(workbench.candidate)} onApprove={() => undefined} onReject={() => undefined} />
         ) : null}
         {activeTab === "References" ? (
-          <ReferenceBoard swatches={["#00f800", "#5060c8"]} manifestText={manifestText} onManifestChange={setManifestText} />
+          <ReferenceBoard
+            swatches={selectedReference?.swatches ?? []}
+            manifestText={manifestText}
+            onManifestChange={setManifestText}
+          />
         ) : null}
         {activeTab === "Mask" ? (
           <Suspense fallback={<p role="status">Loading mask editor…</p>}>
@@ -300,10 +263,17 @@ export function App() {
               width={sampleMaskWidth}
               height={sampleMaskHeight}
               mask={currentMask}
-              protectedRegions={[{ x: 12, y: 10, w: 16, h: 12, label: "face" }]}
-              onChange={handleMaskChange}
-              onClear={handleMaskClear}
-              onUndo={handleMaskUndo}
+              protectedRegions={workbench.selectedJob?.manifest.edit?.protected_regions ?? []}
+              onChange={(nextMask) => setMaskHistory((history) => [...history, nextMask])}
+              onClear={() =>
+                setMaskHistory((history) => [
+                  ...history,
+                  clearMask(history[history.length - 1] ?? currentMask),
+                ])
+              }
+              onUndo={() =>
+                setMaskHistory((history) => (history.length > 1 ? history.slice(0, -1) : history))
+              }
               canUndo={maskHistory.length > 1}
             />
           </Suspense>
@@ -320,35 +290,21 @@ export function App() {
         {activeTab === "Timeline" ? (
           <section aria-label="timeline-workbench">
             <h2>Job timeline</h2>
-            <div>
-              <button type="button" onClick={handleCreateJob} disabled={jobAction !== "idle" || defaultManifest === null}>
-                Create timeline job
-              </button>
-              <label>
-                Job ID
-                <input value={jobIdInput} onChange={(event) => setJobIdInput(event.target.value)} />
-              </label>
-              <button type="button" onClick={handleLoadJob} disabled={jobAction !== "idle"}>
-                Load job
-              </button>
-            </div>
-            {jobAction === "creating" ? <p role="status">Creating job…</p> : null}
-            {jobAction === "loading" ? <p role="status">Loading job…</p> : null}
-            {jobError ? <p role="alert">{jobError}</p> : null}
-            {selectedJob ? <p role="status">Selected job {selectedJob.id} is {selectedJob.state}.</p> : null}
-            {selectedJobId ? (
+            {workbench.selectedJobId ? (
               <JobTimeline
-                events={jobEvents.events}
-                connectionState={jobEvents.connectionState}
-                errorMessage={jobEvents.error}
+                events={workbench.events.events}
+                connectionState={workbench.events.connectionState}
+                errorMessage={workbench.events.error}
                 terminalState={selectedTerminalState}
               />
             ) : (
-              <p>Create or load a job to review timeline events.</p>
+              <p>Create or select a job to review timeline events.</p>
             )}
           </section>
         ) : null}
-        {activeTab === "Lineage" ? <LineageView nodes={[]} onApprove={() => undefined} onReject={() => undefined} /> : null}
+        {activeTab === "Lineage" ? (
+          <LineageView nodes={[]} onApprove={() => undefined} onReject={() => undefined} />
+        ) : null}
       </main>
     </div>
   );
