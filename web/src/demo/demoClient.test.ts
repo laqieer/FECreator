@@ -85,6 +85,9 @@ test("demo lifecycle stays in memory, clones state, and never touches fetch, web
   const bundle = await client.listBundleEntries(created.id);
   expect(bundle.map((entry) => entry.path)).toEqual(["hashes.json", "lineage.json", "manifest.json", "report.json"]);
   expect((await client.getBundleFile(created.id, "manifest.json")).size).toBeGreaterThan(0);
+  await expect((await client.getArtifact(created.id, "candidate/package/portrait.png")).text()).resolves.toContain(
+    created.id,
+  );
   await expect((await client.getArtifact(created.id, "package/portrait.png")).text()).resolves.toContain(
     created.id,
   );

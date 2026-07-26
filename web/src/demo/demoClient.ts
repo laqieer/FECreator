@@ -279,6 +279,7 @@ function createBundleEntries(bundleFiles: Map<string, string>): BundleEntry[] {
 
 function createSeedState(): DemoJobState {
   const artifactFiles = new Map<string, string>([
+    [demoCandidate.artifacts[0]!.path, "demo candidate portrait for demo-portrait-neutral"],
     ["package/portrait.png", "demo final portrait for demo-portrait-neutral"],
   ]);
   const bundleFiles = new Map<string, string>([
@@ -442,6 +443,9 @@ export function demoClient(): ApiClient {
       const candidate = createCandidate(state.job);
       const fileNames = files.map((file) => file.name).sort().join(", ");
       state.candidate = candidate;
+      for (const artifact of candidate.artifacts) {
+        state.artifactFiles.set(artifact.path, `demo candidate portrait for ${jobId}`);
+      }
       state.job = {
         ...state.job,
         state: "waiting_for_review",

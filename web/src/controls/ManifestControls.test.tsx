@@ -74,3 +74,63 @@ test("rejects invalid parameters before emitting a manifest", async () => {
   expect(screen.getByRole("alert")).toHaveTextContent("Parameters must be a JSON object");
   expect(onSubmit).not.toHaveBeenCalled();
 });
+
+test("rejects protected regions with extra keys before emitting a manifest", async () => {
+  const onSubmit = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <ManifestControls
+      assets={["portrait"]}
+      specs={["fe-gba-portrait-standard"]}
+      providers={["fake"]}
+      references={[]}
+      submitting={false}
+      onSubmit={onSubmit}
+    />,
+  );
+
+  await user.selectOptions(screen.getByLabelText("Workflow"), "masked_variant");
+  fireEvent.change(screen.getByLabelText("Protected regions JSON"), {
+    target: {
+      value: JSON.stringify([
+        { x: 0, y: 0, w: 10, h: 10, label: "face", color: "red" },
+      ]),
+    },
+  });
+  await user.type(screen.getByLabelText("Mask path"), "masks/face.png");
+  await user.click(screen.getByRole("button", { name: "Create job" }));
+
+  expect(screen.getByRole("alert")).toHaveTextContent("Protected regions must be a JSON array of valid regions.");
+  expect(onSubmit).not.toHaveBeenCalled();
+});
+
+test("rejects protected regions with missing, wrong, or empty fields before emitting a manifest", async () => {
+  const onSubmit = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <ManifestControls
+      assets={["portrait"]}
+      specs={["fe-gba-portrait-standard"]}
+      providers={["fake"]}
+      references={[]}
+      submitting={false}
+      onSubmit={onSubmit}
+    />,
+  );
+
+  await user.selectOptions(screen.getByLabelText("Workflow"), "masked_variant");
+  fireEvent.change(screen.getByLabelText("Protected regions JSON"), {
+    target: {
+      value: JSON.stringify([
+        { x: 0, y: 0, w: 10, h: 10 },
+        { x: 0, y: 0, w: 10, h: 10, label: "" },
+        { x: 0, y: 0, w: 10.5, h: 10, label: "hair" },
+      ]),
+    },
+  });
+  await user.type(screen.getByLabelText("Mask path"), "masks/face.png");
+  await user.click(screen.getByRole("button", { name: "Create job" }));
+
+  expect(screen.getByRole("alert")).toHaveTextContent("Protected regions must be a JSON array of valid regions.");
+  expect(onSubmit).not.toHaveBeenCalled();
+});

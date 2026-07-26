@@ -29,6 +29,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const regionKeys = ["x", "y", "w", "h", "label"] as const;
+
 function parseParams(text: string): JsonObject | null {
   try {
     const value: unknown = JSON.parse(text);
@@ -50,6 +52,10 @@ function isRegion(value: unknown): value is Region {
   if (!isRecord(value)) {
     return false;
   }
+  const keys = Object.keys(value);
+  if (keys.length !== regionKeys.length || !regionKeys.every((key) => keys.includes(key))) {
+    return false;
+  }
   return (
     typeof value.x === "number" &&
     Number.isInteger(value.x) &&
@@ -63,7 +69,8 @@ function isRegion(value: unknown): value is Region {
     typeof value.h === "number" &&
     Number.isInteger(value.h) &&
     value.h > 0 &&
-    typeof value.label === "string"
+    typeof value.label === "string" &&
+    value.label.length > 0
   );
 }
 

@@ -31,6 +31,29 @@ test("demo composition shows the banner, runs an in-memory timeline, and makes n
   expect(webSocketSpy).not.toHaveBeenCalled();
 });
 
+test("demo composition loads the seeded candidate review image without network errors", async () => {
+  const fetchSpy = vi.fn();
+  const webSocketSpy = vi.fn();
+  class ReviewUrl extends URL {
+    static createObjectURL = vi.fn(() => "blob:demo-review-image");
+    static revokeObjectURL = vi.fn();
+  }
+
+  vi.stubGlobal("fetch", fetchSpy);
+  vi.stubGlobal("WebSocket", webSocketSpy);
+  vi.stubGlobal("URL", ReviewUrl);
+
+  render(<AppRoot composition={createComposition("demo")} />);
+
+  expect(await screen.findByAltText("Candidate candidate/package/portrait.png")).toHaveAttribute(
+    "src",
+    "blob:demo-review-image",
+  );
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(fetchSpy).not.toHaveBeenCalled();
+  expect(webSocketSpy).not.toHaveBeenCalled();
+});
+
 test("local composition omits the banner and uses the real HTTP client", async () => {
   const fetchSpy = vi.fn(async (input: string) => {
     const payload =
