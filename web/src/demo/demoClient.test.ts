@@ -75,6 +75,7 @@ function expectValidPng(bytes: Uint8Array): void {
   }
 
   expect(chunks.map((chunk) => chunk.type)).toEqual(["IHDR", "IDAT", "IEND"]);
+  expect(readUint32BE(bytes, bytes.length - 12)).toBe(0);
   expect(offset).toBe(bytes.length);
 }
 

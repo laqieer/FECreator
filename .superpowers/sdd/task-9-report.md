@@ -189,3 +189,15 @@ npm run -w @laqieer/fecreator-web typecheck
 npm run -w @laqieer/fecreator-web lint
 npm run -w @laqieer/fecreator-web test
 ```
+
+## Task 9 PNG Regression Strictness Update (2026-07-27)
+
+- Strengthened the demo PNG regression to assert the final `IEND` chunk length is exactly `0` and that parsing consumes the full byte array.
+- Verification passed:
+
+```text
+npm run -w @laqieer/fecreator-web test -- src/demo/demoClient.test.ts -t "demo candidate artifacts are valid PNG bytes with matching chunk CRCs"
+npm run -w @laqieer/fecreator-web typecheck
+npm run -w @laqieer/fecreator-web lint
+npm run -w @laqieer/fecreator-web test
+```
