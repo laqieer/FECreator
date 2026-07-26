@@ -70,6 +70,7 @@ class Job(BaseModel):
     id: str
     state: JobState
     manifest: Manifest
+    parent_candidate_id: str | None = None
     revision: int = Field(ge=1)
     created_at: str
     updated_at: str
@@ -78,6 +79,13 @@ class Job(BaseModel):
     @classmethod
     def _validate_id(cls, value: str) -> str:
         return ensure_non_empty_text(value, field_name="id")
+
+    @field_validator("parent_candidate_id", mode="after")
+    @classmethod
+    def _validate_parent_candidate_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return ensure_non_empty_text(value, field_name="parent_candidate_id")
 
     @field_validator("created_at", "updated_at", mode="after")
     @classmethod

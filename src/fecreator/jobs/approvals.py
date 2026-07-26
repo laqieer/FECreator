@@ -99,6 +99,19 @@ class ApprovalStore:
     def reject(self, job_id: str, stage: str, actor: str, reason: str) -> ApprovalRecord:
         return self._record(job_id, stage, "rejected", actor, reason)
 
+    def discard_pending(self, record: ApprovalRecord) -> None:
+        """Discard the exact trailing record produced by a failed transaction."""
+
+        def remove_pending(records: list[object]) -> None:
+            if not records:
+                raise ApprovalError("cannot discard an approval without an exact pending record")
+            last = ApprovalRecord.model_validate(records[-1])
+            if last != record:
+                raise ApprovalError("can only discard the exact pending last approval record")
+            records.pop()
+
+        _update_jsonl_atomic(self._path(record.job_id), remove_pending)
+
     def decisions(self, job_id: str) -> list[ApprovalRecord]:
         normalized_job_id = ensure_non_empty_text(job_id, field_name="job_id")
         rows = read_jsonl(self._path(normalized_job_id))

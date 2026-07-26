@@ -7,6 +7,7 @@ from typing import cast
 from fecreator.contracts.lineage import LineageNode
 from fecreator.contracts.result import StageResult
 from fecreator.core.atomicio import write_json_atomic
+from fecreator.jobs.approvals import ApprovalRecord
 from fecreator.jobs.model import Job
 from fecreator.reporting.sanitize import JsonObject, JsonValue, as_object, sanitize_json
 
@@ -44,7 +45,11 @@ def _lineage_payload(node: LineageNode) -> JsonObject:
 
 
 def build_report(
-    job: Job, results: Sequence[StageResult], lineage: Sequence[LineageNode]
+    job: Job,
+    results: Sequence[StageResult],
+    lineage: Sequence[LineageNode],
+    *,
+    approval: ApprovalRecord | None = None,
 ) -> JsonObject:
     manifest = as_object(sanitize_json(job.manifest.model_dump(mode="json"), error_cls=ValueError))
     stages = sorted(
@@ -88,6 +93,11 @@ def build_report(
         "updated_at": job.updated_at,
         "manifest": cast(JsonValue, manifest),
         "manifest_hash": job.manifest.content_hash(),
+        "approval": (
+            as_object(sanitize_json(approval.model_dump(mode="json"), error_cls=ValueError))
+            if approval is not None
+            else None
+        ),
         "stages": cast(JsonValue, stages),
         "diagnostics": cast(JsonValue, diagnostics),
         "lineage": cast(JsonValue, lineage_payload),

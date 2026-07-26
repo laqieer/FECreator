@@ -124,6 +124,7 @@ class JobStore:
         return {
             "id": job.id,
             "state": job.state.value,
+            "parent_candidate_id": job.parent_candidate_id,
             "revision": job.revision if revision is None else revision,
             "created_at": job.created_at,
             "updated_at": job.updated_at if updated_at is None else updated_at,
@@ -149,12 +150,13 @@ class JobStore:
             id=payload_id,
             state=JobState(str(payload["state"])),
             manifest=Manifest.model_validate(manifest_payload),
+            parent_candidate_id=payload.get("parent_candidate_id"),
             revision=int(payload["revision"]),
             created_at=str(payload["created_at"]),
             updated_at=str(payload["updated_at"]),
         )
 
-    def create(self, manifest: Manifest) -> Job:
+    def create(self, manifest: Manifest, *, parent_candidate_id: str | None = None) -> Job:
         self._cleanup_stale_staging_dirs()
         job_id = uuid.uuid4().hex
         now = utc_now_iso()
@@ -162,6 +164,7 @@ class JobStore:
             id=job_id,
             state=JobState.CREATED,
             manifest=manifest,
+            parent_candidate_id=parent_candidate_id,
             revision=1,
             created_at=now,
             updated_at=now,
@@ -193,7 +196,12 @@ class JobStore:
         return job
 
     def remove(self, job_id: str) -> None:
-        shutil.rmtree(self._job_dir(job_id), ignore_errors=True)
+        normalized = self._normalize_job_id(job_id)
+        with self.locked(normalized):
+            try:
+                shutil.rmtree(self._job_dir(normalized))
+            except FileNotFoundError:
+                return
 
     def load(self, job_id: str) -> Job:
         with self.locked(job_id):

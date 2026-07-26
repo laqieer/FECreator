@@ -22,10 +22,19 @@ class JobService:
         self._store = store
         self._events = events
 
-    def create_job(self, manifest: Manifest) -> Job:
-        job = self._store.create(manifest)
+    def create_job(
+        self,
+        manifest: Manifest,
+        *,
+        parent_candidate_id: str | None = None,
+        extra_events: Sequence[PendingEvent] = (),
+    ) -> Job:
+        job = self._store.create(manifest, parent_candidate_id=parent_candidate_id)
         try:
-            self._events.append(job.id, "created", "job created")
+            if extra_events:
+                self._events.append_many(job.id, (("created", "job created", None), *extra_events))
+            else:
+                self._events.append(job.id, "created", "job created")
         except Exception:
             self._store.remove(job.id)
             raise

@@ -81,6 +81,7 @@ def prepare_candidate(
     manifest: Manifest,
     prepared: PreparedPortrait,
     reference_pack: ReferencePack | None,
+    parent_candidate_id: str | None = None,
 ) -> CandidatePublication:
     staged_root = safe_join(ctx.workspace, f"{_CANDIDATE_STAGE_PREFIX}{uuid.uuid4().hex}")
     package_dir = safe_join(staged_root, "package")
@@ -103,6 +104,7 @@ def prepare_candidate(
             prepared=prepared,
             reference_pack=reference_pack,
             artifacts=artifacts,
+            parent_candidate_id=parent_candidate_id,
         )
         snapshot = CandidateSnapshot(
             job_id=ctx.job_id,
@@ -239,11 +241,15 @@ def candidate_lineage(
     prepared: PreparedPortrait,
     reference_pack: ReferencePack | None,
     artifacts: tuple[Artifact, ...],
+    parent_candidate_id: str | None = None,
 ) -> LineageNode:
+    parents = prepared.parents
+    if parent_candidate_id is not None and parent_candidate_id not in parents:
+        parents = (*parents, parent_candidate_id)
     return LineageNode(
         asset_id=f"{job_id}-candidate",
         operation=prepared.operation,
-        parents=prepared.parents,
+        parents=parents,
         provider=manifest.provider,
         model=prepared.provider_model,
         prompt=prepared.prompt,

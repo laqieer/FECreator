@@ -22,6 +22,7 @@ from fecreator.core.atomicio import (
 from fecreator.core.hashing import sha256_file
 from fecreator.core.paths import PathEscapeError, safe_join
 from fecreator.core.redaction import contains_secret_key
+from fecreator.jobs.approvals import ApprovalRecord
 from fecreator.jobs.model import Job
 from fecreator.reporting.sanitize import (
     JsonObject,
@@ -39,7 +40,16 @@ _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _REQUIRED_BUNDLE_FILES = frozenset({"manifest.json", "report.json", "lineage.json", "hashes.json"})
 _REQUIRED_REPORT_KEYS = frozenset(
-    {"job_id", "manifest", "manifest_hash", "stages", "diagnostics", "lineage", "output_hashes"}
+    {
+        "job_id",
+        "manifest",
+        "manifest_hash",
+        "approval",
+        "stages",
+        "diagnostics",
+        "lineage",
+        "output_hashes",
+    }
 )
 
 
@@ -260,10 +270,21 @@ def _validated_report_payload(payload: JsonObject) -> JsonObject:
     diagnostics = _sort_diagnostics(
         _as_object_list(sanitized["diagnostics"], label="report.diagnostics")
     )
+    approval = sanitized["approval"]
+    if approval is not None:
+        if not isinstance(approval, dict):
+            raise BundleError("report.approval must contain an object or null")
+        approval = as_object(
+            sanitize_json(
+                ApprovalRecord.model_validate(approval).model_dump(mode="json"),
+                error_cls=BundleError,
+            )
+        )
     _as_object_list(sanitized["lineage"], label="report.lineage")
     _as_string_list(sanitized["output_hashes"], label="report.output_hashes")
     return {
         **sanitized,
+        "approval": approval,
         "stages": cast(JsonValue, stages),
         "diagnostics": cast(JsonValue, diagnostics),
     }

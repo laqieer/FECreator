@@ -96,6 +96,27 @@ def test_decisions_are_persisted(data_root) -> None:
     assert len(ApprovalStore(data_root).decisions("j1")) == 1
 
 
+def test_discard_pending_removes_only_the_exact_last_record(data_root) -> None:
+    store = ApprovalStore(data_root)
+    first = store.approve("j1", "plan", "alice")
+    pending = store.approve("j1", "candidate", "bob")
+
+    store.discard_pending(pending)
+
+    assert store.decisions("j1") == [first]
+
+
+def test_discard_pending_refuses_an_earlier_visible_record(data_root) -> None:
+    store = ApprovalStore(data_root)
+    first = store.approve("j1", "plan", "alice")
+    pending = store.approve("j1", "candidate", "bob")
+
+    with pytest.raises(ApprovalError, match="exact pending"):
+        store.discard_pending(first)
+
+    assert store.decisions("j1") == [first, pending]
+
+
 @pytest.mark.parametrize(
     ("job_id", "stage", "actor"),
     [

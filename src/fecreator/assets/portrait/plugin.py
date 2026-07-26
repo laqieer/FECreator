@@ -64,7 +64,8 @@ class PortraitPlugin:
         store = JobStore(data_root)
         with store.locked(ctx.job_id):
             try:
-                if store._load_locked(ctx.job_id).state is JobState.WAITING_FOR_REVIEW:
+                job = store._load_locked(ctx.job_id)
+                if job.state is JobState.WAITING_FOR_REVIEW:
                     raise InvalidTransitionError("waiting_for_review -> processing is not allowed")
                 pack = self._reference_pack(data_root, manifest)
                 provider = cast(Provider, PROVIDER_REGISTRY.get(manifest.provider))
@@ -92,6 +93,7 @@ class PortraitPlugin:
                         manifest=manifest,
                         prepared=prepared,
                         reference_pack=pack,
+                        parent_candidate_id=job.parent_candidate_id,
                     )
                 except CandidateValidationError as exc:
                     return self._fail(

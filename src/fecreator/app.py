@@ -11,7 +11,7 @@ import fecreator.providers  # noqa: F401
 import fecreator.specs  # noqa: F401
 from fecreator.assets import register_builtin_assets
 from fecreator.assets.base import AssetPlugin, SourcePlan
-from fecreator.contracts.diagnostics import Diagnostic
+from fecreator.contracts.diagnostics import Diagnostic, error
 from fecreator.contracts.lineage import LineageNode
 from fecreator.contracts.manifest import Manifest
 from fecreator.contracts.result import JobResult
@@ -21,11 +21,16 @@ from fecreator.core.config import Settings
 from fecreator.core.paths import safe_join
 from fecreator.core.pipeline import PipelineContext
 from fecreator.core.registry import ASSET_REGISTRY, PROVIDER_REGISTRY, SPEC_REGISTRY
-from fecreator.jobs.approvals import ApprovalRecord, ApprovalStore
+from fecreator.jobs.approvals import ApprovalError, ApprovalRecord, ApprovalStore
 from fecreator.jobs.candidates import CandidateStore
 from fecreator.jobs.events import EventLog, PendingEvent
-from fecreator.jobs.model import Job, JobEvent, JobState
-from fecreator.jobs.service import JobService, TransitionPublishHook, TransitionRollbackHook
+from fecreator.jobs.model import Job, JobEvent, JobState, ensure_non_empty_text
+from fecreator.jobs.service import (
+    InvalidTransitionError,
+    JobService,
+    TransitionPublishHook,
+    TransitionRollbackHook,
+)
 from fecreator.jobs.store import JobStore
 from fecreator.lineage.store import LineageStore
 from fecreator.references.model import ReferencePack
@@ -130,10 +135,127 @@ class FeCreatorApp:
         return cast(TargetSpec, SPEC_REGISTRY.get(spec_id)).validate(package_dir)
 
     def approve(self, job_id: str, stage: str, actor: str) -> ApprovalRecord:
-        return self._approvals.approve(job_id, stage, actor)
+        if stage.strip() == "candidate":
+            return self.approve_review(job_id, actor)
+        with self._jobs.locked(job_id):
+            self._jobs._load_locked(job_id)
+            return self._approvals.approve(job_id, stage, actor)
 
     def reject(self, job_id: str, stage: str, actor: str, reason: str) -> ApprovalRecord:
-        return self._approvals.reject(job_id, stage, actor, reason)
+        if stage.strip() == "candidate":
+            return self.reject_review(job_id, actor, reason)
+        with self._jobs.locked(job_id):
+            self._jobs._load_locked(job_id)
+            return self._approvals.reject(job_id, stage, actor, reason)
+
+    def approve_review(self, job_id: str, actor: str) -> ApprovalRecord:
+        normalized_actor = ensure_non_empty_text(actor, field_name="actor")
+        record: ApprovalRecord | None = None
+
+        def publish_approval(candidate_job: Job) -> None:
+            nonlocal record
+            self._require_state(candidate_job, JobState.WAITING_FOR_REVIEW)
+            record = self._approvals.approve(candidate_job.id, "candidate", normalized_actor)
+
+        def rollback_approval() -> None:
+            if record is not None:
+                self._approvals.discard_pending(record)
+
+        self._service.record_event(
+            job_id,
+            "review_approved",
+            "candidate approved",
+            {"actor": normalized_actor},
+            before_persist=publish_approval,
+            rollback=rollback_approval,
+        )
+        if record is None:
+            raise RuntimeError("approval event completed without an approval record")
+        return record
+
+    def reject_review(self, job_id: str, actor: str, reason: str) -> ApprovalRecord:
+        normalized_actor = ensure_non_empty_text(actor, field_name="actor")
+        record: ApprovalRecord | None = None
+
+        def publish_rejection(candidate_job: Job) -> None:
+            nonlocal record
+            record = self._approvals.reject(candidate_job.id, "candidate", normalized_actor, reason)
+
+        def rollback_rejection() -> None:
+            if record is not None:
+                self._approvals.discard_pending(record)
+
+        self._service.transition(
+            job_id,
+            JobState.FAILED,
+            before_persist=publish_rejection,
+            rollback=rollback_rejection,
+            extra_events=(("review_rejected", "candidate rejected", {"actor": normalized_actor}),),
+        )
+        if record is None:
+            raise RuntimeError("rejection transition completed without an approval record")
+        return record
+
+    def retry_job(self, job_id: str, actor: str) -> Job:
+        normalized_actor = ensure_non_empty_text(actor, field_name="actor")
+        candidate = self._candidates.load(job_id)
+        expected_candidate_id = f"{job_id}-candidate"
+        if candidate.lineage_id != expected_candidate_id:
+            raise ValueError(
+                "rejected job candidate lineage does not match the required "
+                f"identifier: {expected_candidate_id}"
+            )
+
+        retry: Job | None = None
+
+        def publish_retry(rejected: Job) -> None:
+            nonlocal retry
+            self._require_state(rejected, JobState.FAILED)
+            self._require_rejected_candidate(rejected.id)
+            if any(event.kind == "retry_created" for event in self._events.read(rejected.id)):
+                raise InvalidTransitionError(f"retry already created for job {rejected.id}")
+            retry = self._service.create_job(
+                rejected.manifest,
+                parent_candidate_id=expected_candidate_id,
+                extra_events=(("retry_created", "retry created", {"actor": normalized_actor}),),
+            )
+
+        def rollback_retry() -> None:
+            if retry is not None:
+                self._jobs.remove(retry.id)
+
+        self._service.record_event(
+            job_id,
+            "retry_created",
+            "retry created",
+            {"actor": normalized_actor},
+            before_persist=publish_retry,
+            rollback=rollback_retry,
+        )
+        if retry is None:
+            raise RuntimeError("retry event completed without a replacement job")
+        return retry
+
+    def finalize_job(self, job_id: str) -> JobResult:
+        job = self._jobs.load(job_id)
+        self._require_state(job, JobState.WAITING_FOR_REVIEW)
+        candidate = self._candidates.load(job.id)
+        approval = self._candidate_approval(job.id)
+        if approval is None or approval.decision != "approved":
+            return JobResult(
+                job_id=job.id,
+                ok=False,
+                diagnostics=(error("APPROVAL_MISSING", "candidate is not approved"),),
+            )
+
+        from fecreator.assets.portrait.publication import finalize_candidate
+
+        return finalize_candidate(
+            data_root=self._settings.data_root,
+            job=job,
+            candidate=candidate,
+            approval=approval,
+        )
 
     def list_approval_decisions(self, job_id: str) -> list[ApprovalRecord]:
         job = self._jobs.load(job_id)
@@ -159,6 +281,26 @@ class FeCreatorApp:
 
     def events(self, job_id: str) -> list[JobEvent]:
         return self._events.read(job_id)
+
+    def _candidate_approval(self, job_id: str) -> ApprovalRecord | None:
+        decisions = [
+            decision
+            for decision in self._approvals.decisions(job_id)
+            if decision.stage == "candidate"
+        ]
+        if len(decisions) > 1:
+            raise ApprovalError("candidate stage has more than one decision")
+        return decisions[0] if decisions else None
+
+    def _require_rejected_candidate(self, job_id: str) -> ApprovalRecord:
+        approval = self._candidate_approval(job_id)
+        if approval is None or approval.decision != "rejected":
+            raise InvalidTransitionError(f"job {job_id} does not have a rejected candidate")
+        return approval
+
+    def _require_state(self, job: Job, expected: JobState) -> None:
+        if job.state is not expected:
+            raise InvalidTransitionError(f"{job.state} is not {expected}")
 
     def _reference_pack(self, manifest: Manifest) -> ReferencePack | None:
         if manifest.character_ref_pack is None:

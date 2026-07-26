@@ -9,6 +9,7 @@ from fecreator.contracts.diagnostics import error
 from fecreator.contracts.lineage import LineageNode, Operation
 from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.contracts.result import Artifact, StageResult
+from fecreator.jobs.approvals import ApprovalRecord
 from fecreator.jobs.model import Job, JobState
 from fecreator.reporting.json_report import build_report, write_report
 from tests.fixtures.synthetic_secrets import synthetic_aws_key, synthetic_jwt
@@ -99,6 +100,25 @@ def test_build_report_contains_manifest_hash_stages_lineage_and_output_hashes() 
             "v" * 64,
         }
     )
+
+
+def test_build_report_records_the_candidate_approval() -> None:
+    approval = ApprovalRecord(
+        job_id="job-1",
+        stage="candidate",
+        decision="approved",
+        actor="reviewer",
+        at="2026-07-24T00:02:00+00:00",
+    )
+
+    report = build_report(
+        _job(),
+        [_stage("export", path="package/hero.png")],
+        [_lineage("job-1-export", created_at="2026-07-24T00:03:00+00:00")],
+        approval=approval,
+    )
+
+    assert report["approval"] == approval.model_dump(mode="json")
 
 
 def test_build_report_refuses_secret_key_names_and_redacts_nested_strings() -> None:

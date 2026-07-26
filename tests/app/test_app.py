@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -17,8 +18,11 @@ from fecreator.contracts.review import CandidateSnapshot
 from fecreator.core.config import Settings
 from fecreator.core.pipeline import PipelineContext
 from fecreator.core.registry import ASSET_REGISTRY
+from fecreator.jobs.approvals import ApprovalError
 from fecreator.jobs.candidates import CandidateStore
+from fecreator.jobs.events import EventLog
 from fecreator.jobs.model import JobState
+from fecreator.jobs.service import InvalidTransitionError
 from fecreator.lineage.store import LineageStore
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
@@ -142,6 +146,18 @@ def _job_snapshot(app: FeCreatorApp, job_id: str) -> dict[str, object]:
 
 def _event_snapshots(app: FeCreatorApp, job_id: str) -> list[dict[str, object]]:
     return [event.model_dump(mode="json") for event in app.events(job_id)]
+
+
+def _review_candidate(app: FeCreatorApp, data_root: Path):
+    job = app.create_job(_manifest())
+    candidate_id = f"{job.id}-candidate"
+    LineageStore(data_root).add(_lineage_node(candidate_id))
+    CandidateStore(data_root).create(_candidate(job.id, lineage_id=candidate_id))
+    app._service.transition_path(
+        job.id,
+        (JobState.PLANNING, JobState.PROCESSING, JobState.WAITING_FOR_REVIEW),
+    )
+    return job
 
 
 def test_lists_registered_items_and_gets_created_jobs(data_root: Path) -> None:
@@ -496,3 +512,130 @@ def test_build_validate_approvals_cancel_and_events(data_root: Path, tmp_path: P
     assert cancelled.state is JobState.CANCELLED
     assert any(diagnostic.code == "MISSING_SHEET" for diagnostic in diagnostics)
     assert [event.kind for event in app.events(job.id)] == ["created", "transition"]
+
+
+def test_approve_review_records_actor_and_rejects_a_second_decision(data_root: Path) -> None:
+    app, _plugin = _app(data_root)
+    job = _review_candidate(app, data_root)
+
+    approved = app.approve_review(job.id, actor="reviewer")
+
+    assert approved.stage == "candidate"
+    assert approved.actor == "reviewer"
+    assert app.events(job.id)[-1].kind == "review_approved"
+    assert app.events(job.id)[-1].data == {"actor": "reviewer"}
+    with pytest.raises(ApprovalError):
+        app.approve_review(job.id, actor="other-reviewer")
+    assert app.get_job(job.id).state is JobState.WAITING_FOR_REVIEW
+
+
+def test_reject_review_preserves_candidate_and_fails_job(data_root: Path) -> None:
+    app, _plugin = _app(data_root)
+    job = _review_candidate(app, data_root)
+
+    rejected = app.reject_review(job.id, actor="reviewer", reason="bad silhouette")
+
+    assert rejected.decision == "rejected"
+    assert app.get_job(job.id).state is JobState.FAILED
+    assert app.get_job_candidate(job.id).job_id == job.id
+    assert app.events(job.id)[-1].kind == "review_rejected"
+    assert app.events(job.id)[-1].data == {"actor": "reviewer"}
+    with pytest.raises(InvalidTransitionError, match="failed -> failed"):
+        app.reject_review(job.id, actor="other-reviewer", reason="still bad")
+    assert app.list_approval_decisions(job.id) == [rejected]
+
+
+def test_reject_review_rolls_back_its_pending_approval_when_event_logging_fails(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _plugin = _app(data_root)
+    job = _review_candidate(app, data_root)
+    original_append_many = EventLog.append_many
+
+    def fail_rejection_transition(self, job_id: str, events):
+        if any(message == "waiting_for_review->failed" for _kind, message, _data in events):
+            raise OSError("review event failed")
+        return original_append_many(self, job_id, events)
+
+    monkeypatch.setattr(EventLog, "append_many", fail_rejection_transition)
+
+    with pytest.raises(OSError, match="review event failed"):
+        app.reject_review(job.id, actor="reviewer", reason="bad silhouette")
+
+    assert app.get_job(job.id).state is JobState.WAITING_FOR_REVIEW
+    assert app.get_job_candidate(job.id).job_id == job.id
+    assert app.list_approval_decisions(job.id) == []
+
+
+def test_generic_approval_waits_for_review_rollback_before_appending(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _plugin = _app(data_root)
+    job = _review_candidate(app, data_root)
+    rejection_recorded = threading.Event()
+    allow_rejection_event_failure = threading.Event()
+    generic_finished = threading.Event()
+    review_errors: list[Exception] = []
+    generic_errors: list[Exception] = []
+    original_append_many = EventLog.append_many
+
+    def fail_after_rejection_is_recorded(self, job_id: str, events):
+        if any(message == "waiting_for_review->failed" for _kind, message, _data in events):
+            rejection_recorded.set()
+            assert allow_rejection_event_failure.wait(timeout=5)
+            raise OSError("review event failed")
+        return original_append_many(self, job_id, events)
+
+    def reject_review() -> None:
+        try:
+            app.reject_review(job.id, actor="reviewer", reason="bad silhouette")
+        except Exception as exc:  # pragma: no cover - assertion below captures failures
+            review_errors.append(exc)
+
+    def add_plan_approval() -> None:
+        try:
+            app.approve(job.id, "plan", "other-reviewer")
+        except Exception as exc:  # pragma: no cover - assertion below captures failures
+            generic_errors.append(exc)
+        finally:
+            generic_finished.set()
+
+    monkeypatch.setattr(EventLog, "append_many", fail_after_rejection_is_recorded)
+    review_thread = threading.Thread(target=reject_review)
+    generic_thread = threading.Thread(target=add_plan_approval)
+    review_thread.start()
+    try:
+        assert rejection_recorded.wait(timeout=5)
+        generic_thread.start()
+        assert not generic_finished.wait(timeout=0.1)
+    finally:
+        allow_rejection_event_failure.set()
+        review_thread.join(timeout=5)
+        generic_thread.join(timeout=5)
+
+    assert not review_thread.is_alive()
+    assert not generic_thread.is_alive()
+    assert len(review_errors) == 1
+    assert isinstance(review_errors[0], OSError)
+    assert generic_errors == []
+    assert app.get_job(job.id).state is JobState.WAITING_FOR_REVIEW
+    assert [record.stage for record in app.list_approval_decisions(job.id)] == ["plan"]
+
+
+def test_retry_creates_one_linked_immutable_job(data_root: Path) -> None:
+    app, _plugin = _app(data_root)
+    rejected = _review_candidate(app, data_root)
+    app.reject_review(rejected.id, actor="reviewer", reason="bad silhouette")
+
+    retry = app.retry_job(rejected.id, actor="reviewer")
+
+    assert retry.id != rejected.id
+    assert retry.parent_candidate_id == f"{rejected.id}-candidate"
+    assert app.get_job(retry.id).parent_candidate_id == f"{rejected.id}-candidate"
+    assert retry.state is JobState.CREATED
+    assert app.events(retry.id)[-1].kind == "retry_created"
+    assert app.events(retry.id)[-1].data == {"actor": "reviewer"}
+    with pytest.raises(InvalidTransitionError, match="retry already created"):
+        app.retry_job(rejected.id, actor="other-reviewer")

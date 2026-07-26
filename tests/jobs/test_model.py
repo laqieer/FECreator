@@ -55,6 +55,20 @@ def test_job_and_event_shapes() -> None:
     assert event.data == {}
 
 
+def test_job_records_optional_parent_candidate_id() -> None:
+    job = Job(
+        id="j1",
+        state=JobState.CREATED,
+        manifest=_manifest(),
+        parent_candidate_id="rejected-job-candidate",
+        revision=1,
+        created_at="2026-07-24T00:00:00+00:00",
+        updated_at="2026-07-24T00:00:00+00:00",
+    )
+
+    assert job.parent_candidate_id == "rejected-job-candidate"
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

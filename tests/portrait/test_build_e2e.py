@@ -1028,3 +1028,121 @@ def test_app_end_to_end(data_root: Path, isolated_app_asset_bootstrap: None) -> 
     assert not (data_root / "jobs" / job.id / "report.json").exists()
     assert not (data_root / "jobs" / job.id / "lineage.json").exists()
     assert not (data_root / "jobs" / job.id / "bundle").exists()
+
+
+def test_finalize_requires_approval_then_publishes_the_approved_candidate(
+    data_root: Path,
+    isolated_app_asset_bootstrap: None,
+) -> None:
+    from fecreator.app import FeCreatorApp
+    from fecreator.core.config import Settings
+    from fecreator.reporting.bundle import verify_bundle
+
+    app = FeCreatorApp(Settings(data_root=data_root))
+    job = app.create_job(_manifest())
+    assert app.build(job.id).ok is True
+
+    blocked = app.finalize_job(job.id)
+
+    assert blocked.ok is False
+    assert {diagnostic.code for diagnostic in blocked.diagnostics} == {"APPROVAL_MISSING"}
+    assert app.get_job(job.id).state is JobState.WAITING_FOR_REVIEW
+    assert not (data_root / "jobs" / job.id / "package").exists()
+
+    approval = app.approve_review(job.id, actor="reviewer")
+    completed = app.finalize_job(job.id)
+    workspace = data_root / "jobs" / job.id
+    export = LineageStore(data_root).get(f"{job.id}-export")
+
+    assert completed.ok is True
+    assert completed.lineage_id == f"{job.id}-export"
+    assert app.get_job(job.id).state is JobState.COMPLETED
+    assert (workspace / "package" / "hero.png").exists()
+    assert (workspace / "report.json").exists()
+    assert (workspace / "lineage.json").exists()
+    assert verify_bundle(workspace / "bundle") == []
+    assert export.parents == (f"{job.id}-candidate",)
+    assert export.approved_by == approval.actor
+    with pytest.raises(InvalidTransitionError, match="completed"):
+        app.finalize_job(job.id)
+
+
+def test_finalize_revalidation_failure_preserves_only_the_candidate(
+    data_root: Path,
+    isolated_app_asset_bootstrap: None,
+) -> None:
+    from fecreator.app import FeCreatorApp
+    from fecreator.core.config import Settings
+
+    app = FeCreatorApp(Settings(data_root=data_root))
+    job = app.create_job(_manifest())
+    assert app.build(job.id).ok is True
+    candidate = data_root / "jobs" / job.id / "candidate"
+    (candidate / "package" / "hero.pal").unlink()
+    app.approve_review(job.id, actor="reviewer")
+
+    result = app.finalize_job(job.id)
+    workspace = data_root / "jobs" / job.id
+
+    assert result.ok is False
+    assert app.get_job(job.id).state is JobState.WAITING_FOR_REVIEW
+    assert (candidate / "candidate.json").exists()
+    assert not (workspace / "package").exists()
+    assert not (workspace / "report.json").exists()
+    assert not (workspace / "lineage.json").exists()
+    assert not (workspace / "bundle").exists()
+
+
+def test_finalize_rolls_back_public_artifacts_when_completed_event_fails(
+    data_root: Path,
+    isolated_app_asset_bootstrap: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fecreator.app import FeCreatorApp
+    from fecreator.core.config import Settings
+
+    app = FeCreatorApp(Settings(data_root=data_root))
+    job = app.create_job(_manifest())
+    assert app.build(job.id).ok is True
+    app.approve_review(job.id, actor="reviewer")
+    original_append_many = EventLog.append_many
+
+    def fail_completed_event(self, job_id: str, events):
+        if any(message == "validating->completed" for _kind, message, _data in events):
+            raise OSError("completed event failed")
+        return original_append_many(self, job_id, events)
+
+    monkeypatch.setattr(EventLog, "append_many", fail_completed_event)
+
+    with pytest.raises(OSError, match="completed event failed"):
+        app.finalize_job(job.id)
+
+    workspace = data_root / "jobs" / job.id
+    assert app.get_job(job.id).state is JobState.WAITING_FOR_REVIEW
+    assert (workspace / "candidate" / "candidate.json").exists()
+    assert not (workspace / "package").exists()
+    assert not (workspace / "report.json").exists()
+    assert not (workspace / "lineage.json").exists()
+    assert not (workspace / "bundle").exists()
+    with pytest.raises(FileNotFoundError):
+        LineageStore(data_root).get(f"{job.id}-export")
+
+
+def test_retry_candidate_lineage_parents_the_rejected_candidate(
+    data_root: Path,
+    isolated_app_asset_bootstrap: None,
+) -> None:
+    from fecreator.app import FeCreatorApp
+    from fecreator.core.config import Settings
+
+    app = FeCreatorApp(Settings(data_root=data_root))
+    rejected = app.create_job(_manifest())
+    assert app.build(rejected.id).ok is True
+    app.reject_review(rejected.id, actor="reviewer", reason="bad silhouette")
+
+    retry = app.retry_job(rejected.id, actor="reviewer")
+    assert app.build(retry.id).ok is True
+
+    assert LineageStore(data_root).get(f"{retry.id}-candidate").parents == (
+        f"{rejected.id}-candidate",
+    )
