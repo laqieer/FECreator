@@ -10,12 +10,16 @@ import fecreator.references.store as reference_store
 from fecreator.app import FeCreatorApp
 from fecreator.assets.base import SourcePlan, SubmissionSchema
 from fecreator.contracts.capabilities import Capability
+from fecreator.contracts.lineage import LineageNode, Operation
 from fecreator.contracts.manifest import Manifest, SourceSpec
-from fecreator.contracts.result import JobResult
+from fecreator.contracts.result import Artifact, JobResult
+from fecreator.contracts.review import CandidateSnapshot
 from fecreator.core.config import Settings
 from fecreator.core.pipeline import PipelineContext
 from fecreator.core.registry import ASSET_REGISTRY
+from fecreator.jobs.candidates import CandidateStore
 from fecreator.jobs.model import JobState
+from fecreator.lineage.store import LineageStore
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
 
@@ -104,6 +108,34 @@ def _write_png(path: Path) -> None:
     Image.new("RGB", (1, 1), color=(0, 248, 0)).save(path, format="PNG")
 
 
+def _candidate(job_id: str, *, lineage_id: str) -> CandidateSnapshot:
+    return CandidateSnapshot(
+        job_id=job_id,
+        lineage_id=lineage_id,
+        artifacts=(
+            Artifact(
+                role="concept_art",
+                path="workspace/neutral.png",
+                sha256="a" * 64,
+                media_type="image/png",
+            ),
+        ),
+        metrics={"score": 0.95},
+        created_at="2026-07-26T00:00:00+00:00",
+    )
+
+
+def _lineage_node(asset_id: str, *, parents: tuple[str, ...] = ()) -> LineageNode:
+    return LineageNode(
+        asset_id=asset_id,
+        operation=Operation.CREATE_NEUTRAL if not parents else Operation.REFINE_EXPRESSION,
+        parents=parents,
+        reference_pack="hero-pack",
+        reference_pack_rev=2,
+        created_at="2026-07-26T00:00:00+00:00",
+    )
+
+
 def _job_snapshot(app: FeCreatorApp, job_id: str) -> dict[str, object]:
     return app.get_job(job_id).model_dump(mode="json")
 
@@ -121,6 +153,64 @@ def test_lists_registered_items_and_gets_created_jobs(data_root: Path) -> None:
     assert "fake" in app.list_providers()
     assert "fe-gba-portrait-standard" in app.list_specs()
     assert app.get_job(job.id).model_dump(mode="json") == job.model_dump(mode="json")
+
+
+def test_list_jobs_is_deterministic(data_root: Path) -> None:
+    app, _plugin = _app(data_root)
+    first = app.create_job(_manifest())
+    second = app.create_job(_manifest())
+
+    assert [job.id for job in app.list_jobs()] == sorted([first.id, second.id])
+
+
+def test_read_methods_return_candidates_approvals_references_and_lineage(data_root: Path) -> None:
+    app, _plugin = _app(data_root)
+    job = app.create_job(_manifest())
+    refs = ReferencePackStore(data_root)
+    refs.create(
+        ReferencePack(
+            id="hero-pack",
+            revision=99,
+            provenance="approved-board",
+            rights="original",
+        )
+    )
+    refs.new_revision("hero-pack", provenance="approved-update")
+    lineage = LineageStore(data_root)
+    lineage.add(_lineage_node("root"))
+    lineage.add(_lineage_node("child-a", parents=("root",)))
+    lineage.add(_lineage_node("child-b", parents=("root",)))
+    lineage.add(
+        LineageNode(
+            asset_id="final",
+            operation=Operation.EXPORT_SPEC,
+            parents=("child-a", "child-b"),
+            reference_pack="hero-pack",
+            reference_pack_rev=2,
+            created_at="2026-07-26T00:00:00+00:00",
+        )
+    )
+    candidate = CandidateStore(data_root).create(_candidate(job.id, lineage_id="final"))
+    app.approve(job.id, "plan", "alice")
+    app.reject(job.id, "review", "bob", "needs changes")
+
+    assert app.get_job_candidate(job.id) == candidate
+    assert [decision.stage for decision in app.list_approval_decisions(job.id)] == [
+        "plan",
+        "review",
+    ]
+    assert app.get_reference_pack("hero-pack", 1).revision == 1
+    assert [pack.revision for pack in app.list_reference_history("hero-pack")] == [1, 2]
+    assert app.get_lineage("final").parents == ("child-a", "child-b")
+    assert [node.asset_id for node in app.list_lineage_ancestors("final")] == [
+        "child-a",
+        "child-b",
+        "root",
+    ]
+    assert [node.asset_id for node in app.list_lineage_children("root")] == [
+        "child-a",
+        "child-b",
+    ]
 
 
 def test_plan_sources_writes_file_loads_refs_and_moves_job_to_waiting_state(

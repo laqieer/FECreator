@@ -10,10 +10,12 @@ from fecreator.contracts.diagnostics import Diagnostic
 from fecreator.contracts.lineage import LineageNode
 from fecreator.contracts.manifest import Manifest
 from fecreator.contracts.result import JobResult
+from fecreator.contracts.review import CandidateSnapshot
 
 SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "manifest": Manifest,
     "result": JobResult,
+    "candidate": CandidateSnapshot,
     "diagnostics": Diagnostic,
     "lineage": LineageNode,
     "capabilities": CapabilitySet,

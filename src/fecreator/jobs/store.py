@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import os
 import shutil
 import time
@@ -229,13 +230,13 @@ class JobStore:
         with self.locked(job.id):
             self._save_locked(job, expected_revision=expected_revision)
 
-    def list_jobs(self) -> list[str]:
+    def list(self) -> builtins.list[Job]:
         self._cleanup_stale_staging_dirs()
         jobs_dir = self._jobs_dir()
         if not jobs_dir.exists():
             return []
 
-        job_ids: list[str] = []
+        jobs: list[Job] = []
         for entry in sorted(jobs_dir.iterdir(), key=lambda path: path.name):
             if not entry.is_dir():
                 continue
@@ -247,8 +248,11 @@ class JobStore:
                 raise JobCorruptionError(f"job directory is missing required files: {entry}")
             try:
                 with self.locked(entry.name):
-                    self._load_locked(entry.name)
+                    job = self._load_locked(entry.name)
             except Exception as exc:  # pragma: no cover - exact error preserved by chaining
                 raise JobCorruptionError(f"job directory is corrupt: {entry}") from exc
-            job_ids.append(entry.name)
-        return job_ids
+            jobs.append(job)
+        return sorted(jobs, key=lambda job: job.id)
+
+    def list_jobs(self) -> builtins.list[str]:
+        return [job.id for job in self.list()]

@@ -3,11 +3,13 @@ from fecreator.contracts.diagnostics import Diagnostic, Severity, error, has_err
 from fecreator.contracts.lineage import LineageNode, Operation, Region
 from fecreator.contracts.manifest import EditSpec, Manifest, SourceSpec
 from fecreator.contracts.result import Artifact, JobResult, StageResult
+from fecreator.contracts.review import CandidateSnapshot
 
 __all__ = [
     "Artifact",
     "Capability",
     "CapabilitySet",
+    "CandidateSnapshot",
     "Diagnostic",
     "EditSpec",
     "JobResult",

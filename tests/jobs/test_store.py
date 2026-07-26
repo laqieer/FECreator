@@ -167,7 +167,7 @@ def test_list_jobs_raises_for_visible_corruption(data_root) -> None:
     (broken / "manifest.json").write_text("{}", encoding="utf-8")
 
     with pytest.raises(JobCorruptionError):
-        JobStore(data_root).list_jobs()
+        JobStore(data_root).list()
 
 
 def test_resume_from_fresh_store_instance(data_root) -> None:
@@ -278,6 +278,14 @@ def test_list_jobs(data_root) -> None:
     second = store.create(_manifest())
 
     assert set(store.list_jobs()) == {first.id, second.id}
+
+
+def test_list_returns_jobs_sorted_by_id(data_root) -> None:
+    store = JobStore(data_root)
+    first = store.create(_manifest())
+    second = store.create(_manifest())
+
+    assert [job.id for job in store.list()] == sorted([first.id, second.id])
 
 
 def test_unknown_job_reads_do_not_pollute_list_jobs(data_root) -> None:

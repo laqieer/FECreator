@@ -12,18 +12,22 @@ import fecreator.specs  # noqa: F401
 from fecreator.assets import register_builtin_assets
 from fecreator.assets.base import AssetPlugin, SourcePlan
 from fecreator.contracts.diagnostics import Diagnostic
+from fecreator.contracts.lineage import LineageNode
 from fecreator.contracts.manifest import Manifest
 from fecreator.contracts.result import JobResult
+from fecreator.contracts.review import CandidateSnapshot
 from fecreator.core.atomicio import _fsync_directory, write_json_atomic
 from fecreator.core.config import Settings
 from fecreator.core.paths import safe_join
 from fecreator.core.pipeline import PipelineContext
 from fecreator.core.registry import ASSET_REGISTRY, PROVIDER_REGISTRY, SPEC_REGISTRY
 from fecreator.jobs.approvals import ApprovalRecord, ApprovalStore
+from fecreator.jobs.candidates import CandidateStore
 from fecreator.jobs.events import EventLog, PendingEvent
 from fecreator.jobs.model import Job, JobEvent, JobState
 from fecreator.jobs.service import JobService, TransitionPublishHook, TransitionRollbackHook
 from fecreator.jobs.store import JobStore
+from fecreator.lineage.store import LineageStore
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore, UnpinnedReferencePackError
 from fecreator.specs.base import TargetSpec
@@ -43,6 +47,8 @@ class FeCreatorApp:
         self._events = EventLog(root)
         self._service = JobService(self._jobs, self._events)
         self._approvals = ApprovalStore(root)
+        self._candidates = CandidateStore(root)
+        self._lineage = LineageStore(root)
         self._refs = ReferencePackStore(root)
 
     def list_assets(self) -> list[str]:
@@ -54,11 +60,17 @@ class FeCreatorApp:
     def list_providers(self) -> list[str]:
         return sorted(PROVIDER_REGISTRY.ids())
 
+    def list_jobs(self) -> list[Job]:
+        return self._jobs.list()
+
     def create_job(self, manifest: Manifest) -> Job:
         return self._service.create_job(self._pin_reference_pack(manifest))
 
     def get_job(self, job_id: str) -> Job:
         return self._jobs.load(job_id)
+
+    def get_job_candidate(self, job_id: str) -> CandidateSnapshot:
+        return self._candidates.load(job_id)
 
     def plan_sources(self, job_id: str, out_dir: Path) -> SourcePlan:
         job = self._jobs.load(job_id)
@@ -122,6 +134,24 @@ class FeCreatorApp:
 
     def reject(self, job_id: str, stage: str, actor: str, reason: str) -> ApprovalRecord:
         return self._approvals.reject(job_id, stage, actor, reason)
+
+    def list_approval_decisions(self, job_id: str) -> list[ApprovalRecord]:
+        return self._approvals.decisions(job_id)
+
+    def get_reference_pack(self, pack_id: str, revision: int) -> ReferencePack:
+        return self._refs.get(pack_id, revision)
+
+    def list_reference_history(self, pack_id: str) -> list[ReferencePack]:
+        return self._refs.history(pack_id)
+
+    def get_lineage(self, asset_id: str) -> LineageNode:
+        return self._lineage.get(asset_id)
+
+    def list_lineage_ancestors(self, asset_id: str) -> list[LineageNode]:
+        return self._lineage.ancestors(asset_id)
+
+    def list_lineage_children(self, asset_id: str) -> list[LineageNode]:
+        return self._lineage.children(asset_id)
 
     def cancel(self, job_id: str) -> Job:
         return self._service.cancel(job_id)

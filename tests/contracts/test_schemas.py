@@ -31,12 +31,21 @@ def test_top_level_contracts_module_does_not_export_schema_helpers() -> None:
 
 def test_mapping_field_schemas_remain_object_shaped(tmp_path: Path) -> None:
     export_schemas(tmp_path)
+    candidate_schema = json.loads((tmp_path / "candidate.schema.json").read_text(encoding="utf-8"))
     manifest_schema = json.loads((tmp_path / "manifest.schema.json").read_text(encoding="utf-8"))
     lineage_schema = json.loads((tmp_path / "lineage.schema.json").read_text(encoding="utf-8"))
 
+    assert candidate_schema["properties"]["metrics"]["type"] == "object"
     assert manifest_schema["properties"]["params"]["type"] == "object"
     assert lineage_schema["properties"]["params"]["type"] == "object"
     assert lineage_schema["properties"]["metrics"]["type"] == "object"
+
+
+def test_candidate_created_at_schema_uses_date_time_format(tmp_path: Path) -> None:
+    export_schemas(tmp_path)
+    candidate_schema = json.loads((tmp_path / "candidate.schema.json").read_text(encoding="utf-8"))
+
+    assert candidate_schema["properties"]["created_at"]["format"] == "date-time"
 
 
 def test_lineage_created_at_schema_uses_date_time_format(tmp_path: Path) -> None:
