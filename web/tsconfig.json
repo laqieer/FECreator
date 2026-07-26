@@ -9,5 +9,5 @@
     "noEmit": true,
     "types": ["@testing-library/jest-dom/vitest", "node"]
   },
-  "include": ["src"]
+  "include": ["src", "e2e", "playwright.config.ts", "vite.config.ts"]
 }

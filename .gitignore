@@ -4,6 +4,10 @@ __pycache__/
 dist/
 build/
 node_modules/
+web/dist-demo/
+web/.e2e-data/
+web/playwright-report/
+web/test-results/
 .playwright-mcp/
 .worktrees/
 .superpowers/

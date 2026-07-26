@@ -148,6 +148,9 @@ export function useWorkbench(api: ApiClient, events: JobEventSource) {
   }, [jobEvents.events, loadSelectedJob, refreshJobs, selectedJobId]);
 
   const selectJob = useCallback((jobId: string) => {
+    if (selectedJobIdRef.current === jobId) {
+      return;
+    }
     selectedJobIdRef.current = jobId;
     setSelectedJobId(jobId);
     setSelectedJob(null);

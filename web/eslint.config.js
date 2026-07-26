@@ -2,5 +2,5 @@ import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(js.configs.recommended, ...tseslint.configs.recommended, {
-  ignores: ["dist/"],
+  ignores: ["dist/", "dist-demo/", "playwright-report/", "test-results/", ".e2e-data/"],
 });

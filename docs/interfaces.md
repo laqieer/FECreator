@@ -33,6 +33,7 @@ Every interface stays thin and calls the same `FeCreatorApp` facade.
 - `fecreator submit-sources --job <id> --sources <dir>`
 - `fecreator build --job <id>`
 - `fecreator validate --spec <id> --path <dir>`
+- `fecreator serve`
 
 Facade routing:
 
@@ -63,9 +64,30 @@ JSON diagnostics and exit `2`; the other commands exit `0` on success. Long opti
 not abbreviated anywhere in the parser tree. `--version` and parser help do not require
 runtime settings; command execution requires `FECREATOR_DATA_ROOT`.
 
-The parser and dispatch table live in `fecreator.interfaces.cli_json` so later tasks
-can extend the CLI with `serve` without moving application logic out of
-`FeCreatorApp`.
+The parser and dispatch table live in `fecreator.interfaces.cli_json` so the JSON
+commands stay separate from `serve`, which is handled in `fecreator.cli` and is the
+only non-JSON command.
+
+## Local server
+
+`fecreator serve` (also reachable as `python -m fecreator serve`) starts the local
+workbench: it builds one `FeCreatorApp` from `Settings`, mounts `create_api()` — which
+includes the WebSocket route and the packaged web assets — and hands the application to
+Uvicorn on `Settings.host` and `Settings.port` (`FECREATOR_HOST`, default `127.0.0.1`,
+and `FECREATOR_PORT`, default `8765`). The launcher refuses to start when
+`FECREATOR_DATA_ROOT` is unset and when the configured host is not a loopback address,
+so the workbench is never published on a public interface. Both failures write a
+message to stderr and exit `2`. When the packaged assets are missing, the root route
+returns the deterministic 503 explanation from `fecreator.interfaces.static` instead of
+a broken page.
+
+Browser end-to-end flows in `web/e2e` drive this launcher: the local project builds the
+web app, starts `fecreator serve` on an isolated loopback port with its own temporary
+`FECREATOR_DATA_ROOT`, and exercises create → provider build → queue selection → review
+→ approve/reject → finalize → validate → lineage/report/bundle against the real API and
+the deterministic `fake` provider. The demo project serves the `/FECreator/` static
+build and asserts that no `/api` request, WebSocket, upload, or other non-static call is
+made.
 
 ## HTTP API
 

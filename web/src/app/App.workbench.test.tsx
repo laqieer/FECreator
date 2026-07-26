@@ -58,6 +58,25 @@ test("selects and loads a persisted job from the queue", async () => {
   expect(getJobCandidate).toHaveBeenCalledWith("review-job");
 });
 
+test("keeps the loaded job when the queue re-selects the already selected job", async () => {
+  const selectedJob: Job = { ...createdJob, id: "review-job", state: "waiting_for_review" };
+  const user = userEvent.setup();
+  renderWithProviders(
+    <App />,
+    createStubApiClient({
+      listJobs: async () => [selectedJob],
+      getJob: async () => selectedJob,
+    }),
+  );
+
+  const queued = await screen.findByRole("button", { name: /review-job.*waiting_for_review/i });
+  expect(await screen.findByText("Selected job review-job is waiting_for_review.")).toBeInTheDocument();
+
+  await user.click(queued);
+
+  expect(await screen.findByText("Selected job review-job is waiting_for_review.")).toBeInTheDocument();
+});
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((nextResolve) => {

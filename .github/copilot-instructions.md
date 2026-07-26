@@ -33,7 +33,15 @@ npm run -w @laqieer/fecreator-web test
 
 # One Vitest test
 npm run -w @laqieer/fecreator-web test -- src/config/base.test.ts -t "demo mode resolves the project pages base path"
+
+# Browser end-to-end flows (builds the local and demo bundles first)
+npx playwright install chromium
+npm run -w @laqieer/fecreator-web test:e2e
 ```
+
+The Playwright suites in `web/e2e` start `fecreator serve` on an isolated loopback port
+with a throwaway `FECREATOR_DATA_ROOT` and a `vite preview` of the demo bundle. Set
+`FECREATOR_PYTHON` when the interpreter that has FECreator installed is not `python`.
 
 Maintainers configure the CI scanner with
 `gh secret set GITGUARDIAN_API_KEY --repo laqieer/FECreator`; the command prompts for
