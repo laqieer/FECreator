@@ -809,7 +809,7 @@ def test_build_surfaces_candidate_rollback_cleanup_failure(
             )
 
     original_append_many = plugin_module.EventLog.append_many
-    original_unlink = candidate_module.os.unlink
+    original_remove_tree = candidate_module._remove_tree
 
     def fail_review_transition(self, job_id: str, events):
         if any(
@@ -822,14 +822,14 @@ def test_build_surfaces_candidate_rollback_cleanup_failure(
     job = JobStore(data_root).create(_manifest())
     ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
 
-    def fail_snapshot_removal(path, *args, **kwargs):
-        if Path(path).name == "candidate.json":
+    def fail_candidate_root_removal(path: Path) -> None:
+        if path.name == "candidate":
             raise PermissionError("candidate deletion denied")
-        return original_unlink(path, *args, **kwargs)
+        return original_remove_tree(path)
 
     monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
     monkeypatch.setattr(plugin_module.EventLog, "append_many", fail_review_transition)
-    monkeypatch.setattr(candidate_module.os, "unlink", fail_snapshot_removal)
+    monkeypatch.setattr(candidate_module, "_remove_tree", fail_candidate_root_removal)
 
     with pytest.raises(PermissionError, match="candidate deletion denied") as raised:
         PortraitPlugin().build(ctx, job.manifest)
