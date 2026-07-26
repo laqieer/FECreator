@@ -106,6 +106,11 @@ function buildDefaultManifest(assets: string[], specs: string[], providers: stri
     target_spec: targetSpec as Manifest["target_spec"],
     workflow: "text_to_portrait",
     provider,
+    character_ref_pack: null,
+    character_ref_pack_rev: null,
+    sources: [],
+    edit: null,
+    params: {},
   };
 }
 

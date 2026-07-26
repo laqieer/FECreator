@@ -2,20 +2,9 @@ import "@testing-library/jest-dom/vitest";
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { ApiClientProvider, useApiClient } from "./context";
-import type { ApiClient } from "./client";
+import { createStubApiClient } from "../test/util";
 
-const fake: ApiClient = {
-  listAssets: async () => [],
-  listSpecs: async () => [],
-  listProviders: async () => [],
-  createJob: async () => {
-    throw new Error("not used");
-  },
-  getJob: async () => {
-    throw new Error("not used");
-  },
-  validate: async () => [],
-};
+const fake = createStubApiClient({ listAssets: async () => [] });
 
 function Probe() {
   const client = useApiClient();

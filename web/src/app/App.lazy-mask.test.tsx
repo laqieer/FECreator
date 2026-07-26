@@ -3,7 +3,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { renderWithProviders } from "../test/util";
-import type { ApiClient } from "../api/client";
+import { createStubApiClient } from "../test/util";
 import { App } from "./App";
 
 vi.mock("../canvas/MaskEditor", async () => {
@@ -13,18 +13,7 @@ vi.mock("../canvas/MaskEditor", async () => {
   };
 });
 
-const client: ApiClient = {
-  listAssets: async () => ["portrait"],
-  listSpecs: async () => ["fe-gba-portrait-standard"],
-  listProviders: async () => ["fake"],
-  createJob: async () => {
-    throw new Error("not used");
-  },
-  getJob: async () => {
-    throw new Error("not used");
-  },
-  validate: async () => [],
-};
+const client = createStubApiClient();
 
 test("shows a loading fallback before the lazy mask editor resolves", async () => {
   const user = userEvent.setup();
