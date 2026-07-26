@@ -25,7 +25,13 @@ from fecreator.jobs.service import InvalidTransitionError
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackCorruptionError
 from fecreator.reporting.bundle import BundleEntry
-from fecreator.reporting.sanitize import JsonObject, as_object, sanitize_json, sanitize_text
+from fecreator.reporting.sanitize import (
+    OPAQUE_BASE64_KEYS,
+    JsonObject,
+    as_object,
+    sanitize_json,
+    sanitize_text,
+)
 
 ToolHandler: TypeAlias = Callable[..., CallToolResult]
 ManifestToolInput: TypeAlias = object
@@ -281,7 +287,13 @@ class ExpectedMcpError(Exception):
 
 
 def _payload_object(value: BaseModel) -> JsonObject:
-    return as_object(sanitize_json(value.model_dump(mode="json"), error_cls=ValueError))
+    return as_object(
+        sanitize_json(
+            value.model_dump(mode="json"),
+            error_cls=ValueError,
+            opaque_keys=OPAQUE_BASE64_KEYS,
+        )
+    )
 
 
 def _tool_result(payload: BaseModel, *, is_error: bool) -> CallToolResult:
@@ -743,12 +755,21 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
 
     def list_reference_packs() -> Annotated[CallToolResult, ReferencePackIdsOutput]:
         """List available reference-pack identifiers."""
-        return _success_result(
-            ReferencePackIdsSuccessOutput(
-                ok=True,
-                reference_pack_ids=tuple(app.list_reference_packs()),
+        try:
+            return _success_result(
+                ReferencePackIdsSuccessOutput(
+                    ok=True,
+                    reference_pack_ids=tuple(app.list_reference_packs()),
+                )
             )
-        )
+        except (OSError, PathEscapeError, ReferencePackCorruptionError, ValueError):
+            return _error_result(
+                error(
+                    "CORRUPT_REFERENCE_PACK",
+                    "reference pack store is corrupt",
+                    where="references",
+                )
+            )
 
     def list_reference_history(pack_id: str) -> Annotated[CallToolResult, ReferenceHistoryOutput]:
         """List immutable revisions for a reference pack."""
@@ -759,6 +780,10 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
                     ok=True,
                     reference_packs=tuple(app.list_reference_history(normalized_pack_id)),
                 )
+            )
+        except ReferencePackCorruptionError:
+            return _error_result(
+                error("CORRUPT_REFERENCE_PACK", "reference pack is corrupt", where=pack_id)
             )
         except (FileNotFoundError, PathEscapeError, ValueError):
             return _error_result(

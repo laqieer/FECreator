@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 from pathlib import Path
@@ -507,3 +508,58 @@ async def test_candidate_approval_and_finalization_are_equivalent_across_surface
             (http_app, http_job),
         )
     )
+
+
+def _high_entropy_bytes() -> bytes:
+    """Deterministic bytes whose base64 text contains ``+/`` and leading slashes."""
+
+    return bytes(range(256)) + bytes([3, 239, 192]) + bytes([255, 224, 0])
+
+
+async def test_cli_mcp_and_http_decode_binary_artifacts_byte_for_byte(
+    data_root: Path,
+    monkeypatch,
+) -> None:
+    app = _app(data_root)
+    job = app.create_job(_manifest())
+    workspace = data_root / "jobs" / job.id
+    payload = _high_entropy_bytes()
+    (workspace / "package").mkdir()
+    (workspace / "package" / "portrait.png").write_bytes(payload)
+    (workspace / "bundle").mkdir()
+    (workspace / "bundle" / "package").mkdir()
+    (workspace / "bundle" / "package" / "portrait.png").write_bytes(payload)
+    cli_artifact = io.StringIO()
+    cli_bundle = io.StringIO()
+
+    cli_artifact_rc = cli_json.run(
+        app, ["job", "artifact", job.id, "package/portrait.png"], cli_artifact
+    )
+    cli_bundle_rc = cli_json.run(
+        app, ["job", "bundle-file", job.id, "package/portrait.png"], cli_bundle
+    )
+    mcp_artifact = cast(
+        CallToolResult,
+        make_handlers(app)["read_job_artifact"](job.id, "package/portrait.png"),
+    )
+    mcp_bundle = cast(
+        CallToolResult,
+        make_handlers(app)["read_bundle_file"](job.id, "package/portrait.png"),
+    )
+
+    async with _client(app, monkeypatch) as client:
+        http_artifact = await client.get(f"/api/jobs/{job.id}/artifacts/package/portrait.png")
+        http_bundle = await client.get(f"/api/jobs/{job.id}/bundle/package/portrait.png")
+
+    assert cli_artifact_rc == cli_bundle_rc == 0
+    assert http_artifact.status_code == http_bundle.status_code == 200
+    assert http_artifact.content == payload
+    assert http_bundle.content == payload
+    assert base64.b64decode(json.loads(cli_artifact.getvalue())["content_base64"]) == payload
+    assert base64.b64decode(json.loads(cli_bundle.getvalue())["content_base64"]) == payload
+    assert mcp_artifact.isError is False
+    assert mcp_bundle.isError is False
+    artifact_file = cast(dict[str, object], _mcp_payload(mcp_artifact)["file"])
+    bundle_file = cast(dict[str, object], _mcp_payload(mcp_bundle)["file"])
+    assert base64.b64decode(cast(str, artifact_file["content_base64"])) == payload
+    assert base64.b64decode(cast(str, bundle_file["content_base64"])) == payload

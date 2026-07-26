@@ -758,3 +758,70 @@ def test_retry_creates_one_linked_immutable_job(data_root: Path) -> None:
     assert app.events(retry.id)[-1].data == {"actor": "reviewer"}
     with pytest.raises(InvalidTransitionError, match="retry already created"):
         app.retry_job(rejected.id, actor="other-reviewer")
+
+
+def _package_workspace(app: FeCreatorApp, data_root: Path) -> tuple[str, Path]:
+    job = app.create_job(_manifest())
+    workspace = data_root / "jobs" / job.id
+    (workspace / "package").mkdir()
+    (workspace / "package" / "portrait.png").write_bytes(b"final")
+    (workspace / "candidate" / "package").mkdir(parents=True)
+    (workspace / "candidate" / "package" / "portrait.png").write_bytes(b"candidate")
+    (workspace / "candidate" / "candidate.json").write_text("{}", encoding="utf-8")
+    (workspace / "bundle").mkdir()
+    (workspace / "bundle" / "manifest.json").write_text("{}", encoding="utf-8")
+    (workspace / "report.json").write_text("{}", encoding="utf-8")
+    (workspace / "lineage.json").write_text("[]", encoding="utf-8")
+    return job.id, workspace
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "job.json",
+        "manifest.json",
+        "events.jsonl",
+        "report.json",
+        "lineage.json",
+        "candidate/candidate.json",
+        "bundle/manifest.json",
+    ],
+)
+def test_read_job_artifact_only_serves_package_artifacts(
+    data_root: Path,
+    relative_path: str,
+) -> None:
+    app, _plugin = _app(data_root)
+    job_id, _workspace = _package_workspace(app, data_root)
+
+    assert app.read_job_artifact(job_id, "package/portrait.png") == b"final"
+    assert app.read_job_artifact(job_id, "candidate/package/portrait.png") == b"candidate"
+    with pytest.raises(ValueError, match="package artifact"):
+        app.read_job_artifact(job_id, relative_path)
+
+
+def test_workspace_reads_reject_backslash_separated_paths(data_root: Path) -> None:
+    app, _plugin = _app(data_root)
+    job_id, _workspace = _package_workspace(app, data_root)
+
+    with pytest.raises(ValueError, match="unsafe"):
+        app.read_job_artifact(job_id, "package\\portrait.png")
+    with pytest.raises(ValueError, match="unsafe"):
+        app.read_bundle_file(job_id, "..\\..\\report.json")
+
+
+def test_workspace_reads_reject_symlinked_artifacts_when_supported(data_root: Path) -> None:
+    app, _plugin = _app(data_root)
+    job_id, workspace = _package_workspace(app, data_root)
+    outside = data_root.parent / "outside.png"
+    outside.write_bytes(b"secret")
+    try:
+        (workspace / "package" / "link.png").symlink_to(outside)
+        (workspace / "bundle" / "link.json").symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted in this environment")
+
+    with pytest.raises(ValueError, match="unsafe"):
+        app.read_job_artifact(job_id, "package/link.png")
+    with pytest.raises(ValueError, match="unsafe"):
+        app.read_bundle_file(job_id, "link.json")

@@ -14,7 +14,12 @@ from fecreator.core.atomicio import (
     _read_json_unlocked,
     _write_json_atomic_unlocked,
 )
-from fecreator.core.paths import ensure_storage_id_not_reserved, normalize_storage_id, safe_join
+from fecreator.core.paths import (
+    PathEscapeError,
+    ensure_storage_id_not_reserved,
+    normalize_storage_id,
+    safe_join,
+)
 from fecreator.references.model import ReferencePack
 
 STALE_STAGING_MAX_AGE_SECONDS = 300.0
@@ -254,8 +259,14 @@ class ReferencePackStore:
                 raise ReferencePackCorruptionError(
                     f"unexpected file in reference pack store: {entry.name}"
                 )
-            pack_id = self._normalize_pack_id(entry.name)
-            self.history(pack_id)
+            try:
+                pack_id = self._normalize_pack_id(entry.name)
+            except (PathEscapeError, ValueError) as exc:
+                raise ReferencePackCorruptionError(
+                    f"invalid reference pack id in reference pack store: {entry.name}"
+                ) from exc
+            with _path_lock(self._pack_dir(pack_id), lock_path=self._lock_path(pack_id)):
+                self._revision_numbers_locked(pack_id)
             pack_ids.append(pack_id)
         return pack_ids
 

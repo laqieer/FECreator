@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
-from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, cast
 
 from fastapi import APIRouter, FastAPI, File, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, field_validator
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from fecreator.app import FeCreatorApp
 from fecreator.assets.base import SourcePlan
@@ -16,7 +18,12 @@ from fecreator.contracts.lineage import LineageNode
 from fecreator.contracts.manifest import Manifest
 from fecreator.contracts.result import JobResult
 from fecreator.contracts.review import CandidateSnapshot
-from fecreator.core.paths import PathEscapeError, normalize_storage_id
+from fecreator.core.paths import (
+    PathEscapeError,
+    ensure_portable_filename,
+    normalize_storage_id,
+    safe_join,
+)
 from fecreator.core.registry import UnknownIdError
 from fecreator.interfaces.static import mount_static
 from fecreator.interfaces.websocket import register_ws
@@ -30,7 +37,9 @@ from fecreator.reporting.sanitize import JsonObject, as_object, sanitize_json, s
 
 MAX_UPLOAD_FILE_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_TOTAL_BYTES = 32 * 1024 * 1024
+MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_TOTAL_BYTES + 1024 * 1024
 _UPLOAD_CHUNK_BYTES = 64 * 1024
+_SOURCE_UPLOAD_PATH = re.compile(r"\A/api/jobs/[^/]+/sources\Z")
 
 
 class ExpectedHttpError(Exception):
@@ -100,6 +109,100 @@ def _diagnostic_response(status_code: int, diagnostics: Sequence[Diagnostic]) ->
     return JSONResponse(status_code=status_code, content=_diagnostics_payload(diagnostics))
 
 
+class UploadRequestSizeLimiter:
+    """Bound the raw request body of the multipart source-upload route.
+
+    Starlette buffers every ``UploadFile`` part before the route handler can apply its
+    per-file and total budgets, so chunked, missing, or dishonest ``Content-Length``
+    bodies must be limited at the ASGI boundary. Rejections reuse the ordinary
+    structured diagnostic envelope.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if not self._is_source_upload(scope):
+            await self._app(scope, receive, send)
+            return
+
+        limit = MAX_UPLOAD_REQUEST_BYTES
+        if self._declared_length(scope) > limit:
+            await self._reject(send)
+            return
+
+        received = 0
+        exceeded = False
+        response_started = False
+
+        async def limited_receive() -> Message:
+            nonlocal received, exceeded
+            message = await receive()
+            if message["type"] != "http.request":
+                return message
+            received += len(cast(bytes, message.get("body", b"")))
+            if received > limit:
+                exceeded = True
+                return {"type": "http.disconnect"}
+            return message
+
+        async def limited_send(message: Message) -> None:
+            nonlocal response_started
+            if exceeded and not response_started:
+                return
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self._app(scope, limited_receive, limited_send)
+        except Exception:
+            if not (exceeded and not response_started):
+                raise
+        if exceeded and not response_started:
+            await self._reject(send)
+
+    @staticmethod
+    def _is_source_upload(scope: Scope) -> bool:
+        return (
+            scope["type"] == "http"
+            and scope.get("method") == "POST"
+            and _SOURCE_UPLOAD_PATH.match(scope.get("path", "")) is not None
+        )
+
+    @staticmethod
+    def _declared_length(scope: Scope) -> int:
+        for name, value in scope.get("headers", ()):
+            if name.lower() != b"content-length":
+                continue
+            try:
+                return int(value)
+            except ValueError:
+                return 0
+        return 0
+
+    @staticmethod
+    async def _reject(send: Send) -> None:
+        response = _diagnostic_response(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            [
+                error(
+                    "UPLOAD_REQUEST_LIMIT",
+                    "upload request exceeds the byte limit",
+                    where="files",
+                )
+            ],
+        )
+        await send(
+            {
+                "type": "http.response.start",
+                "status": response.status_code,
+                "headers": response.raw_headers,
+            }
+        )
+        await send({"type": "http.response.body", "body": response.body})
+
+
 def _validation_error_data(error_count: int) -> DiagData:
     return {"error_count": error_count}
 
@@ -122,21 +225,11 @@ def _known_job(app: FeCreatorApp, job_id: str) -> Job:
 
 
 def _normalize_upload_filename(filename: str | None) -> str:
-    if filename is None or not filename or "/" in filename or "\\" in filename:
-        raise UploadRejected("UPLOAD_UNSAFE_NAME", "upload filename is unsafe", "files")
-    posix = PurePosixPath(filename)
-    windows = PureWindowsPath(filename)
-    if (
-        posix.is_absolute()
-        or windows.is_absolute()
-        or len(posix.parts) != 1
-        or len(windows.parts) != 1
-        or len(filename) >= 2
-        and filename[1] == ":"
-    ):
+    if not filename or "/" in filename or "\\" in filename:
         raise UploadRejected("UPLOAD_UNSAFE_NAME", "upload filename is unsafe", "files")
     try:
-        return normalize_storage_id(filename, field_name="filename")
+        normalized = normalize_storage_id(filename, field_name="filename")
+        return ensure_portable_filename(normalized, field_name="filename")
     except (PathEscapeError, ValueError) as exc:
         raise UploadRejected("UPLOAD_UNSAFE_NAME", "upload filename is unsafe", "files") from exc
 
@@ -154,9 +247,10 @@ async def _stream_uploads(files: list[UploadFile], destination: Path) -> None:
                     "files",
                 )
             names.add(filename.casefold())
+            staged_path = safe_join(destination, filename)
             received = 0
             try:
-                with (destination / filename).open("xb") as staged:
+                with staged_path.open("xb") as staged:
                     while chunk := await upload.read(_UPLOAD_CHUNK_BYTES):
                         received += len(chunk)
                         total_bytes += len(chunk)
@@ -187,6 +281,7 @@ def create_api(app: FeCreatorApp) -> FastAPI:
         redoc_url=None,
         openapi_url=None,
     )
+    api.add_middleware(UploadRequestSizeLimiter)
     router = APIRouter(prefix="/api")
 
     @api.exception_handler(ExpectedHttpError)
@@ -523,13 +618,30 @@ def create_api(app: FeCreatorApp) -> FastAPI:
 
     @router.get("/references")
     def list_reference_packs() -> list[str]:
-        return app.list_reference_packs()
+        try:
+            return app.list_reference_packs()
+        except (OSError, PathEscapeError, ReferencePackCorruptionError, ValueError) as exc:
+            raise ExpectedHttpError(
+                status.HTTP_409_CONFLICT,
+                [
+                    error(
+                        "CORRUPT_REFERENCE_PACK",
+                        "reference pack store is corrupt",
+                        where="references",
+                    )
+                ],
+            ) from exc
 
     @router.get("/references/{pack_id}/history")
     def list_reference_history(pack_id: str) -> list[ReferencePack]:
         try:
             normalized_pack_id = normalize_storage_id(pack_id, field_name="pack_id")
             return app.list_reference_history(normalized_pack_id)
+        except ReferencePackCorruptionError as exc:
+            raise ExpectedHttpError(
+                status.HTTP_409_CONFLICT,
+                [error("CORRUPT_REFERENCE_PACK", "reference pack is corrupt", where=pack_id)],
+            ) from exc
         except (FileNotFoundError, PathEscapeError, ValueError) as exc:
             raise ExpectedHttpError(
                 status.HTTP_404_NOT_FOUND,

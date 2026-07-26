@@ -19,7 +19,12 @@ from fecreator.jobs.approvals import ApprovalError
 from fecreator.jobs.model import Job
 from fecreator.jobs.service import InvalidTransitionError
 from fecreator.references.store import ReferencePackCorruptionError
-from fecreator.reporting.sanitize import JsonValue, sanitize_json, sanitize_text
+from fecreator.reporting.sanitize import (
+    OPAQUE_BASE64_KEYS,
+    JsonValue,
+    sanitize_json,
+    sanitize_text,
+)
 
 CommandHandler: TypeAlias = Callable[[FeCreatorApp, argparse.Namespace], tuple[int, JsonValue]]
 ParserT = TypeVar("ParserT", bound=argparse.ArgumentParser)
@@ -86,7 +91,7 @@ class JsonCliArgumentParser(argparse.ArgumentParser):
 
 
 def _write_json(out: TextIO, payload: JsonValue) -> None:
-    safe_payload = sanitize_json(payload, error_cls=ValueError)
+    safe_payload = sanitize_json(payload, error_cls=ValueError, opaque_keys=OPAQUE_BASE64_KEYS)
     out.write(json.dumps(safe_payload, sort_keys=True, separators=(",", ":")))
 
 
@@ -475,13 +480,22 @@ def _run_build(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, JsonVa
 
 
 def _run_reference_list(app: FeCreatorApp, _args: argparse.Namespace) -> tuple[int, JsonValue]:
-    return 0, cast(JsonValue, app.list_reference_packs())
+    try:
+        return 0, cast(JsonValue, app.list_reference_packs())
+    except (OSError, PathEscapeError, ReferencePackCorruptionError, ValueError) as exc:
+        raise ExpectedCliError(
+            error("CORRUPT_REFERENCE_PACK", "reference pack store is corrupt", where="references")
+        ) from exc
 
 
 def _run_reference_history(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, JsonValue]:
     try:
         pack_id = normalize_storage_id(args.pack_id, field_name="pack_id")
         return 0, _models_payload(app.list_reference_history(pack_id))
+    except ReferencePackCorruptionError as exc:
+        raise ExpectedCliError(
+            error("CORRUPT_REFERENCE_PACK", "reference pack is corrupt", where=args.pack_id)
+        ) from exc
     except (FileNotFoundError, PathEscapeError, ValueError) as exc:
         raise ExpectedCliError(
             error("UNKNOWN_REFERENCE_PACK", "reference pack not found", where=args.pack_id)

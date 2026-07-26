@@ -5,6 +5,12 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 RESERVED_STORAGE_IDS = frozenset({"locks", ".locks"})
 
+WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{index}" for index in range(1, 10)}
+    | {f"lpt{index}" for index in range(1, 10)}
+)
+
 _WIN_EXTENDED_UNC_PREFIX = "\\\\?\\UNC\\"
 _WIN_EXTENDED_PREFIX = "\\\\?\\"
 
@@ -104,6 +110,21 @@ def normalize_storage_id(value: str, *, field_name: str) -> str:
     if "/" in normalized or "\\" in normalized:
         raise ValueError(f"{field_name} must not contain path separators: {normalized!r}")
     return normalized
+
+
+def ensure_portable_filename(value: str, *, field_name: str) -> str:
+    """Reject filenames Windows silently rewrites or resolves to a device file.
+
+    Windows strips trailing dots and spaces and treats reserved device names such as
+    ``CON`` or ``LPT9`` as devices regardless of case or extension, so both forms are
+    refused before a name is used as a storage destination.
+    """
+
+    if value != value.rstrip(". "):
+        raise ValueError(f"{field_name} must not end with '.' or a space: {value!r}")
+    if value.split(".", 1)[0].casefold() in WINDOWS_RESERVED_DEVICE_NAMES:
+        raise ValueError(f"{field_name} uses a reserved device name: {value!r}")
+    return value
 
 
 def ensure_storage_id_not_reserved(

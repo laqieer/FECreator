@@ -46,6 +46,7 @@ _MANUAL_PROVIDER_ID = "manual"
 _SUBMITTED_DIR = "submitted"
 _SUBMITTED_STAGE_PREFIX = ".submitted-stage-"
 _UPLOAD_STAGE_PREFIX = ".http-upload-"
+_ARTIFACT_ROOTS = (("package",), ("candidate", "package"))
 
 
 class FeCreatorApp:
@@ -347,6 +348,14 @@ class FeCreatorApp:
 
     def read_job_artifact(self, job_id: str, relative_path: str) -> bytes:
         job = self._jobs.load(job_id)
+        parts = self._workspace_relative_parts(relative_path)
+        if not any(
+            len(parts) > len(root) and parts[: len(root)] == root for root in _ARTIFACT_ROOTS
+        ):
+            raise ValueError(
+                "requested path is not a package artifact; job records, reports, and bundle "
+                "files have dedicated sanitized reads"
+            )
         return self._workspace_regular_file(job.id, relative_path).read_bytes()
 
     def read_bundle_file(self, job_id: str, relative_path: str) -> bytes:
@@ -481,17 +490,13 @@ class FeCreatorApp:
         return path
 
     def _workspace_relative_parts(self, relative_path: str) -> tuple[str, ...]:
-        if not isinstance(relative_path, str) or "\\" in relative_path:
+        if "\\" in relative_path:
             raise ValueError("unsafe workspace path")
         path = PurePosixPath(relative_path)
         if (
             path.is_absolute()
-            or relative_path.startswith("//")
             or not path.parts
-            or any(
-                part in {"", ".", ".."} or (len(part) >= 2 and part[1] == ":")
-                for part in path.parts
-            )
+            or any(part == ".." or (len(part) >= 2 and part[1] == ":") for part in path.parts)
         ):
             raise ValueError("unsafe workspace path")
         return path.parts

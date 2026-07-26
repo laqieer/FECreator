@@ -507,3 +507,28 @@ def test_get_preserves_legacy_empty_provenance_and_rights(data_root: Path) -> No
 
     assert loaded.provenance == ""
     assert loaded.rights == ""
+
+
+def test_list_ids_reports_missing_revisions_and_invalid_visible_ids(data_root: Path) -> None:
+    store = ReferencePackStore(data_root)
+    store.create(_pack())
+    (data_root / "refs" / "locks").mkdir()
+
+    with pytest.raises(ReferencePackCorruptionError, match="reference pack store"):
+        store.list_ids()
+
+    (data_root / "refs" / "locks").rmdir()
+    (data_root / "refs" / "marth" / "1.json").rename(data_root / "refs" / "marth" / "2.json")
+
+    with pytest.raises(ReferencePackCorruptionError, match="missing revision"):
+        store.list_ids()
+
+
+def test_list_ids_validates_revisions_without_loading_payloads(data_root: Path) -> None:
+    store = ReferencePackStore(data_root)
+    store.create(_pack())
+    (data_root / "refs" / "marth" / "1.json").write_text("not json", encoding="utf-8")
+
+    assert store.list_ids() == ["marth"]
+    with pytest.raises(ReferencePackCorruptionError):
+        store.history("marth")

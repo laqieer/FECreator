@@ -557,3 +557,65 @@ async def test_validate_asset_unknown_spec_returns_structured_mcp_error(
             }
         ],
     }
+
+
+def test_reference_tools_map_store_corruption_to_structured_diagnostics(data_root: Path) -> None:
+    app = _app(data_root)
+    ReferencePackStore(data_root).create(_reference_pack("hero-pack"))
+    (data_root / "refs" / "locks").mkdir()
+    handlers = make_handlers(app)
+
+    invalid = cast(CallToolResult, handlers["list_reference_packs"]())
+
+    (data_root / "refs" / "locks").rmdir()
+    (data_root / "refs" / "hero-pack" / "1.json").rename(
+        data_root / "refs" / "hero-pack" / "2.json"
+    )
+    listing = cast(CallToolResult, handlers["list_reference_packs"]())
+    history = cast(CallToolResult, handlers["list_reference_history"]("hero-pack"))
+
+    assert invalid.isError is True
+    assert _structured_content(invalid) == {
+        "ok": False,
+        "diagnostics": [
+            {
+                "code": "CORRUPT_REFERENCE_PACK",
+                "data": None,
+                "message": "reference pack store is corrupt",
+                "severity": "error",
+                "where": "references",
+            }
+        ],
+    }
+    assert listing.isError is True
+    assert _structured_content(listing)["diagnostics"][0]["code"] == "CORRUPT_REFERENCE_PACK"
+    assert history.isError is True
+    assert _structured_content(history)["diagnostics"][0] == {
+        "code": "CORRUPT_REFERENCE_PACK",
+        "data": None,
+        "message": "reference pack is corrupt",
+        "severity": "error",
+        "where": "hero-pack",
+    }
+    assert str(data_root) not in _serialized_result(history)
+
+
+def test_read_job_artifact_tool_is_scoped_to_package_files(data_root: Path) -> None:
+    app = _app(data_root)
+    job = app.create_job(Manifest.model_validate(_manifest_payload()))
+    workspace = data_root / "jobs" / job.id
+    (workspace / "package").mkdir()
+    (workspace / "package" / "portrait.png").write_bytes(b"portrait")
+    (workspace / "report.json").write_text("{}", encoding="utf-8")
+    handlers = make_handlers(app)
+
+    allowed = cast(CallToolResult, handlers["read_job_artifact"](job.id, "package/portrait.png"))
+    report = cast(CallToolResult, handlers["read_job_artifact"](job.id, "report.json"))
+    backslash = cast(CallToolResult, handlers["read_job_artifact"](job.id, "package\\portrait.png"))
+
+    assert allowed.isError is False
+    assert report.isError is True
+    assert _structured_content(report)["diagnostics"][0]["code"] == "READ_ARTIFACT_FAILED"
+    assert str(data_root) not in _serialized_result(report)
+    assert backslash.isError is True
+    assert _structured_content(backslash)["diagnostics"][0]["code"] == "READ_ARTIFACT_FAILED"

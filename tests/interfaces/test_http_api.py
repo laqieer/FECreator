@@ -424,3 +424,201 @@ async def test_root_serves_packaged_index_when_assets_are_present(
 
     assert resp.status_code == 200
     assert "FECreator UI" in resp.text
+
+
+async def test_reference_routes_map_store_corruption_to_structured_diagnostics(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _app(data_root)
+    ReferencePackStore(data_root).create(
+        ReferencePack(
+            id="hero-pack",
+            revision=99,
+            provenance="approved-board",
+            rights="original",
+        )
+    )
+    (data_root / "refs" / "locks").mkdir()
+    monkeypatch.setattr(static_module, "web_dir", lambda: None)
+    transport = httpx.ASGITransport(app=create_api(app))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        invalid_id = await client.get("/api/references")
+        (data_root / "refs" / "locks").rmdir()
+        (data_root / "refs" / "hero-pack" / "1.json").rename(
+            data_root / "refs" / "hero-pack" / "2.json"
+        )
+        corrupt_list = await client.get("/api/references")
+        corrupt_history = await client.get("/api/references/hero-pack/history")
+
+    assert invalid_id.status_code == 409
+    assert invalid_id.json() == [
+        {
+            "code": "CORRUPT_REFERENCE_PACK",
+            "data": None,
+            "message": "reference pack store is corrupt",
+            "severity": "error",
+            "where": "references",
+        }
+    ]
+    assert corrupt_list.status_code == 409
+    assert corrupt_list.json()[0]["code"] == "CORRUPT_REFERENCE_PACK"
+    assert corrupt_history.status_code == 409
+    assert corrupt_history.json() == [
+        {
+            "code": "CORRUPT_REFERENCE_PACK",
+            "data": None,
+            "message": "reference pack is corrupt",
+            "severity": "error",
+            "where": "hero-pack",
+        }
+    ]
+
+
+def _multipart_body(
+    filename: str,
+    payload: bytes,
+    *,
+    boundary: str = "fecreatorboundary",
+) -> bytes:
+    header = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="files"; filename="{filename}"\r\n'
+        "Content-Type: image/png\r\n\r\n"
+    ).encode("ascii")
+    return header + payload + f"\r\n--{boundary}--\r\n".encode("ascii")
+
+
+def _multipart_headers(boundary: str = "fecreatorboundary") -> dict[str, str]:
+    return {"content-type": f"multipart/form-data; boundary={boundary}"}
+
+
+def _staging_dirs(workspace: Path) -> list[Path]:
+    return [entry for entry in workspace.iterdir() if entry.name.startswith(".http-upload-")]
+
+
+async def test_source_upload_rejects_oversized_request_bodies_before_parsing(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _app(data_root)
+    job = app.create_job(Manifest.model_validate({**_manifest_payload(), "provider": "manual"}))
+    app.plan_job_sources(job.id)
+    workspace = data_root / "jobs" / job.id
+    monkeypatch.setattr(http_api, "MAX_UPLOAD_REQUEST_BYTES", 512)
+    monkeypatch.setattr(static_module, "web_dir", lambda: None)
+    transport = httpx.ASGITransport(app=create_api(app))
+    body = _multipart_body("neutral.png", b"x" * 4096)
+
+    async def _stream_body():
+        for start in range(0, len(body), 64):
+            yield body[start : start + 64]
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        declared = await client.post(
+            f"/api/jobs/{job.id}/sources",
+            content=body,
+            headers=_multipart_headers(),
+        )
+        monkeypatch.setattr(
+            http_api.UploadRequestSizeLimiter,
+            "_declared_length",
+            staticmethod(lambda _scope: 0),
+        )
+        streamed = await client.post(
+            f"/api/jobs/{job.id}/sources",
+            content=_stream_body(),
+            headers=_multipart_headers(),
+        )
+        understated = await client.post(
+            f"/api/jobs/{job.id}/sources",
+            content=_stream_body(),
+            headers={**_multipart_headers(), "content-length": "16"},
+        )
+
+    assert declared.status_code == 422
+    assert declared.json() == [
+        {
+            "code": "UPLOAD_REQUEST_LIMIT",
+            "data": None,
+            "message": "upload request exceeds the byte limit",
+            "severity": "error",
+            "where": "files",
+        }
+    ]
+    assert streamed.status_code == 422
+    assert streamed.json() == declared.json()
+    assert understated.status_code == 422
+    assert understated.json() == declared.json()
+    assert app.get_job(job.id).state.value == "waiting_for_sources"
+    assert not (workspace / "submitted").exists()
+    assert _staging_dirs(workspace) == []
+
+
+async def test_source_upload_rejects_windows_reserved_and_trailing_dot_filenames(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _app(data_root)
+    job = app.create_job(Manifest.model_validate({**_manifest_payload(), "provider": "manual"}))
+    app.plan_job_sources(job.id)
+    workspace = data_root / "jobs" / job.id
+    monkeypatch.setattr(static_module, "web_dir", lambda: None)
+    transport = httpx.ASGITransport(app=create_api(app))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        responses = [
+            await client.post(
+                f"/api/jobs/{job.id}/sources",
+                files=[("files", (filename, b"png-bytes", "image/png"))],
+            )
+            for filename in ("CON.png", "con.png", "nul", "lpt9.png", "neutral.png.")
+        ]
+
+    assert [response.status_code for response in responses] == [422, 422, 422, 422, 422]
+    assert {response.json()[0]["code"] for response in responses} == {"UPLOAD_UNSAFE_NAME"}
+    assert not (workspace / "submitted").exists()
+    assert _staging_dirs(workspace) == []
+
+
+async def test_artifact_reads_are_scoped_to_packages_and_reject_backslash_paths(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _app(data_root)
+    job = app.create_job(Manifest.model_validate(_manifest_payload()))
+    workspace = data_root / "jobs" / job.id
+    (workspace / "package").mkdir()
+    (workspace / "package" / "portrait.png").write_bytes(b"portrait")
+    (workspace / "bundle").mkdir()
+    (workspace / "bundle" / "manifest.json").write_text("{}", encoding="utf-8")
+    (workspace / "report.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(static_module, "web_dir", lambda: None)
+    transport = httpx.ASGITransport(app=create_api(app))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        allowed = await client.get(f"/api/jobs/{job.id}/artifacts/package/portrait.png")
+        blocked = [
+            await client.get(f"/api/jobs/{job.id}/artifacts/{relative_path}")
+            for relative_path in (
+                "job.json",
+                "manifest.json",
+                "events.jsonl",
+                "report.json",
+                "bundle/manifest.json",
+            )
+        ]
+        backslash_artifact = await client.get(
+            f"/api/jobs/{job.id}/artifacts/package%5Cportrait.png"
+        )
+        backslash_bundle = await client.get(f"/api/jobs/{job.id}/bundle/..%5Creport.json")
+
+    assert allowed.status_code == 200
+    assert [response.status_code for response in blocked] == [404, 404, 404, 404, 404]
+    assert {response.json()[0]["code"] for response in blocked} == {"READ_ARTIFACT_FAILED"}
+    assert str(data_root) not in blocked[0].text
+    assert backslash_artifact.status_code == 404
+    assert backslash_artifact.json()[0]["code"] == "READ_ARTIFACT_FAILED"
+    assert backslash_bundle.status_code == 404
+    assert backslash_bundle.json()[0]["code"] == "READ_BUNDLE_FILE_FAILED"

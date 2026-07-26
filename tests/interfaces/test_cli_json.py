@@ -412,3 +412,77 @@ def test_main_help_does_not_require_data_root(
     assert exc_info.value.code == 0
     assert captured.err == ""
     assert "usage: fecreator" in captured.out
+
+
+def test_reference_commands_map_store_corruption_to_json_diagnostics(data_root: Path) -> None:
+    app = _app(data_root)
+    ReferencePackStore(data_root).create(_reference_pack("hero-pack"))
+    (data_root / "refs" / "locks").mkdir()
+    invalid_out = io.StringIO()
+
+    invalid_rc = run(app, ["references", "list"], invalid_out)
+
+    (data_root / "refs" / "locks").rmdir()
+    (data_root / "refs" / "hero-pack" / "1.json").rename(
+        data_root / "refs" / "hero-pack" / "2.json"
+    )
+    list_out = io.StringIO()
+    history_out = io.StringIO()
+
+    list_rc = run(app, ["references", "list"], list_out)
+    history_rc = run(app, ["references", "history", "hero-pack"], history_out)
+
+    assert invalid_rc == 2
+    assert json.loads(invalid_out.getvalue()) == [
+        {
+            "code": "CORRUPT_REFERENCE_PACK",
+            "data": None,
+            "message": "reference pack store is corrupt",
+            "severity": "error",
+            "where": "references",
+        }
+    ]
+    assert list_rc == 2
+    assert json.loads(list_out.getvalue())[0]["code"] == "CORRUPT_REFERENCE_PACK"
+    assert history_rc == 2
+    assert json.loads(history_out.getvalue()) == [
+        {
+            "code": "CORRUPT_REFERENCE_PACK",
+            "data": None,
+            "message": "reference pack is corrupt",
+            "severity": "error",
+            "where": "hero-pack",
+        }
+    ]
+
+
+def test_job_artifact_command_is_scoped_to_package_files(data_root: Path) -> None:
+    app = _app(data_root)
+    job = app.create_job(
+        Manifest(
+            asset_type="portrait",
+            target_spec="fe-gba-portrait-standard",
+            workflow="text_to_portrait",
+            provider="fake",
+            sources=(SourceSpec(kind="text", ref="hero"),),
+        )
+    )
+    workspace = data_root / "jobs" / job.id
+    (workspace / "package").mkdir()
+    (workspace / "package" / "portrait.png").write_bytes(b"portrait")
+    (workspace / "report.json").write_text("{}", encoding="utf-8")
+    allowed_out = io.StringIO()
+    report_out = io.StringIO()
+    backslash_out = io.StringIO()
+
+    allowed_rc = run(app, ["job", "artifact", job.id, "package/portrait.png"], allowed_out)
+    report_rc = run(app, ["job", "artifact", job.id, "report.json"], report_out)
+    backslash_rc = run(app, ["job", "artifact", job.id, "package\\portrait.png"], backslash_out)
+
+    assert allowed_rc == 0
+    assert json.loads(allowed_out.getvalue())["path"] == "package/portrait.png"
+    assert report_rc == 2
+    assert json.loads(report_out.getvalue())[0]["code"] == "READ_ARTIFACT_FAILED"
+    assert str(data_root) not in report_out.getvalue()
+    assert backslash_rc == 2
+    assert json.loads(backslash_out.getvalue())[0]["code"] == "READ_ARTIFACT_FAILED"

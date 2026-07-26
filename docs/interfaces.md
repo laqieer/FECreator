@@ -15,7 +15,7 @@ Every interface stays thin and calls the same `FeCreatorApp` facade.
 - `fecreator job approvals <id>`
 - `fecreator job plan-sources <id>`
 - `fecreator job validate <id>`
-- `fecreator job artifact <id> <workspace-relative-path>`
+- `fecreator job artifact <id> <package-relative-path>`
 - `fecreator job report <id>`
 - `fecreator job bundle <id>`
 - `fecreator job bundle-file <id> <bundle-relative-path>`
@@ -95,10 +95,20 @@ can extend the CLI with `serve` without moving application logic out of
 The HTTP adapter validates request envelopes, normalizes path/id inputs, converts
 expected failures into deterministic diagnostic responses, and otherwise leaves job,
 validation, approval, and lineage orchestration inside `FeCreatorApp` and the domain
-layers behind it. Multipart source uploads stream into an application-owned unique
-staging directory, reject unsafe, duplicate, or case-colliding names, enforce an 8 MiB
-per-file and 32 MiB total budget, and remove staging before the response. Artifact and
-bundle paths are workspace-contained regular files only; reports remain sanitized JSON.
+layers behind it. Multipart source uploads are bounded twice: an ASGI request-body
+limiter caps the raw multipart request at 33 MiB before Starlette buffers any part, so
+chunked, missing, or understated `Content-Length` bodies cannot exceed it, and the
+route then streams each part into an application-owned unique staging directory with
+an 8 MiB per-file and 32 MiB total budget. Upload names are rejected when they are
+unsafe, duplicate, case-colliding, Windows reserved device names, or end with a dot or
+space, staging is resolved with `safe_join()`, and staging is removed before the
+response. Artifact reads serve only `package/` and `candidate/package/` files;
+`job.json`, `manifest.json`, event and approval records, reports, and bundle internals
+have dedicated sanitized endpoints and are never returned as raw artifact bytes.
+Artifact and bundle paths must be POSIX-relative, workspace-contained regular files;
+backslash-separated paths, symlinks, and reparse points are refused. Reference reads
+map corrupt or invalid stored pack ids to structured `CORRUPT_REFERENCE_PACK`
+diagnostics instead of a bare 500.
 
 ## MCP server
 
@@ -136,8 +146,10 @@ tool-specific fields, and expected/domain failures are structured MCP errors wit
 raw tracebacks or absolute paths. The MCP layer does not add image logic or bypass
 validation, approvals, lineage, or job lookup safeguards; it only normalizes ids,
 validates manifest input, sanitizes payloads, and forwards to `FeCreatorApp`.
-Artifact and bundle file payloads use deterministic base64 envelopes; report and
-diagnostic payloads are sanitized before they are returned.
+Artifact and bundle file payloads use deterministic base64 envelopes; `content_base64`
+is an explicitly opaque transport field that is never redacted, while every other
+string in the payload — including diagnostic text and paths — is still sanitized.
+Report and diagnostic payloads are sanitized before they are returned.
 
 submit_sources is the explicit source-handoff tool for manual/agent-owned files, not a
 required step for providers that generate their own intermediates. For manual-provider
