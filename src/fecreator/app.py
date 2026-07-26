@@ -4,7 +4,9 @@ import os
 import shutil
 import stat
 import uuid
-from pathlib import Path
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 import fecreator.providers  # noqa: F401
@@ -16,9 +18,9 @@ from fecreator.contracts.lineage import LineageNode
 from fecreator.contracts.manifest import Manifest
 from fecreator.contracts.result import JobResult
 from fecreator.contracts.review import CandidateSnapshot
-from fecreator.core.atomicio import _fsync_directory, write_json_atomic
+from fecreator.core.atomicio import _fsync_directory, read_json, write_json_atomic
 from fecreator.core.config import Settings
-from fecreator.core.paths import safe_join
+from fecreator.core.paths import PathEscapeError, safe_join
 from fecreator.core.pipeline import PipelineContext
 from fecreator.core.registry import ASSET_REGISTRY, PROVIDER_REGISTRY, SPEC_REGISTRY
 from fecreator.jobs.approvals import ApprovalError, ApprovalRecord, ApprovalStore
@@ -35,12 +37,15 @@ from fecreator.jobs.store import JobStore
 from fecreator.lineage.store import LineageStore
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore, UnpinnedReferencePackError
+from fecreator.reporting.bundle import BundleEntry
+from fecreator.reporting.sanitize import JsonObject, as_object, sanitize_json
 from fecreator.specs.base import TargetSpec
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _MANUAL_PROVIDER_ID = "manual"
 _SUBMITTED_DIR = "submitted"
 _SUBMITTED_STAGE_PREFIX = ".submitted-stage-"
+_UPLOAD_STAGE_PREFIX = ".http-upload-"
 
 
 class FeCreatorApp:
@@ -78,13 +83,22 @@ class FeCreatorApp:
         return self._candidates.load(job_id)
 
     def plan_sources(self, job_id: str, out_dir: Path) -> SourcePlan:
-        job = self._jobs.load(job_id)
-        plugin = cast(AssetPlugin, ASSET_REGISTRY.get(job.manifest.asset_type))
-        plan = plugin.plan_sources(job.manifest, self._reference_pack(job.manifest))
+        job, plan = self._planned_sources(job_id)
         out_dir.mkdir(parents=True, exist_ok=True)
         write_json_atomic(out_dir / "source_plan.json", plan.model_dump(mode="json"))
         self._transition_for_sources(job, submitted=False)
         return plan
+
+    def plan_job_sources(self, job_id: str) -> SourcePlan:
+        job, plan = self._planned_sources(job_id)
+        self._transition_for_sources(job, submitted=False)
+        return plan
+
+    def _planned_sources(self, job_id: str) -> tuple[Job, SourcePlan]:
+        job = self._jobs.load(job_id)
+        plugin = cast(AssetPlugin, ASSET_REGISTRY.get(job.manifest.asset_type))
+        plan = plugin.plan_sources(job.manifest, self._reference_pack(job.manifest))
+        return job, plan
 
     def submit_sources(self, job_id: str, sources_dir: Path) -> Job:
         job = self._service.resume(job_id)
@@ -123,6 +137,16 @@ class FeCreatorApp:
         finally:
             self._remove_tree_if_present(staged_dir)
 
+    @contextmanager
+    def staged_source_upload(self, job_id: str) -> Iterator[Path]:
+        job = self._jobs.load(job_id)
+        staged_dir = self._stage_dir(job.id, prefix=_UPLOAD_STAGE_PREFIX)
+        staged_dir.mkdir(parents=True, exist_ok=False)
+        try:
+            yield staged_dir
+        finally:
+            self._remove_tree_if_present(staged_dir)
+
     def build(self, job_id: str) -> JobResult:
         job = self._jobs.load(job_id)
         plugin = cast(AssetPlugin, ASSET_REGISTRY.get(job.manifest.asset_type))
@@ -133,6 +157,13 @@ class FeCreatorApp:
 
     def validate(self, spec_id: str, package_dir: Path) -> list[Diagnostic]:
         return cast(TargetSpec, SPEC_REGISTRY.get(spec_id)).validate(package_dir)
+
+    def validate_job(self, job_id: str) -> list[Diagnostic]:
+        job = self._jobs.load(job_id)
+        return self.validate(
+            job.manifest.target_spec,
+            safe_join(self._job_workspace(job.id), "package"),
+        )
 
     def approve(self, job_id: str, stage: str, actor: str) -> ApprovalRecord:
         if stage.strip() == "candidate":
@@ -269,6 +300,9 @@ class FeCreatorApp:
     def get_reference_pack(self, pack_id: str, revision: int) -> ReferencePack:
         return self._refs.get(pack_id, revision)
 
+    def list_reference_packs(self) -> list[str]:
+        return self._refs.list_ids()
+
     def list_reference_history(self, pack_id: str) -> list[ReferencePack]:
         return self._refs.history(pack_id)
 
@@ -280,6 +314,45 @@ class FeCreatorApp:
 
     def list_lineage_children(self, asset_id: str) -> list[LineageNode]:
         return self._lineage.children(asset_id)
+
+    def get_job_report(self, job_id: str) -> JsonObject:
+        job = self._jobs.load(job_id)
+        payload = read_json(self._workspace_regular_file(job.id, "report.json"))
+        if not isinstance(payload, dict):
+            raise ValueError("job report must contain a JSON object")
+        return as_object(sanitize_json(payload, error_cls=ValueError))
+
+    def list_bundle_entries(self, job_id: str) -> list[BundleEntry]:
+        job = self._jobs.load(job_id)
+        bundle_dir = self._workspace_directory(job.id, "bundle")
+        entries: list[BundleEntry] = []
+        stack = [bundle_dir]
+        while stack:
+            directory = stack.pop()
+            for entry in sorted(directory.iterdir(), key=lambda path: path.name, reverse=True):
+                if self._is_unsafe_workspace_entry(entry):
+                    raise ValueError("unsafe bundle entry")
+                if entry.is_dir():
+                    stack.append(entry)
+                    continue
+                if not entry.is_file():
+                    raise ValueError("bundle entry is not a regular file")
+                entries.append(
+                    BundleEntry(
+                        path=entry.relative_to(bundle_dir).as_posix(),
+                        size_bytes=entry.stat(follow_symlinks=False).st_size,
+                    )
+                )
+        return sorted(entries, key=lambda entry: entry.path)
+
+    def read_job_artifact(self, job_id: str, relative_path: str) -> bytes:
+        job = self._jobs.load(job_id)
+        return self._workspace_regular_file(job.id, relative_path).read_bytes()
+
+    def read_bundle_file(self, job_id: str, relative_path: str) -> bytes:
+        job = self._jobs.load(job_id)
+        bundle_dir = self._workspace_directory(job.id, "bundle")
+        return self._workspace_regular_file_from_root(bundle_dir, relative_path).read_bytes()
 
     def cancel(self, job_id: str) -> Job:
         return self._service.cancel(job_id)
@@ -375,6 +448,56 @@ class FeCreatorApp:
 
     def _job_workspace(self, job_id: str) -> Path:
         return safe_join(self._settings.data_root, "jobs", job_id)
+
+    def _workspace_directory(self, job_id: str, name: str) -> Path:
+        workspace = self._job_workspace(job_id)
+        directory = safe_join(workspace, name)
+        if self._is_unsafe_workspace_entry(workspace) or self._is_unsafe_workspace_entry(directory):
+            raise ValueError("unsafe workspace directory")
+        if not directory.is_dir():
+            raise FileNotFoundError("workspace directory not found")
+        return directory
+
+    def _workspace_regular_file(self, job_id: str, relative_path: str) -> Path:
+        return self._workspace_regular_file_from_root(self._job_workspace(job_id), relative_path)
+
+    def _workspace_regular_file_from_root(self, root: Path, relative_path: str) -> Path:
+        if self._is_unsafe_workspace_entry(root):
+            raise ValueError("unsafe workspace directory")
+        if not root.is_dir():
+            raise FileNotFoundError("workspace directory not found")
+        parts = self._workspace_relative_parts(relative_path)
+        unresolved = root
+        for part in parts:
+            unresolved = unresolved / part
+            if self._is_unsafe_workspace_entry(unresolved):
+                raise ValueError("unsafe workspace path")
+        try:
+            path = safe_join(root, *parts)
+        except PathEscapeError as exc:
+            raise ValueError("unsafe workspace path") from exc
+        if not path.is_file():
+            raise FileNotFoundError("workspace artifact not found")
+        return path
+
+    def _workspace_relative_parts(self, relative_path: str) -> tuple[str, ...]:
+        if not isinstance(relative_path, str) or "\\" in relative_path:
+            raise ValueError("unsafe workspace path")
+        path = PurePosixPath(relative_path)
+        if (
+            path.is_absolute()
+            or relative_path.startswith("//")
+            or not path.parts
+            or any(
+                part in {"", ".", ".."} or (len(part) >= 2 and part[1] == ":")
+                for part in path.parts
+            )
+        ):
+            raise ValueError("unsafe workspace path")
+        return path.parts
+
+    def _is_unsafe_workspace_entry(self, path: Path) -> bool:
+        return path.is_symlink() or self._is_reparse_point(path)
 
     def _submitted_dir(self, job_id: str) -> Path:
         return safe_join(self._job_workspace(job_id), _SUBMITTED_DIR)

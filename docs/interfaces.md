@@ -10,6 +10,25 @@ Every interface stays thin and calls the same `FeCreatorApp` facade.
 - `fecreator list-providers`
 - `fecreator job create --manifest <path>`
 - `fecreator job status <id>`
+- `fecreator job list`
+- `fecreator job candidate <id>`
+- `fecreator job approvals <id>`
+- `fecreator job plan-sources <id>`
+- `fecreator job validate <id>`
+- `fecreator job artifact <id> <workspace-relative-path>`
+- `fecreator job report <id>`
+- `fecreator job bundle <id>`
+- `fecreator job bundle-file <id> <bundle-relative-path>`
+- `fecreator job approve <id> --actor <actor>`
+- `fecreator job reject <id> --actor <actor> --reason <reason>`
+- `fecreator job finalize <id>`
+- `fecreator job retry <id> --actor <actor>`
+- `fecreator job cancel <id>`
+- `fecreator references list`
+- `fecreator references history <pack-id>`
+- `fecreator lineage get <asset-id>`
+- `fecreator lineage ancestors <asset-id>`
+- `fecreator lineage children <asset-id>`
 - `fecreator plan-sources --job <id> --out <dir>`
 - `fecreator submit-sources --job <id> --sources <dir>`
 - `fecreator build --job <id>`
@@ -22,6 +41,15 @@ Facade routing:
 - `list-providers` → `FeCreatorApp.list_providers()`
 - `job create` → `FeCreatorApp.create_job()`
 - `job status` → `FeCreatorApp.get_job()`
+- `job list`, `candidate`, and `approvals` → `FeCreatorApp.list_jobs()`,
+  `get_job_candidate()`, and `list_approval_decisions()`
+- review actions → `FeCreatorApp.approve_review()`, `reject_review()`,
+  `finalize_job()`, `retry_job()`, and `cancel()`
+- final-output reads → `FeCreatorApp.validate_job()`, `read_job_artifact()`,
+  `get_job_report()`, `list_bundle_entries()`, and `read_bundle_file()`
+- reference and lineage commands → `FeCreatorApp.list_reference_packs()`,
+  `list_reference_history()`, `get_lineage()`, `list_lineage_ancestors()`, and
+  `list_lineage_children()`
 - `plan-sources` → `FeCreatorApp.plan_sources()`
 - `submit-sources` → `FeCreatorApp.submit_sources()`
 - `build` → `FeCreatorApp.build()`
@@ -47,13 +75,30 @@ can extend the CLI with `serve` without moving application logic out of
 - `GET /api/specs` → `FeCreatorApp.list_specs()`
 - `GET /api/providers` → `FeCreatorApp.list_providers()`
 - `POST /api/jobs` → `FeCreatorApp.create_job()`
+- `GET /api/jobs` → `FeCreatorApp.list_jobs()`
 - `GET /api/jobs/{job_id}` → `FeCreatorApp.get_job()`
+- `GET /api/jobs/{job_id}/candidate` → `FeCreatorApp.get_job_candidate()`
+- `GET /api/jobs/{job_id}/approvals` → `FeCreatorApp.list_approval_decisions()`
+- `POST /api/jobs/{job_id}/plan-sources` → `FeCreatorApp.plan_job_sources()`
+- `POST /api/jobs/{job_id}/sources` → `FeCreatorApp.submit_sources()`
+- `POST /api/jobs/{job_id}/validate` → `FeCreatorApp.validate_job()`
+- `GET /api/jobs/{job_id}/artifacts/{path}` → `FeCreatorApp.read_job_artifact()`
+- `GET /api/jobs/{job_id}/report` → `FeCreatorApp.get_job_report()`
+- `GET /api/jobs/{job_id}/bundle` and `/bundle/{path}` →
+  `FeCreatorApp.list_bundle_entries()` and `read_bundle_file()`
+- `POST /api/jobs/{job_id}/approve`, `/reject`, `/finalize`, `/retry`, and
+  `/cancel` → review lifecycle facade actions
 - `POST /api/validate` → `FeCreatorApp.validate()`
+- `GET /api/references` and `/api/references/{pack_id}/history` → reference reads
+- `GET /api/lineage/{asset_id}`, `/ancestors`, and `/children` → lineage reads
 
 The HTTP adapter validates request envelopes, normalizes path/id inputs, converts
 expected failures into deterministic diagnostic responses, and otherwise leaves job,
 validation, approval, and lineage orchestration inside `FeCreatorApp` and the domain
-layers behind it.
+layers behind it. Multipart source uploads stream into an application-owned unique
+staging directory, reject unsafe, duplicate, or case-colliding names, enforce an 8 MiB
+per-file and 32 MiB total budget, and remove staging before the response. Artifact and
+bundle paths are workspace-contained regular files only; reports remain sanitized JSON.
 
 ## MCP server
 
@@ -62,28 +107,37 @@ layers behind it.
 - `list_assets` → `FeCreatorApp.list_assets()`
 - `list_specs` → `FeCreatorApp.list_specs()`
 - `list_providers` → `FeCreatorApp.list_providers()`
+- `list_jobs` → `FeCreatorApp.list_jobs()`
 - `create_job` → `FeCreatorApp.create_job()`
 - `get_job` → `FeCreatorApp.get_job()`
+- `get_job_candidate` and `list_approval_decisions` → candidate/review reads
 - `plan_sources` → `FeCreatorApp.plan_sources()`
+- `plan_job_sources` → `FeCreatorApp.plan_job_sources()`
 - `submit_sources` → `FeCreatorApp.submit_sources()`
 - `build_asset` → `FeCreatorApp.build()`
 - `validate_asset` → `FeCreatorApp.validate()`
+- `validate_job`, `read_job_artifact`, `get_job_report`, `list_bundle_entries`, and
+  `read_bundle_file` → final-output reads
+- `list_reference_packs`, `list_reference_history`, `get_lineage`,
+  `list_lineage_ancestors`, and `list_lineage_children` → immutable history reads
 - `approve_stage` → `FeCreatorApp.approve()`
 - `reject_stage` → `FeCreatorApp.reject()`
+- `approve_review`, `reject_review`, `finalize_job`, and `retry_job` → review lifecycle
 - `cancel_job` → `FeCreatorApp.cancel()`
 
 FastMCP publishes the exact `Manifest` input schema for `create_job` while leaving
 manifest validation inside the handler, so malformed payloads return the standard
 redacted `INVALID_MANIFEST` diagnostic instead of a pre-handler FastMCP/Pydantic
-`ToolError`, even when callers send string or list manifest values. All 12 tools also
-publish typed `outputSchema` metadata with exact success/error alternatives: every
+`ToolError`, even when callers send string or list manifest values. Every tool also
+publishes typed `outputSchema` metadata with exact success/error alternatives: every
 branch requires the `ok` discriminator, success payloads also require their
-tool-specific fields (`asset_ids`, `job`, `source_plan`, `job_result`, `approval`, or
-`diagnostics`), and expected/domain failures are structured MCP errors with
+tool-specific fields, and expected/domain failures are structured MCP errors with
 `isError=true` plus redacted `{"ok": false, "diagnostics": [...]}` content instead of
 raw tracebacks or absolute paths. The MCP layer does not add image logic or bypass
 validation, approvals, lineage, or job lookup safeguards; it only normalizes ids,
 validates manifest input, sanitizes payloads, and forwards to `FeCreatorApp`.
+Artifact and bundle file payloads use deterministic base64 envelopes; report and
+diagnostic payloads are sanitized before they are returned.
 
 submit_sources is the explicit source-handoff tool for manual/agent-owned files, not a
 required step for providers that generate their own intermediates. For manual-provider

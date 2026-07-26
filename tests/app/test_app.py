@@ -179,6 +179,40 @@ def test_list_jobs_is_deterministic(data_root: Path) -> None:
     assert [job.id for job in app.list_jobs()] == sorted([first.id, second.id])
 
 
+def test_workbench_facade_reads_workspace_outputs_without_path_escape(data_root: Path) -> None:
+    app, _plugin = _app(data_root)
+    job = app.create_job(_manifest())
+    workspace = data_root / "jobs" / job.id
+    package = workspace / "package"
+    bundle = workspace / "bundle"
+    package.mkdir()
+    bundle.mkdir()
+    (package / "portrait.png").write_bytes(b"portrait")
+    (bundle / "manifest.json").write_text("{}", encoding="utf-8")
+    (workspace / "report.json").write_text(
+        json.dumps({"path": "C:\\private\\report.json"}),
+        encoding="utf-8",
+    )
+    ReferencePackStore(data_root).create(
+        ReferencePack(
+            id="hero-pack",
+            revision=99,
+            provenance="approved-board",
+            rights="original",
+        )
+    )
+
+    assert app.plan_job_sources(job.id).expected_filenames == ("neutral.png",)
+    assert [diagnostic.code for diagnostic in app.validate_job(job.id)] == ["BAD_PNG"]
+    assert app.list_reference_packs() == ["hero-pack"]
+    assert app.get_job_report(job.id) == {"path": "report.json"}
+    assert [entry.path for entry in app.list_bundle_entries(job.id)] == ["manifest.json"]
+    assert app.read_job_artifact(job.id, "package/portrait.png") == b"portrait"
+    assert app.read_bundle_file(job.id, "manifest.json") == b"{}"
+    with pytest.raises(ValueError, match="unsafe"):
+        app.read_job_artifact(job.id, "../private.txt")
+
+
 def test_read_methods_return_candidates_approvals_references_and_lineage(data_root: Path) -> None:
     app, _plugin = _app(data_root)
     job = app.create_job(_manifest())

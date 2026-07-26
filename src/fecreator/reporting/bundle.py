@@ -9,6 +9,8 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import cast
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from fecreator.contracts.diagnostics import Diagnostic, Severity, error
 from fecreator.contracts.lineage import LineageNode
 from fecreator.contracts.manifest import Manifest
@@ -51,6 +53,13 @@ _REQUIRED_REPORT_KEYS = frozenset(
         "output_hashes",
     }
 )
+
+
+class BundleEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str
+    size_bytes: int = Field(ge=0)
 
 
 class BundleError(Exception):

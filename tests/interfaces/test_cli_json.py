@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import base64
 import io
 import json
 import os
@@ -131,6 +133,75 @@ def test_job_create_and_status(data_root: Path, tmp_path: Path) -> None:
     assert create_rc == 0
     assert status_rc == 0
     assert json.loads(status_out.getvalue())["state"] == "created"
+
+
+def test_additive_job_reference_and_lineage_commands_emit_deterministic_json(
+    data_root: Path,
+) -> None:
+    parser = build_parser()
+    job_parser = next(
+        action
+        for action in parser._subparsers._group_actions
+        if isinstance(action, argparse._SubParsersAction) and action.dest == "command"
+    ).choices["job"]
+    job_commands = next(
+        action
+        for action in job_parser._subparsers._group_actions
+        if isinstance(action, argparse._SubParsersAction) and action.dest == "job_command"
+    ).choices
+
+    assert {
+        "list",
+        "candidate",
+        "approvals",
+        "plan-sources",
+        "validate",
+        "artifact",
+        "report",
+        "bundle",
+        "bundle-file",
+        "approve",
+        "reject",
+        "finalize",
+        "retry",
+        "cancel",
+    } <= set(job_commands)
+    app = _app(data_root)
+    job = app.create_job(
+        Manifest(
+            asset_type="portrait",
+            target_spec="fe-gba-portrait-standard",
+            workflow="text_to_portrait",
+            provider="fake",
+            sources=(SourceSpec(kind="text", ref="hero"),),
+        )
+    )
+    workspace = data_root / "jobs" / job.id
+    (workspace / "package").mkdir()
+    (workspace / "package" / "portrait.png").write_bytes(b"portrait")
+    (workspace / "bundle").mkdir()
+    (workspace / "bundle" / "manifest.json").write_text("{}", encoding="utf-8")
+    (workspace / "report.json").write_text(
+        '{"path":"C:\\\\private\\\\report.json"}',
+        encoding="utf-8",
+    )
+    ReferencePackStore(data_root).create(_reference_pack("hero-pack"))
+    out = io.StringIO()
+
+    assert run(app, ["job", "list"], out) == 0
+    assert [item["id"] for item in json.loads(out.getvalue())] == [job.id]
+    out = io.StringIO()
+    assert run(app, ["job", "report", job.id], out) == 0
+    assert json.loads(out.getvalue()) == {"path": "report.json"}
+    out = io.StringIO()
+    assert run(app, ["job", "artifact", job.id, "package/portrait.png"], out) == 0
+    assert json.loads(out.getvalue()) == {
+        "content_base64": base64.b64encode(b"portrait").decode("ascii"),
+        "path": "package/portrait.png",
+    }
+    out = io.StringIO()
+    assert run(app, ["references", "list"], out) == 0
+    assert json.loads(out.getvalue()) == ["hero-pack"]
 
 
 def test_run_invalid_manifest_returns_json_diagnostic(data_root: Path, tmp_path: Path) -> None:

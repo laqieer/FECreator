@@ -241,6 +241,24 @@ class ReferencePackStore:
                 for revision in self._revision_numbers_locked(normalized)
             ]
 
+    def list_ids(self) -> list[str]:
+        refs_dir = self._refs_dir()
+        if not refs_dir.exists():
+            return []
+
+        pack_ids: list[str] = []
+        for entry in sorted(refs_dir.iterdir(), key=lambda path: path.name):
+            if entry.name == ".locks" or entry.name.startswith(STAGING_PREFIX):
+                continue
+            if not entry.is_dir():
+                raise ReferencePackCorruptionError(
+                    f"unexpected file in reference pack store: {entry.name}"
+                )
+            pack_id = self._normalize_pack_id(entry.name)
+            self.history(pack_id)
+            pack_ids.append(pack_id)
+        return pack_ids
+
     def latest(self, pack_id: str) -> ReferencePack:
         normalized = self._normalize_pack_id(pack_id)
         with _path_lock(self._pack_dir(normalized), lock_path=self._lock_path(normalized)):

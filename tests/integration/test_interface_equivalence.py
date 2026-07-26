@@ -17,6 +17,7 @@ from fecreator.interfaces import cli_json
 from fecreator.interfaces import static as static_module
 from fecreator.interfaces.http_api import create_api
 from fecreator.interfaces.mcp_server import make_handlers
+from fecreator.jobs.model import JobState
 from fecreator.reporting.sanitize import as_object, sanitize_json
 
 
@@ -439,3 +440,70 @@ def test_cli_and_mcp_plan_sources_reject_invalid_job_ids_consistently(
 
     assert cli_rc == 2
     assert cli_payload == cast(dict[str, object], _mcp_payload(mcp_result)["diagnostics"])
+
+
+async def test_candidate_approval_and_finalization_are_equivalent_across_surfaces(
+    data_root: Path,
+    monkeypatch,
+) -> None:
+    direct_app = _app(data_root / "direct")
+    cli_app = _app(data_root / "cli")
+    mcp_app = _app(data_root / "mcp")
+    http_app = _app(data_root / "http")
+    direct_job = direct_app.create_job(_manifest())
+    cli_job = cli_app.create_job(_manifest())
+    mcp_job = mcp_app.create_job(_manifest())
+    http_job = http_app.create_job(_manifest())
+    assert direct_app.build(direct_job.id).ok
+    assert cli_app.build(cli_job.id).ok
+    assert mcp_app.build(mcp_job.id).ok
+    assert http_app.build(http_job.id).ok
+
+    direct_approval = direct_app.approve_review(direct_job.id, "reviewer")
+    direct_result = direct_app.finalize_job(direct_job.id)
+    cli_approval_out = io.StringIO()
+    cli_finalize_out = io.StringIO()
+    cli_approval_rc = cli_json.run(
+        cli_app,
+        ["job", "approve", cli_job.id, "--actor", "reviewer"],
+        cli_approval_out,
+    )
+    cli_finalize_rc = cli_json.run(cli_app, ["job", "finalize", cli_job.id], cli_finalize_out)
+    mcp_approval = cast(
+        CallToolResult,
+        make_handlers(mcp_app)["approve_review"](mcp_job.id, "reviewer"),
+    )
+    mcp_finalization = cast(
+        CallToolResult,
+        make_handlers(mcp_app)["finalize_job"](mcp_job.id),
+    )
+
+    async with _client(http_app, monkeypatch) as client:
+        http_approval = await client.post(
+            f"/api/jobs/{http_job.id}/approve",
+            json={"actor": "reviewer"},
+        )
+        http_finalization = await client.post(f"/api/jobs/{http_job.id}/finalize")
+
+    assert direct_approval.decision == "approved"
+    assert direct_result.ok is True
+    assert cli_approval_rc == cli_finalize_rc == 0
+    assert json.loads(cli_approval_out.getvalue())["decision"] == "approved"
+    assert json.loads(cli_finalize_out.getvalue())["lineage_id"].endswith("-export")
+    assert mcp_approval.isError is False
+    assert _mcp_payload(mcp_approval)["approval"]["decision"] == "approved"
+    assert mcp_finalization.isError is False
+    assert _mcp_payload(mcp_finalization)["job_result"]["lineage_id"].endswith("-export")
+    assert http_approval.status_code == 200
+    assert http_approval.json()["decision"] == "approved"
+    assert http_finalization.status_code == 200
+    assert http_finalization.json()["lineage_id"].endswith("-export")
+    assert all(
+        app.get_job(job.id).state is JobState.COMPLETED
+        for app, job in (
+            (direct_app, direct_job),
+            (cli_app, cli_job),
+            (mcp_app, mcp_job),
+            (http_app, http_job),
+        )
+    )

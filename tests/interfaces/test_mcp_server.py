@@ -122,14 +122,32 @@ def test_tool_names_match_design() -> None:
         "list_assets",
         "list_specs",
         "list_providers",
+        "list_jobs",
         "create_job",
         "get_job",
+        "get_job_candidate",
+        "list_approval_decisions",
         "plan_sources",
+        "plan_job_sources",
         "submit_sources",
         "build_asset",
         "validate_asset",
+        "validate_job",
+        "read_job_artifact",
+        "get_job_report",
+        "list_bundle_entries",
+        "read_bundle_file",
+        "list_reference_packs",
+        "list_reference_history",
+        "get_lineage",
+        "list_lineage_ancestors",
+        "list_lineage_children",
         "approve_stage",
         "reject_stage",
+        "approve_review",
+        "reject_review",
+        "finalize_job",
+        "retry_job",
         "cancel_job",
     ]
 
@@ -148,6 +166,56 @@ def test_list_specs_handler_matches_app(data_root: Path) -> None:
     assert _structured_content(result) == {
         "ok": True,
         "spec_ids": ["fe-gba-portrait-standard"],
+    }
+
+
+async def test_additive_read_tools_are_structured_redacted_and_workspace_bound(
+    data_root: Path,
+) -> None:
+    app = _app(data_root)
+    job = app.create_job(Manifest.model_validate(_manifest_payload()))
+    workspace = data_root / "jobs" / job.id
+    (workspace / "package").mkdir()
+    (workspace / "package" / "portrait.png").write_bytes(b"portrait")
+    (workspace / "bundle").mkdir()
+    (workspace / "bundle" / "manifest.json").write_text("{}", encoding="utf-8")
+    (workspace / "report.json").write_text(
+        '{"path":"C:\\\\private\\\\report.json"}',
+        encoding="utf-8",
+    )
+    server = build_mcp(app)
+
+    artifact = cast(
+        CallToolResult,
+        await server.call_tool(
+            "read_job_artifact",
+            {"job_id": job.id, "relative_path": "package/portrait.png"},
+        ),
+    )
+    escaped = cast(
+        CallToolResult,
+        await server.call_tool(
+            "read_job_artifact",
+            {"job_id": job.id, "relative_path": "../private.txt"},
+        ),
+    )
+    report = cast(CallToolResult, await server.call_tool("get_job_report", {"job_id": job.id}))
+    bundle = cast(CallToolResult, await server.call_tool("list_bundle_entries", {"job_id": job.id}))
+
+    assert artifact.isError is False
+    assert _structured_content(artifact) == {
+        "ok": True,
+        "file": {"content_base64": "cG9ydHJhaXQ=", "path": "package/portrait.png"},
+    }
+    assert escaped.isError is True
+    assert _structured_content(escaped)["diagnostics"][0]["code"] == "READ_ARTIFACT_FAILED"
+    assert str(data_root) not in _serialized_result(escaped)
+    assert report.isError is False
+    assert _structured_content(report) == {"ok": True, "report": {"path": "report.json"}}
+    assert bundle.isError is False
+    assert _structured_content(bundle) == {
+        "ok": True,
+        "bundle_entries": [{"path": "manifest.json", "size_bytes": 2}],
     }
 
 

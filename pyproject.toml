@@ -12,6 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "laqieer" }]
 dependencies = [
   "fastapi>=0.115,<0.140",
+  "python-multipart>=0.0.20,<1",
   "uvicorn[standard]>=0.30,<0.52",
   "pydantic>=2.9,<3",
   "numpy>=2.1,<3",

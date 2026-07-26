@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import cast
 
+import httpx
 from mcp.types import CallToolResult
 from PIL import Image
 
@@ -13,6 +14,8 @@ from fecreator.contracts.diagnostics import has_errors
 from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.core.config import Settings
 from fecreator.interfaces import cli_json
+from fecreator.interfaces import static as static_module
+from fecreator.interfaces.http_api import create_api
 from fecreator.interfaces.mcp_server import make_handlers
 from fecreator.jobs.model import JobState
 
@@ -94,3 +97,30 @@ def test_mcp_build_only_publishes_lineage_after_manual_sources_are_submitted(
     assert not (workspace / "report.json").exists()
     assert not (workspace / "lineage.json").exists()
     assert not (workspace / "bundle").exists()
+
+
+async def test_additive_interfaces_delegate_reference_listing_to_the_app_facade(
+    data_root: Path,
+    monkeypatch,
+) -> None:
+    app = _app(data_root)
+    monkeypatch.setattr(app, "list_reference_packs", lambda: ["facade-only"])
+
+    assert "list_reference_packs" in make_handlers(app)
+    cli_out = io.StringIO()
+    cli_rc = cli_json.run(app, ["references", "list"], cli_out)
+    mcp_result = cast(CallToolResult, make_handlers(app)["list_reference_packs"]())
+    monkeypatch.setattr(static_module, "web_dir", lambda: None)
+    transport = httpx.ASGITransport(app=create_api(app))
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        http_response = await client.get("/api/references")
+
+    assert cli_rc == 0
+    assert json.loads(cli_out.getvalue()) == ["facade-only"]
+    assert mcp_result.isError is False
+    assert cast(dict[str, object], mcp_result.structuredContent) == {
+        "ok": True,
+        "reference_pack_ids": ["facade-only"],
+    }
+    assert http_response.status_code == 200
+    assert http_response.json() == ["facade-only"]
