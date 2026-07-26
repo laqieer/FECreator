@@ -3,8 +3,8 @@ from __future__ import annotations
 import importlib
 import json
 import sys
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import numpy as np
