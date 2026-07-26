@@ -14,9 +14,12 @@ from fecreator import __version__
 from fecreator.app import FeCreatorApp
 from fecreator.cli import main
 from fecreator.contracts.manifest import Manifest, SourceSpec
+from fecreator.contracts.result import Artifact
 from fecreator.core.config import Settings
 from fecreator.interfaces.cli_json import build_parser, run
-from fecreator.references.store import ReferencePackCorruptionError
+from fecreator.jobs.model import Job
+from fecreator.references.model import ReferencePack
+from fecreator.references.store import ReferencePackStore
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TASK9_PLAN = (
@@ -26,6 +29,46 @@ TASK9_PLAN = (
 
 def _app(data_root: Path) -> FeCreatorApp:
     return FeCreatorApp(Settings(data_root=data_root))
+
+
+def _reference_pack(pack_id: str = "corrupt-pack") -> ReferencePack:
+    return ReferencePack(
+        id=pack_id,
+        revision=99,
+        source="synthetic fixture prompt",
+        concept_art=(
+            Artifact(
+                role="concept_art",
+                path="incoming/front.png",
+                sha256="a" * 64,
+                media_type="image/png",
+            ),
+        ),
+        traits={"hair": "blue"},
+        swatches=("#112233",),
+        forbidden_changes=("change face shape",),
+        provenance="synthetic-fixture",
+        rights="original",
+    )
+
+
+def _create_pinned_job(
+    data_root: Path, *, pack_id: str = "corrupt-pack"
+) -> tuple[FeCreatorApp, Job]:
+    app = _app(data_root)
+    store = ReferencePackStore(data_root)
+    store.create(_reference_pack(pack_id))
+    job = app.create_job(
+        Manifest(
+            asset_type="portrait",
+            target_spec="fe-gba-portrait-standard",
+            workflow="text_to_portrait",
+            provider="fake",
+            character_ref_pack=pack_id,
+            sources=(SourceSpec(kind="text", ref="hero"),),
+        )
+    )
+    return app, job
 
 
 def _run_cli(data_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -174,26 +217,10 @@ def test_run_plan_sources_rejects_invalid_job_id_with_json_diagnostic(
 
 def test_run_build_corrupt_reference_pack_returns_json_diagnostic(
     data_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = _app(data_root)
-    job = app.create_job(
-        Manifest(
-            asset_type="portrait",
-            target_spec="fe-gba-portrait-standard",
-            workflow="text_to_portrait",
-            provider="fake",
-            character_ref_pack="corrupt-pack",
-            sources=(SourceSpec(kind="text", ref="hero"),),
-        )
-    )
+    app, job = _create_pinned_job(data_root)
+    (data_root / "refs" / "corrupt-pack" / "1.json").write_text("{not-json", encoding="utf-8")
     out = io.StringIO()
-
-    def _fail_build(job_id: str) -> object:
-        assert job_id == job.id
-        raise ReferencePackCorruptionError("corrupt")
-
-    monkeypatch.setattr(app, "build", _fail_build)
 
     rc = run(app, ["build", "--job", job.id], out)
 

@@ -9,13 +9,44 @@ from mcp.types import CallToolResult, Tool
 
 from fecreator.app import FeCreatorApp
 from fecreator.contracts.manifest import Manifest
+from fecreator.contracts.result import Artifact
 from fecreator.core.config import Settings
 from fecreator.interfaces.mcp_server import TOOL_NAMES, build_mcp, make_handlers
-from fecreator.references.store import ReferencePackCorruptionError
+from fecreator.jobs.model import Job
+from fecreator.references.model import ReferencePack
+from fecreator.references.store import ReferencePackStore
 
 
 def _app(data_root: Path) -> FeCreatorApp:
     return FeCreatorApp(Settings(data_root=data_root))
+
+
+def _reference_pack(pack_id: str) -> ReferencePack:
+    return ReferencePack(
+        id=pack_id,
+        revision=99,
+        source="synthetic fixture prompt",
+        concept_art=(
+            Artifact(
+                role="concept_art",
+                path="incoming/front.png",
+                sha256="a" * 64,
+                media_type="image/png",
+            ),
+        ),
+        traits={"hair": "blue"},
+        swatches=("#112233",),
+        forbidden_changes=("change face shape",),
+        provenance="synthetic-fixture",
+        rights="original",
+    )
+
+
+def _create_pinned_job(data_root: Path, *, pack_id: str) -> tuple[FeCreatorApp, Job]:
+    app = _app(data_root)
+    ReferencePackStore(data_root).create(_reference_pack(pack_id))
+    job = app.create_job(Manifest.model_validate(_manifest_payload(character_ref_pack=pack_id)))
+    return app, job
 
 
 def _manifest_payload(
@@ -269,10 +300,8 @@ async def test_plan_sources_returns_structured_redacted_mcp_error_for_missing_re
     data_root: Path,
     tmp_path: Path,
 ) -> None:
-    app = _app(data_root)
-    job = app.create_job(
-        Manifest.model_validate(_manifest_payload(character_ref_pack="missing-pack"))
-    )
+    app, job = _create_pinned_job(data_root, pack_id="missing-pack")
+    (data_root / "refs" / "missing-pack" / "1.json").unlink()
     result = cast(
         CallToolResult,
         await build_mcp(app).call_tool(
@@ -380,24 +409,12 @@ async def test_build_asset_returns_structured_redacted_mcp_error_for_mixed_drive
 async def test_build_asset_corrupt_reference_pack_returns_structured_mcp_error(
     data_root: Path,
 ) -> None:
-    app = _app(data_root)
-    job = app.create_job(
-        Manifest.model_validate(_manifest_payload(character_ref_pack="corrupt-pack"))
+    app, job = _create_pinned_job(data_root, pack_id="corrupt-pack")
+    (data_root / "refs" / "corrupt-pack" / "1.json").write_text("{not-json", encoding="utf-8")
+    result = cast(
+        CallToolResult,
+        await build_mcp(app).call_tool("build_asset", {"job_id": job.id}),
     )
-
-    def fail_build(job_id: str) -> object:
-        assert job_id == job.id
-        raise ReferencePackCorruptionError("corrupt")
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(app, "build", fail_build)
-    try:
-        result = cast(
-            CallToolResult,
-            await build_mcp(app).call_tool("build_asset", {"job_id": job.id}),
-        )
-    finally:
-        monkeypatch.undo()
 
     assert result.isError is True
     assert _structured_content(result) == {
