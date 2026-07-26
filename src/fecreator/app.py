@@ -136,7 +136,8 @@ class FeCreatorApp:
         return self._approvals.reject(job_id, stage, actor, reason)
 
     def list_approval_decisions(self, job_id: str) -> list[ApprovalRecord]:
-        return self._approvals.decisions(job_id)
+        job = self._jobs.load(job_id)
+        return self._approvals.decisions(job.id)
 
     def get_reference_pack(self, pack_id: str, revision: int) -> ReferencePack:
         return self._refs.get(pack_id, revision)

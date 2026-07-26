@@ -213,6 +213,13 @@ def test_read_methods_return_candidates_approvals_references_and_lineage(data_ro
     ]
 
 
+def test_list_approval_decisions_rejects_unknown_job(data_root: Path) -> None:
+    app, _plugin = _app(data_root)
+
+    with pytest.raises(FileNotFoundError):
+        app.list_approval_decisions("missing-job")
+
+
 def test_plan_sources_writes_file_loads_refs_and_moves_job_to_waiting_state(
     data_root: Path,
     tmp_path: Path,

@@ -296,3 +296,15 @@ def test_unknown_job_reads_do_not_pollute_list_jobs(data_root) -> None:
     assert ApprovalStore(data_root).decisions("missing-job") == []
 
     assert store.list_jobs() == [healthy.id]
+
+
+def test_load_raises_when_visible_job_id_does_not_match_payload(data_root) -> None:
+    store = JobStore(data_root)
+    job = store.create(_manifest())
+    job_path = data_root / "jobs" / job.id / "job.json"
+    payload = json.loads(job_path.read_text(encoding="utf-8"))
+    payload["id"] = "different-id"
+    job_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(JobCorruptionError, match="job id"):
+        store.load(job.id)

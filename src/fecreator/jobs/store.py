@@ -142,8 +142,11 @@ class JobStore:
         normalized = self._normalize_job_id(job_id)
         payload = self._read_job_payload_locked(normalized)
         manifest_payload = _read_json_unlocked(self._manifest_path(normalized))
+        payload_id = str(payload["id"])
+        if payload_id != normalized:
+            raise JobCorruptionError(f"job id mismatch: expected {normalized}, found {payload_id}")
         return Job(
-            id=str(payload["id"]),
+            id=payload_id,
             state=JobState(str(payload["state"])),
             manifest=Manifest.model_validate(manifest_payload),
             revision=int(payload["revision"]),
