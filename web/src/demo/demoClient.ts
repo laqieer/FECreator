@@ -335,7 +335,10 @@ function createSeedState(): DemoJobState {
   };
 }
 
-export function assertValidManifest(manifest: Manifest): void {
+export function assertValidManifest(
+  manifest: Manifest,
+  lineageHasAsset: (assetId: string) => boolean,
+): void {
   const version: unknown = manifest.version;
   if (version !== "1.0") {
     throw new Error("Demo manifest must use version 1.0.");
@@ -370,7 +373,10 @@ export function assertValidManifest(manifest: Manifest): void {
   if (!usesApprovedBase && parentAssetId !== null) {
     throw new Error(`Demo manifest workflow ${workflow} must not set parent_asset_id.`);
   }
-  if (parentAssetId !== null && !demoLineage.some((node) => node.asset_id === parentAssetId)) {
+  // The live lineage map is consulted, not the initial fixture array: a demo
+  // session creates candidate and export nodes of its own, and those are just
+  // as valid an approved base as the seeded ones.
+  if (parentAssetId !== null && !lineageHasAsset(parentAssetId)) {
     throw new Error(`Demo lineage asset ${parentAssetId} does not exist.`);
   }
   maybeReferencePack(manifest);
@@ -443,7 +449,7 @@ export function demoClient(): ApiClient {
         .map((state) => clone(state.job))
         .sort((left, right) => left.id.localeCompare(right.id)),
     createJob: async (manifest) => {
-      assertValidManifest(manifest);
+      assertValidManifest(manifest, (assetId) => lineages.has(assetId));
       counter += 1;
       const job: Job = {
         id: `demo-job-${counter}`,

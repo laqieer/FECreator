@@ -292,3 +292,35 @@ test("createJob records the approved base as a demo lineage parent", async () =>
   ]);
   expect(ancestors.map((node) => node.asset_id)).toContain("demo-portrait-neutral-candidate");
 });
+
+test("createJob accepts an approved base created during the demo session", async () => {
+  const client = demoClient();
+  const base = await client.createJob(validManifest);
+  await client.planSources(base.id);
+  await client.submitSources(base.id, [
+    new File([new Uint8Array([1, 2, 3])], "neutral.png", { type: "image/png" }),
+  ]);
+  const baseCandidate = await client.getJobCandidate(base.id);
+
+  const derived = await client.createJob({
+    ...validManifest,
+    workflow: "expression_refine",
+    parent_asset_id: baseCandidate.lineage_id,
+    sources: [{ kind: "approved_portrait", ref: "hero.png" }],
+  });
+
+  expect(derived.manifest.parent_asset_id).toBe(baseCandidate.lineage_id);
+});
+
+test("createJob still refuses a parent that no live demo lineage node names", async () => {
+  const client = demoClient();
+
+  await expect(
+    client.createJob({
+      ...validManifest,
+      workflow: "masked_variant",
+      parent_asset_id: "demo-job-99-candidate",
+      sources: [{ kind: "approved_portrait", ref: "hero.png" }],
+    }),
+  ).rejects.toThrow("Demo lineage asset demo-job-99-candidate does not exist.");
+});

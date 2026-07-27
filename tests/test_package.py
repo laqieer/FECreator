@@ -189,6 +189,12 @@ def _stage_project(project_dir: Path, gitignore: str) -> None:
         project_dir / "node_modules" / "left-pad" / "index.js",
         project_dir / "web" / "node_modules" / "vite" / "index.js",
         project_dir / "web" / "dist-demo" / "index.html",
+        # A stale `build/` from an earlier `python -m build`, and the probe
+        # directories this very module creates under the repository root.
+        project_dir / "build" / "lib" / "fecreator" / "stale.py",
+        project_dir / ".pytest-build-probe-stale" / "pyproject.toml",
+        project_dir / ".pytest-editable-probe-stale" / "pyproject.toml",
+        project_dir / ".pytest-package-probe-stale" / "pyproject.toml",
     ):
         junk.parent.mkdir(parents=True, exist_ok=True)
         junk.write_text("// staged junk\n", encoding="utf-8", newline="\n")
@@ -288,6 +294,8 @@ def test_linked_worktree_build_includes_the_frontend_entrypoint_exactly_once() -
         ]
         assert not [n for n in _sdist_names(sdist) if "node_modules/" in n]
         assert not [n for n in _sdist_names(sdist) if "dist-demo/" in n]
+        assert _stale_entries(_sdist_names(sdist), sdist_root=SDIST_ROOT) == []
+        assert _stale_entries(_wheel_names(wheel), sdist_root=None) == []
     finally:
         shutil.rmtree(probe, ignore_errors=True)
 
@@ -300,6 +308,40 @@ def test_built_archives_never_carry_the_javascript_workspace(
     assert not [n for n in _sdist_names(sdist) if "node_modules/" in n]
     assert not [n for n in _sdist_names(sdist) if "dist-demo/" in n]
     assert not [n for n in _wheel_names(wheel) if "node_modules/" in n]
+
+
+# Prefixes that only ever exist because a build or a test ran here. They are
+# `.gitignore`d, but hatchling discards VCS patterns in a linked worktree, so the
+# archives themselves are inspected rather than the ignore file.
+_STALE_BUILD_ARTIFACT_PREFIXES = (
+    "build/",
+    ".pytest-build-probe-",
+    ".pytest-editable-probe-",
+    ".pytest-package-probe-",
+)
+
+
+def _stale_entries(names: list[str], *, sdist_root: str | None) -> list[str]:
+    offending: list[str] = []
+    for name in names:
+        relative = (
+            name[len(sdist_root) + 1 :] if sdist_root and name.startswith(sdist_root) else name
+        )
+        if relative.startswith(_STALE_BUILD_ARTIFACT_PREFIXES):
+            offending.append(name)
+    return offending
+
+
+def test_built_archives_never_carry_stale_build_or_probe_directories(
+    clone_distributions: tuple[Path, Path],
+) -> None:
+    """Inspect the archives, not just the exclude table, for generated leftovers."""
+    sdist, wheel = clone_distributions
+
+    assert _stale_entries(_sdist_names(sdist), sdist_root=SDIST_ROOT) == []
+    assert _stale_entries(_wheel_names(wheel), sdist_root=None) == []
+    assert not [n for n in _sdist_names(sdist) if n.endswith("/stale.py")]
+    assert not [n for n in _wheel_names(wheel) if n.endswith("/stale.py")]
 
 
 def test_sdist_keeps_the_frontend_sources_next_to_the_workspace_link(
