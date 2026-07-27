@@ -693,6 +693,34 @@ def test_build_bundle_fails_when_the_configured_cli_is_missing(tmp_path: Path) -
     assert str(tmp_path) not in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    "configured",
+    [
+        pytest.param("", id="empty-string"),
+        pytest.param("   ", id="blank-string"),
+        pytest.param((), id="empty-sequence"),
+        pytest.param(("",), id="empty-token"),
+        pytest.param("fe\x00.exe", id="null-byte"),
+    ],
+)
+def test_build_bundle_refuses_a_blank_or_invalid_configured_cli(
+    tmp_path: Path, configured: str | tuple[str, ...]
+) -> None:
+    """Asking for external validation with an unusable value is a misconfiguration.
+
+    Publishing ``not_run`` here would record "no CLI was requested" for a bundle
+    whose author explicitly requested one.
+    """
+    job, workspace = _workspace(tmp_path)
+    out_dir = tmp_path / "bundle"
+
+    with pytest.raises(BundleError, match="febuilder"):
+        build_bundle(job, workspace, out_dir, febuilder_cli=configured)
+
+    assert not out_dir.exists()
+    assert not list(tmp_path.glob(".bundle-stage-*"))
+
+
 def test_verify_bundle_reports_a_failed_external_cli(tmp_path: Path) -> None:
     job, workspace = _workspace(tmp_path)
     bundle = build_bundle(job, workspace, tmp_path / "bundle")
@@ -756,6 +784,13 @@ def test_verify_bundle_still_fails_when_a_passing_cli_hides_a_broken_roundtrip(
         pytest.param(
             lambda payload: payload["external_cli"].__setitem__("exit_code", 7),
             id="not-run-with-exit-code",
+        ),
+        pytest.param(
+            lambda payload: payload.__setitem__(
+                "external_cli",
+                {"status": "failed", "command": "validate-asset", "exit_code": 0},
+            ),
+            id="failed-with-clean-exit-code",
         ),
         pytest.param(
             lambda payload: payload.__setitem__("external_cli", "passed"),

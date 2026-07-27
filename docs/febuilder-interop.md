@@ -88,10 +88,22 @@ success-shaped result.
 - Allowlisted environment only (`fecreator.core.process.safe_subprocess_env`), so
   provider credentials and ambient configuration never reach the third-party
   process. `PYTHONIOENCODING` is pinned to `utf-8`.
-- Bounded timeout; on expiry the child is killed and reaped.
-- Output is captured as bytes, decoded strictly, bounded, and redacted before it
-  leaves the adapter, so no absolute path or credential-shaped value reaches a
-  report, diagnostic, or bundle. The argv itself is never logged.
+- Genuinely bounded runtime (`fecreator.core.process.run_bounded_process`). The
+  child runs in its own POSIX session or Windows process group; on expiry the whole
+  *tree* is terminated by PID (`killpg`, or `taskkill /T /F /PID` -- never a
+  name-based kill) and the drain of the captured pipes is itself bounded. A
+  grandchild that inherited stdout can therefore neither survive the timeout nor
+  block the call, which a plain `subprocess.run(timeout=...)` cannot promise.
+- Output is captured as bytes, decoded strictly, redacted, and bounded before it
+  leaves the adapter. Redaction removes the exact paths this adapter placed on the
+  command line (the CLI tokens, `--path`, `--expect`) first, and only then applies
+  generic scrubbing of quoted, flag-valued, and standalone POSIX, Windows, and UNC
+  absolute paths. Paths containing spaces and escaped separators are covered, and
+  parent directory components are never left behind. The argv itself is never
+  logged.
+- A configured value that is blank, empty, or contains a NUL is a misconfiguration:
+  it raises rather than being reported as `not_run`, and NUL never escapes as a raw
+  `ValueError`.
 - Directory arguments are resolved, required to be real directories, refused when
   they are links, and refused when they escape the caller's root (the job
   workspace when called from `build_bundle`).
@@ -110,11 +122,23 @@ mandatory evidence:
   bundles sanitized and byte-reproducible.
 - If a CLI is configured and the check fails, `build_bundle()` raises `BundleError`
   and publishes nothing. An explicitly requested external validation is never
-  downgraded to a warning or a success.
+  downgraded to a warning or a success. The same applies to a configured value that
+  cannot be used at all (blank, empty, or containing a NUL): it fails bundle
+  creation instead of publishing `not_run`.
 - `verify_bundle()` reports `BUNDLE_EXTERNAL_CLI_FAILURE` for a recorded `failed`
-  status and `BUNDLE_INVALID_COMPAT` for a malformed or inconsistent block. A
-  passing CLI never suppresses `BUNDLE_COMPAT_FAILURE` from the mandatory
-  roundtrip.
+  status and `BUNDLE_INVALID_COMPAT` for a malformed or inconsistent block --
+  including `status: "failed"` with `exit_code: 0`, which no real run can produce. A
+  passing CLI never suppresses `BUNDLE_COMPAT_FAILURE` from the mandatory roundtrip.
+
+### Bundle format compatibility
+
+The `external_cli` block is **required**. A bundle produced before it was
+introduced has no such block, so `verify_bundle()` reports `BUNDLE_INVALID_COMPAT`
+(`compat.json has malformed external CLI evidence`) and the bundle does not verify.
+This is deliberate fail-closed behaviour rather than a regression: verification
+must not assume the missing level-2 status. Republish affected bundles with
+`build_bundle()` -- the deterministic level-1 evidence is unchanged, so the
+regenerated bundle is byte-identical apart from the added block.
 
 ## Level 3: ROM import checks (opt-in, local only)
 
@@ -142,7 +166,10 @@ files, paths, or ROM data.
 
 Level 2 is covered by `tests/interop/test_febuilder_cli.py` using a fake CLI
 script invoked through argv. The suite covers argv construction, paths containing
-spaces, missing executables, timeouts (including that the child is killed),
-nonzero exits, output bounds, secret and absolute-path redaction, the environment
-allowlist, undecodable output, containment, and success. No test requires
-FEBuilderGBA or a ROM to be installed.
+spaces (proved by what the child resolves, not by echoing paths back), missing
+executables, timeouts including termination of a grandchild that inherited the
+captured stdout pipe, nonzero exits, output bounds, redaction of real emitted
+absolute paths and runtime-constructed synthetic credentials on both streams, the
+environment allowlist, NUL rejection, undecodable output, containment, and
+success. The shared process boundary is covered by `tests/core/test_process.py`.
+No test requires FEBuilderGBA or a ROM to be installed.

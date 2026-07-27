@@ -29,6 +29,7 @@ from fecreator.interop.febuilder_cli import (
     FeBuilderCliError,
     FeBuilderCliResult,
     FeBuilderCommand,
+    normalize_cli_argv,
     run_febuilder_cli,
 )
 from fecreator.interop.febuilder_roundtrip import (
@@ -498,8 +499,18 @@ def _external_cli_evidence(
     if febuilder_cli is None:
         return _NOT_RUN_EXTERNAL
     try:
+        cli_argv = normalize_cli_argv(febuilder_cli)
+    except FeBuilderCliError as exc:
+        raise BundleError(
+            f"febuilder cli configuration is invalid: {sanitize_text(str(exc))}"
+        ) from exc
+    if not cli_argv:
+        # ``None`` means "not requested"; anything else means "requested", so a
+        # blank value is a misconfiguration and must not publish ``not_run``.
+        raise BundleError("febuilder cli was configured but is empty")
+    try:
         result = run_febuilder_cli(
-            febuilder_cli,
+            cli_argv,
             _EXTERNAL_CLI_COMMAND,
             package_dir,
             root=workspace_root,
@@ -646,6 +657,10 @@ def _parse_external_cli(payload: JsonObject) -> FeBuilderCliResult | None:
     if result.status == "not_run" and result.exit_code is not None:
         return None
     if result.status == "passed" and result.exit_code != 0:
+        return None
+    if result.status == "failed" and result.exit_code == 0:
+        # A clean exit code cannot describe a failed check; the block was either
+        # hand-edited or produced by a broken writer.
         return None
     return result
 

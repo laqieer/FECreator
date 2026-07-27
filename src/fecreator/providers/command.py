@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -11,7 +10,7 @@ from fecreator.contracts.diagnostics import Diagnostic, error, warning
 from fecreator.contracts.result import Artifact
 from fecreator.core.hashing import sha256_file
 from fecreator.core.paths import PathEscapeError, safe_join
-from fecreator.core.process import bounded_redacted_text, safe_subprocess_env
+from fecreator.core.process import bounded_redacted_text, run_bounded_process, safe_subprocess_env
 from fecreator.core.redaction import redact
 from fecreator.providers.base import GenRequest, GenResponse, ProviderRefusal
 
@@ -44,18 +43,15 @@ class CommandProvider:
             "request": request.model_dump(mode="json"),
         }
         workspace_root = workspace.resolve()
-        try:
-            proc = subprocess.run(
-                self._argv,
-                input=json.dumps(payload),
-                capture_output=True,
-                text=True,
-                shell=False,
-                timeout=self._timeout,
-                env=safe_subprocess_env(),
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
+        outcome = run_bounded_process(
+            self._argv,
+            input_bytes=json.dumps(payload).encode("utf-8"),
+            timeout=self._timeout,
+            env=safe_subprocess_env(),
+        )
+        stdout_text = _coerce_text(outcome.stdout)
+        stderr_text = bounded_redacted_text(_coerce_text(outcome.stderr), self._max_output_chars)
+        if outcome.timed_out:
             return GenResponse(
                 ok=False,
                 diagnostics=(
@@ -63,21 +59,20 @@ class CommandProvider:
                         "PROVIDER_TIMEOUT",
                         (
                             f"provider {self.id} timed out after {self._timeout:.3f}s"
-                            f"{_diagnostic_suffix(_coerce_text(exc.stderr))}"
+                            f"{_diagnostic_suffix(stderr_text)}"
                         ),
                     ),
                 ),
             )
 
-        stderr_text = bounded_redacted_text(proc.stderr, self._max_output_chars)
-        if proc.returncode != 0:
+        if outcome.returncode != 0:
             return GenResponse(
                 ok=False,
                 diagnostics=(
                     error(
                         "PROVIDER_COMMAND_FAILED",
                         (
-                            f"provider {self.id} failed with exit code {proc.returncode}"
+                            f"provider {self.id} failed with exit code {outcome.returncode}"
                             f"{_diagnostic_suffix(stderr_text)}"
                         ),
                     ),
@@ -85,11 +80,11 @@ class CommandProvider:
             )
 
         try:
-            decoded = json.loads(proc.stdout)
+            decoded = json.loads(stdout_text)
         except json.JSONDecodeError:
             return _invalid_response(
                 self.id,
-                f"returned invalid JSON{_diagnostic_suffix(proc.stdout, self._max_output_chars)}",
+                f"returned invalid JSON{_diagnostic_suffix(stdout_text, self._max_output_chars)}",
             )
 
         if not isinstance(decoded, Mapping):
@@ -180,9 +175,10 @@ def _optional_string(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _coerce_text(value: str | bytes | None) -> str | None:
-    if value is None or isinstance(value, str):
-        return value
+def _coerce_text(value: bytes | None) -> str:
+    """Decode captured output without letting an encoding quirk hide a failure."""
+    if not value:
+        return ""
     return value.decode("utf-8", errors="replace")
 
 

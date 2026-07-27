@@ -18,12 +18,15 @@ from fecreator.interop.febuilder_cli import (
     normalize_cli_argv,
     run_febuilder_cli,
 )
+from tests.fixtures.process_probe import kill_pid, wait_until_gone
+from tests.fixtures.synthetic_secrets import synthetic_aws_key, synthetic_jwt
 
 _FAKE_CLI = """
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -38,6 +41,28 @@ def main() -> int:
     if mode == "echo":
         print(" ".join(args))
         return 0
+    if mode == "inspect":
+        info = {"count": len(args), "flags": [], "dirs": {}}
+        for arg in args:
+            flag, separator, value = arg.partition("=")
+            info["flags"].append(flag)
+            if separator and flag in ("--path", "--expect"):
+                path = Path(value)
+                info["dirs"][flag] = {
+                    "name": path.name,
+                    "is_dir": path.is_dir(),
+                    "is_absolute": path.is_absolute(),
+                }
+        print(json.dumps(info))
+        return 0
+    if mode == "leak":
+        secret, jwt = args[0], args[1]
+        path_value = [a for a in args if a.startswith("--path=")][0].split("=", 1)[1]
+        print("scanned --path=" + path_value + " with cli " + repr(sys.argv[0]))
+        print("interpreter " + sys.executable + " api_key=" + secret + " bearer " + jwt)
+        print("rejected " + path_value + " by cli " + repr(sys.argv[0]), file=sys.stderr)
+        print("token=" + secret + " " + jwt, file=sys.stderr)
+        return 0
     if mode == "fail":
         print("partial stdout")
         print("asset rejected by fake cli", file=sys.stderr)
@@ -47,13 +72,19 @@ def main() -> int:
         time.sleep(30)
         marker.write_text("finished", encoding="utf-8")
         return 0
+    if mode == "tree":
+        grandchild, pid_file, marker = args[0], Path(args[1]), Path(args[2])
+        # No redirection: the grandchild inherits the captured stdout pipe.
+        proc = subprocess.Popen([sys.executable, grandchild, str(marker)])
+        pid_file.write_text(
+            json.dumps({"child": os.getpid(), "grandchild": proc.pid}), encoding="utf-8"
+        )
+        print("spawned", flush=True)
+        time.sleep(120)
+        return 0
     if mode == "flood":
         sys.stdout.write("x" * 200000)
         sys.stderr.write("y" * 200000)
-        return 0
-    if mode == "secret":
-        print("api_key=fake-value-1234 in " + args[0])
-        print("authorization: Bearer fake-token-value", file=sys.stderr)
         return 0
     if mode == "env":
         print(json.dumps(dict(os.environ)))
@@ -70,11 +101,27 @@ if __name__ == "__main__":
     raise SystemExit(main())
 """
 
+_GRANDCHILD = """
+import sys
+import time
+from pathlib import Path
 
-def _fake_cli_script(tmp_path: Path) -> Path:
-    script = tmp_path / "fake_febuilder.py"
-    script.write_text(textwrap.dedent(_FAKE_CLI).strip() + "\n", encoding="utf-8", newline="\n")
+marker = Path(sys.argv[1])
+sys.stdout.write("grandchild alive\\n")
+sys.stdout.flush()
+time.sleep(120)
+marker.write_text("grandchild finished", encoding="utf-8")
+"""
+
+
+def _write_script(directory: Path, name: str, body: str) -> Path:
+    script = directory / name
+    script.write_text(textwrap.dedent(body).strip() + "\n", encoding="utf-8", newline="\n")
     return script
+
+
+def _fake_cli_script(directory: Path) -> Path:
+    return _write_script(directory, "fake_febuilder.py", _FAKE_CLI)
 
 
 def _cli(tmp_path: Path, mode: str, *extra: str) -> tuple[str, ...]:
@@ -148,6 +195,23 @@ def test_string_cli_is_one_token_and_never_shell_split() -> None:
         normalize_cli_argv("fe\x00.exe")
 
 
+def test_null_bytes_in_a_path_configuration_fail_as_adapter_errors(tmp_path: Path) -> None:
+    """A NUL in a ``Path`` must not escape as an uncaught ``ValueError``."""
+    with pytest.raises(FeBuilderCliError):
+        normalize_cli_argv(Path("fe\x00.exe"))
+    with pytest.raises(FeBuilderCliError):
+        febuilder_cli_from_env({"FEBUILDER_CLI": "fe\x00.exe"})
+    with pytest.raises(FeBuilderCliError):
+        run_febuilder_cli(("fe.exe",), "validate-asset", Path(f"{tmp_path}\x00package"))
+    with pytest.raises(FeBuilderCliError):
+        run_febuilder_cli(
+            ("fe.exe",),
+            "roundtrip-asset",
+            _package(tmp_path),
+            Path(f"{tmp_path}\x00expected"),
+        )
+
+
 def test_febuilder_cli_from_env_reads_one_token() -> None:
     assert febuilder_cli_from_env({}) is None
     assert febuilder_cli_from_env({"FEBUILDER_CLI": "   "}) is None
@@ -194,11 +258,16 @@ def test_cli_uses_argv_and_redacts_output(tmp_path: Path) -> None:
 
 
 def test_cli_passes_paths_with_spaces_as_single_arguments(tmp_path: Path) -> None:
+    """The child itself proves each directory arrived as one intact argument.
+
+    Echoing the arguments back would only prove that the adapter leaks absolute
+    paths, so the fake CLI reports what it *resolved* instead.
+    """
     package_dir = _package(tmp_path, "package with spaces")
     expect_dir = _package(tmp_path, "expected with spaces")
 
     result = run_febuilder_cli(
-        _cli(tmp_path, "ok"),
+        _cli(tmp_path, "inspect"),
         "roundtrip-asset",
         package_dir,
         expect_dir,
@@ -206,12 +275,19 @@ def test_cli_passes_paths_with_spaces_as_single_arguments(tmp_path: Path) -> Non
     )
 
     assert result.status == "passed"
-    assert json.loads(result.stdout) == [
-        "--roundtrip-asset",
-        "--kind=portrait-package",
-        f"--path={package_dir.resolve()}",
-        f"--expect={expect_dir.resolve()}",
-    ]
+    reported = json.loads(result.stdout)
+    assert reported["count"] == 4
+    assert reported["flags"] == ["--roundtrip-asset", "--kind", "--path", "--expect"]
+    assert reported["dirs"]["--path"] == {
+        "name": "package with spaces",
+        "is_dir": True,
+        "is_absolute": True,
+    }
+    assert reported["dirs"]["--expect"] == {
+        "name": "expected with spaces",
+        "is_dir": True,
+        "is_absolute": True,
+    }
 
 
 def test_missing_executable_fails_without_leaking_the_path(tmp_path: Path) -> None:
@@ -257,6 +333,41 @@ def test_timeout_fails_and_kills_the_child(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
+def test_timeout_kills_a_grandchild_that_inherited_stdout(tmp_path: Path) -> None:
+    """A descendant holding the captured pipe must not outlive the bound.
+
+    Killing only the direct child leaves the inherited stdout pipe open, so a
+    naive drain would block forever and the timeout would not be a bound at all.
+    """
+    grandchild = _write_script(tmp_path, "grandchild.py", _GRANDCHILD)
+    pid_file = tmp_path / "pids.json"
+    marker = tmp_path / "grandchild-finished.txt"
+
+    started = time.monotonic()
+    result = run_febuilder_cli(
+        _cli(tmp_path, "tree", str(grandchild), str(pid_file), str(marker)),
+        "validate-asset",
+        _package(tmp_path),
+        env=_source_env(),
+        timeout_seconds=3.0,
+    )
+    elapsed = time.monotonic() - started
+
+    pids = json.loads(pid_file.read_text(encoding="utf-8"))
+    child_pid, grandchild_pid = int(pids["child"]), int(pids["grandchild"])
+    try:
+        assert result.status == "failed"
+        assert result.exit_code is None
+        assert "timed out" in result.stderr
+        assert elapsed < 30.0
+        assert wait_until_gone(child_pid), "direct child survived the bounded timeout"
+        assert wait_until_gone(grandchild_pid), "grandchild survived the bounded timeout"
+        assert not marker.exists()
+    finally:
+        kill_pid(grandchild_pid)
+        kill_pid(child_pid)
+
+
 def test_output_is_bounded(tmp_path: Path) -> None:
     result = run_febuilder_cli(
         _cli(tmp_path, "flood"),
@@ -272,21 +383,50 @@ def test_output_is_bounded(tmp_path: Path) -> None:
     assert len(result.stderr) <= 256 + len("... [truncated]")
 
 
-def test_secrets_and_absolute_paths_are_redacted(tmp_path: Path) -> None:
-    package_dir = _package(tmp_path)
+def test_secrets_and_absolute_paths_are_redacted_on_both_streams(tmp_path: Path) -> None:
+    """The fake CLI really emits the paths and credential shapes it is given."""
+    cli_home = tmp_path / "fe builder home"
+    cli_home.mkdir()
+    package_dir = _package(tmp_path, "package with spaces")
+    secret = synthetic_aws_key()
+    jwt = synthetic_jwt()
+    argv = (sys.executable, str(_fake_cli_script(cli_home)), "leak", secret, jwt)
+
+    result = run_febuilder_cli(argv, "validate-asset", package_dir, env=_source_env())
+
+    assert result.status == "passed"
+    assert "scanned" in result.stdout
+    assert "rejected" in result.stderr
+    assert "api_key=***" in result.stdout
+    assert "token=***" in result.stderr
+    for stream in (result.stdout, result.stderr):
+        assert secret not in stream
+        assert jwt not in stream
+        assert str(package_dir.resolve()) not in stream
+        assert str(cli_home) not in stream
+        assert str(tmp_path) not in stream
+        assert tmp_path.name not in stream
+        assert "fe builder home" not in stream
+        assert str(Path(sys.executable).parent) not in stream
+
+
+def test_json_escaped_absolute_paths_are_redacted(tmp_path: Path) -> None:
+    """Escaped separators must not smuggle an absolute path past redaction."""
+    package_dir = _package(tmp_path, "package with spaces")
 
     result = run_febuilder_cli(
-        _cli(tmp_path, "secret"),
+        _cli(tmp_path, "ok"),
         "validate-asset",
         package_dir,
         env=_source_env(),
     )
 
     assert result.status == "passed"
-    assert "fake-value-1234" not in result.stdout
-    assert "api_key=***" in result.stdout
-    assert str(package_dir) not in result.stdout
-    assert "fake-token-value" not in result.stderr
+    resolved = str(package_dir.resolve())
+    assert resolved not in result.stdout
+    assert json.dumps(resolved)[1:-1] not in result.stdout
+    assert str(tmp_path) not in result.stdout
+    assert tmp_path.name not in result.stdout
 
 
 def test_environment_is_allowlisted(tmp_path: Path) -> None:

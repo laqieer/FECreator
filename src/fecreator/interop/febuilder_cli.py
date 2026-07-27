@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import stat
-import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal, get_args
@@ -19,7 +18,8 @@ from typing import Literal, get_args
 from pydantic import BaseModel, ConfigDict
 
 from fecreator.core.paths import is_contained
-from fecreator.core.process import bounded_redacted_text, safe_subprocess_env
+from fecreator.core.process import bounded_redacted_text, run_bounded_process, safe_subprocess_env
+from fecreator.core.redaction import redact_paths
 
 FeBuilderCommand = Literal["validate-asset", "roundtrip-asset"]
 FeBuilderStatus = Literal["not_run", "passed", "failed"]
@@ -31,6 +31,7 @@ ASSET_KIND = "portrait-package"
 
 _COMMANDS: frozenset[str] = frozenset(get_args(FeBuilderCommand))
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_MAX_UTF8_SEQUENCE_BYTES = 3
 
 # Fixed, path-free failure text. External diagnostics are bounded and redacted;
 # these messages never carry argv, absolute paths, or credentials.
@@ -65,19 +66,27 @@ def normalize_cli_argv(cli: Sequence[str] | str | Path | None) -> tuple[str, ...
     """
     if cli is None:
         return ()
-    if isinstance(cli, Path):
-        return (str(cli),)
-    if isinstance(cli, str):
-        token = cli.strip()
-        if "\x00" in token:
-            raise FeBuilderCliError("febuilder cli path contains a null character")
+    if isinstance(cli, str | Path):
+        token = str(cli).strip()
+        _reject_null(token)
         return (token,) if token else ()
     argv = tuple(str(token) for token in cli)
     if any(not token for token in argv):
         raise FeBuilderCliError("febuilder cli argv contains an empty token")
-    if any("\x00" in token for token in argv):
-        raise FeBuilderCliError("febuilder cli argv contains a null character")
+    for token in argv:
+        _reject_null(token)
     return argv
+
+
+def _reject_null(token: str) -> None:
+    """Refuse NUL early, where it is a configuration error, not a ``ValueError``.
+
+    ``subprocess`` and every ``Path`` operation raise a bare
+    ``ValueError: embedded null byte`` for these, which would escape this
+    adapter as an unhandled exception instead of a stated refusal.
+    """
+    if "\x00" in token:
+        raise FeBuilderCliError("febuilder cli configuration contains a null character")
 
 
 def febuilder_cli_from_env(env: Mapping[str, str] | None = None) -> tuple[str, ...] | None:
@@ -123,10 +132,12 @@ def run_febuilder_cli(
 ) -> FeBuilderCliResult:
     """Run an optional external FEBuilder-compatible check on a package directory.
 
-    The process is started with ``shell=False`` and an allowlisted environment,
-    is bounded by ``timeout_seconds``, and is killed and reaped when it exceeds
-    it. Output is bounded and redacted before it leaves this function, so no
-    absolute path or credential-shaped value can reach a report or bundle.
+    The process is started with ``shell=False`` and an allowlisted environment
+    and is bounded by ``timeout_seconds``. On expiry the whole process *tree* is
+    terminated by PID and the drain is bounded, so a descendant that inherited
+    the captured pipes can neither survive nor block the call. Output is bounded
+    and redacted before it leaves this function, so no absolute path or
+    credential-shaped value can reach a report or bundle.
 
     Unsafe or invalid inputs (unknown command, missing/irregular directory,
     symlinked directory, or a path outside ``root``) raise
@@ -157,37 +168,47 @@ def run_febuilder_cli(
 
     argv = build_argv(cli_argv, command, checked_package, checked_expect)
     try:
-        proc = subprocess.run(
+        outcome = run_bounded_process(
             argv,
-            capture_output=True,
-            shell=False,
             timeout=timeout_seconds,
             env=safe_subprocess_env(env),
-            check=False,
         )
-    except subprocess.TimeoutExpired:
-        # subprocess.run kills and reaps the child before re-raising.
-        return _failure(command, f"febuilder cli timed out after {timeout_seconds:.3f}s")
     except (FileNotFoundError, NotADirectoryError, PermissionError):
         return _failure(command, _MISSING_EXECUTABLE)
-    except OSError:
+    except (OSError, ValueError):
         return _failure(command, _START_FAILED)
 
+    if outcome.timed_out:
+        return _failure(command, f"febuilder cli timed out after {timeout_seconds:.3f}s")
+
+    # Every path this adapter itself put on the command line is redacted by
+    # exact value first: generic scrubbing is heuristic, and an unusual spelling
+    # (a space, an escaped separator) must not let a known path survive.
+    known_paths = (
+        *cli_argv,
+        str(checked_package),
+        *((str(checked_expect),) if checked_expect is not None else ()),
+    )
+
     try:
-        stdout_text = _decode(proc.stdout)
-        stderr_text = _decode(proc.stderr)
+        stdout_text = _decode(outcome.stdout)
+        stderr_text = _decode(outcome.stderr)
     except UnicodeDecodeError:
         return _failure(command, _UNDECODABLE_OUTPUT)
 
-    stdout = bounded_redacted_text(stdout_text, max_output_chars)
-    stderr = bounded_redacted_text(stderr_text, max_output_chars)
+    stdout = _bounded_safe_text(stdout_text, known_paths, max_output_chars)
+    stderr = _bounded_safe_text(stderr_text, known_paths, max_output_chars)
     return FeBuilderCliResult(
-        status="passed" if proc.returncode == 0 else "failed",
+        status="passed" if outcome.returncode == 0 else "failed",
         command=command,
-        exit_code=proc.returncode,
+        exit_code=outcome.returncode,
         stdout=stdout,
         stderr=stderr,
     )
+
+
+def _bounded_safe_text(text: str, known_paths: Sequence[str], limit: int) -> str:
+    return bounded_redacted_text(redact_paths(text, known_paths), limit)
 
 
 def _failure(command: FeBuilderCommand, message: str) -> FeBuilderCliResult:
@@ -200,20 +221,28 @@ def _decode(raw: bytes | None) -> str:
     Output is captured as bytes and decoded here rather than by
     ``subprocess``' text mode, because the platform reader threads swallow a
     decode error and would silently turn unreadable output into empty,
-    success-shaped output.
+    success-shaped output. A multi-byte character cut in half by the capture
+    bound is not malformed output, so only a trailing partial sequence is
+    dropped; anything else still fails loudly.
     """
     if not raw:
         return ""
-    return raw.decode("utf-8", errors="strict")
+    try:
+        return raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        if exc.start >= len(raw) - _MAX_UTF8_SEQUENCE_BYTES and exc.end >= len(raw):
+            return raw[: exc.start].decode("utf-8", errors="strict")
+        raise
 
 
 def _checked_directory(candidate: Path, root: Path | None, *, label: str) -> Path:
     """Resolve one directory argument and refuse anything unsafe to hand over."""
+    _reject_null(str(candidate))
     if _is_reparse_point(candidate) or candidate.is_symlink():
         raise FeBuilderCliError(f"{label} directory must not be a link")
     try:
         resolved = candidate.resolve(strict=True)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise FeBuilderCliError(f"{label} directory does not exist") from exc
     if not resolved.is_dir():
         raise FeBuilderCliError(f"{label} directory is not a directory")
@@ -225,6 +254,6 @@ def _checked_directory(candidate: Path, root: Path | None, *, label: str) -> Pat
 def _is_reparse_point(path: Path) -> bool:
     try:
         attributes = getattr(path.lstat(), "st_file_attributes", 0)
-    except OSError:
+    except (OSError, ValueError):
         return False
     return bool(attributes & _REPARSE_POINT)
