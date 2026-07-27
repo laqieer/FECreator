@@ -13,12 +13,16 @@ from fecreator import __version__
 from fecreator.app import FeCreatorApp
 from fecreator.contracts.diagnostics import DiagData, Diagnostic, error, has_errors
 from fecreator.contracts.manifest import Manifest
+from fecreator.core.atomicio import LockTimeoutError
 from fecreator.core.paths import PathEscapeError, normalize_storage_id
 from fecreator.core.registry import UnknownIdError
+from fecreator.interfaces.errors import store_lock_timeout_diagnostic
 from fecreator.jobs.approvals import ApprovalError
 from fecreator.jobs.model import Job
 from fecreator.jobs.service import InvalidTransitionError
-from fecreator.references.store import ReferencePackCorruptionError
+from fecreator.jobs.store import JobCorruptionError
+from fecreator.lineage.store import UnknownParentAssetError
+from fecreator.references.store import ReferencePackCorruptionError, UnknownReferencePackError
 from fecreator.reporting.sanitize import (
     OPAQUE_BASE64_KEYS,
     JsonValue,
@@ -165,7 +169,29 @@ def _read_manifest(path: Path) -> Manifest:
 
 
 def _run_job_create(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, JsonValue]:
-    return 0, _model_payload(app.create_job(_read_manifest(Path(args.manifest_path))))
+    manifest = _read_manifest(Path(args.manifest_path))
+    try:
+        return 0, _model_payload(app.create_job(manifest))
+    except ReferencePackCorruptionError as exc:
+        raise ExpectedCliError(
+            error(
+                "CORRUPT_REFERENCE_PACK",
+                "reference pack is corrupt",
+                where=manifest.character_ref_pack,
+            )
+        ) from exc
+    except UnknownReferencePackError as exc:
+        raise ExpectedCliError(
+            error(
+                "UNKNOWN_REFERENCE_PACK",
+                "reference pack not found",
+                where=manifest.character_ref_pack,
+            )
+        ) from exc
+    except UnknownParentAssetError as exc:
+        raise ExpectedCliError(
+            error("UNKNOWN_LINEAGE", "parent asset not found", where=manifest.parent_asset_id)
+        ) from exc
 
 
 def _run_job_status(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, JsonValue]:
@@ -173,7 +199,12 @@ def _run_job_status(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, J
 
 
 def _run_job_list(app: FeCreatorApp, _args: argparse.Namespace) -> tuple[int, JsonValue]:
-    return 0, _models_payload(app.list_jobs())
+    try:
+        return 0, _models_payload(app.list_jobs())
+    except JobCorruptionError as exc:
+        raise ExpectedCliError(
+            error("CORRUPT_JOB", "job store contains a corrupt job", where="jobs")
+        ) from exc
 
 
 def _run_job_candidate(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, JsonValue]:
@@ -215,6 +246,8 @@ def _run_job_plan_sources(app: FeCreatorApp, args: argparse.Namespace) -> tuple[
                 where=job.manifest.character_ref_pack,
             )
         ) from exc
+    except LockTimeoutError:
+        raise
     except (InvalidTransitionError, OSError, PathEscapeError, ValueError) as exc:
         raise ExpectedCliError(
             error(
@@ -230,6 +263,8 @@ def _run_job_validate(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int,
     job = _load_known_job(app, args.job_id)
     try:
         diagnostics = app.validate_job(job.id)
+    except LockTimeoutError:
+        raise
     except (OSError, PathEscapeError, UnknownIdError, ValueError) as exc:
         raise ExpectedCliError(
             error(
@@ -256,6 +291,8 @@ def _run_job_artifact(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int,
             args.relative_path,
             app.read_job_artifact(job.id, args.relative_path),
         )
+    except LockTimeoutError:
+        raise
     except (FileNotFoundError, OSError, PathEscapeError, ValueError) as exc:
         raise ExpectedCliError(
             error(
@@ -271,6 +308,8 @@ def _run_job_report(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, J
     job = _load_known_job(app, args.job_id)
     try:
         return 0, app.get_job_report(job.id)
+    except LockTimeoutError:
+        raise
     except (FileNotFoundError, OSError, PathEscapeError, ValueError) as exc:
         raise ExpectedCliError(
             error(
@@ -286,6 +325,8 @@ def _run_job_bundle(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, J
     job = _load_known_job(app, args.job_id)
     try:
         return 0, _models_payload(app.list_bundle_entries(job.id))
+    except LockTimeoutError:
+        raise
     except (FileNotFoundError, OSError, PathEscapeError, ValueError) as exc:
         raise ExpectedCliError(
             error(
@@ -304,6 +345,8 @@ def _run_job_bundle_file(app: FeCreatorApp, args: argparse.Namespace) -> tuple[i
             args.relative_path,
             app.read_bundle_file(job.id, args.relative_path),
         )
+    except LockTimeoutError:
+        raise
     except (FileNotFoundError, OSError, PathEscapeError, ValueError) as exc:
         raise ExpectedCliError(
             error(
@@ -349,6 +392,8 @@ def _run_job_finalize(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int,
     job = _load_known_job(app, args.job_id)
     try:
         result = app.finalize_job(job.id)
+    except LockTimeoutError:
+        raise
     except (ApprovalError, InvalidTransitionError, OSError, PathEscapeError, ValueError) as exc:
         raise ExpectedCliError(
             error(
@@ -420,6 +465,8 @@ def _run_plan_sources(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int,
                 where=job.manifest.character_ref_pack,
             )
         ) from exc
+    except LockTimeoutError:
+        raise
     except (InvalidTransitionError, OSError, PathEscapeError, ValueError) as exc:
         raise ExpectedCliError(
             error(
@@ -436,6 +483,8 @@ def _run_submit_sources(app: FeCreatorApp, args: argparse.Namespace) -> tuple[in
     job = _load_known_job(app, args.job_id)
     try:
         submitted = app.submit_sources(job.id, Path(args.sources_dir))
+    except LockTimeoutError:
+        raise
     except (
         FileExistsError,
         FileNotFoundError,
@@ -467,6 +516,8 @@ def _run_build(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, JsonVa
                 where=job.manifest.character_ref_pack,
             )
         ) from exc
+    except LockTimeoutError:
+        raise
     except (InvalidTransitionError, OSError, PathEscapeError, UnknownIdError, ValueError) as exc:
         raise ExpectedCliError(
             error(
@@ -482,6 +533,8 @@ def _run_build(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, JsonVa
 def _run_reference_list(app: FeCreatorApp, _args: argparse.Namespace) -> tuple[int, JsonValue]:
     try:
         return 0, cast(JsonValue, app.list_reference_packs())
+    except LockTimeoutError:
+        raise
     except (OSError, PathEscapeError, ReferencePackCorruptionError, ValueError) as exc:
         raise ExpectedCliError(
             error("CORRUPT_REFERENCE_PACK", "reference pack store is corrupt", where="references")
@@ -696,12 +749,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _command_label(args: argparse.Namespace) -> str:
+    parts = [
+        getattr(args, "command", None),
+        getattr(args, "job_command", None),
+        getattr(args, "reference_command", None),
+        getattr(args, "lineage_command", None),
+    ]
+    return " ".join(part for part in parts if isinstance(part, str) and part)
+
+
 def dispatch(app: FeCreatorApp, args: argparse.Namespace, out: TextIO) -> int:
     handler = cast(CommandHandler, args.handler)
     try:
         exit_code, payload = handler(app, args)
     except ExpectedCliError as exc:
         _write_json(out, _diagnostics_payload([exc.diagnostic]))
+        return 2
+    except LockTimeoutError:
+        _write_json(
+            out,
+            _diagnostics_payload([store_lock_timeout_diagnostic(where=_command_label(args))]),
+        )
         return 2
     _write_json(out, payload)
     return exit_code

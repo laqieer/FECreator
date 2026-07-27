@@ -148,6 +148,18 @@
       "title": "Params",
       "type": "object"
     },
+    "parent_asset_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Asset Id"
+    },
     "provider": {
       "title": "Provider",
       "type": "string"

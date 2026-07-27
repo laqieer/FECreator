@@ -34,7 +34,7 @@ from fecreator.jobs.service import (
     TransitionRollbackHook,
 )
 from fecreator.jobs.store import JobStore
-from fecreator.lineage.store import LineageStore
+from fecreator.lineage.store import LineageStore, UnknownParentAssetError
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore, UnpinnedReferencePackError
 from fecreator.reporting.bundle import BundleEntry
@@ -75,7 +75,26 @@ class FeCreatorApp:
         return self._jobs.list()
 
     def create_job(self, manifest: Manifest) -> Job:
-        return self._service.create_job(self._pin_reference_pack(manifest))
+        pinned = self._pin_reference_pack(manifest)
+        self._require_known_parent_asset(pinned)
+        return self._service.create_job(pinned)
+
+    def _require_known_parent_asset(self, manifest: Manifest) -> None:
+        """Refuse an approved base that is not in the lineage graph.
+
+        ``LineageStore.add()`` enforces the same rule when the candidate is
+        published, but that is after the provider has already run. Checking at
+        creation keeps the failure cheap, structured, and attributable.
+        """
+
+        if manifest.parent_asset_id is None:
+            return
+        try:
+            self._lineage.get(manifest.parent_asset_id)
+        except FileNotFoundError as exc:
+            raise UnknownParentAssetError(
+                f"unknown parent asset: {manifest.parent_asset_id}"
+            ) from exc
 
     def get_job(self, job_id: str) -> Job:
         return self._jobs.load(job_id)

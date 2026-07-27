@@ -76,10 +76,64 @@ def test_edit_is_allowed_for_masked_variant() -> None:
         target_spec="fe-gba-portrait-standard",
         workflow="masked_variant",
         provider="fake",
+        parent_asset_id="hero-candidate",
         edit=EditSpec(mask_path="m.png"),
     )
 
     assert manifest.edit is not None
+
+
+@pytest.mark.parametrize("workflow", ["expression_refine", "masked_variant"])
+def test_approved_base_workflows_require_a_parent_asset_id(workflow: str) -> None:
+    with pytest.raises(ValidationError, match="parent_asset_id"):
+        Manifest(
+            asset_type="portrait",
+            target_spec="fe-gba-portrait-standard",
+            workflow=workflow,
+            provider="fake",
+            sources=(SourceSpec(kind="approved_portrait", ref="hero.png"),),
+            edit=EditSpec(mask_path="m.png") if workflow == "masked_variant" else None,
+        )
+
+
+@pytest.mark.parametrize("workflow", ["expression_refine", "masked_variant"])
+def test_approved_base_workflows_reject_a_blank_parent_asset_id(workflow: str) -> None:
+    with pytest.raises(ValidationError, match="parent_asset_id"):
+        Manifest(
+            asset_type="portrait",
+            target_spec="fe-gba-portrait-standard",
+            workflow=workflow,
+            provider="fake",
+            parent_asset_id="   ",
+            sources=(SourceSpec(kind="approved_portrait", ref="hero.png"),),
+            edit=EditSpec(mask_path="m.png") if workflow == "masked_variant" else None,
+        )
+
+
+@pytest.mark.parametrize("workflow", ["text_to_portrait", "concept_to_portrait"])
+def test_originating_workflows_reject_a_parent_asset_id(workflow: str) -> None:
+    with pytest.raises(ValidationError, match="parent_asset_id"):
+        Manifest(
+            asset_type="portrait",
+            target_spec="fe-gba-portrait-standard",
+            workflow=workflow,
+            provider="fake",
+            parent_asset_id="hero-candidate",
+        )
+
+
+def test_parent_asset_id_is_normalized_and_defaults_to_none() -> None:
+    manifest = Manifest(
+        asset_type="portrait",
+        target_spec="fe-gba-portrait-standard",
+        workflow="expression_refine",
+        provider="fake",
+        parent_asset_id="  hero-candidate  ",
+        sources=(SourceSpec(kind="approved_portrait", ref="hero.png"),),
+    )
+
+    assert manifest.parent_asset_id == "hero-candidate"
+    assert _manifest().parent_asset_id is None
 
 
 @pytest.mark.parametrize(

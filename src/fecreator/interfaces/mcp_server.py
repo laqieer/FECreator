@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import functools
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -17,13 +18,17 @@ from fecreator.contracts.lineage import LineageNode
 from fecreator.contracts.manifest import Manifest
 from fecreator.contracts.result import JobResult
 from fecreator.contracts.review import CandidateSnapshot
+from fecreator.core.atomicio import LockTimeoutError
 from fecreator.core.paths import PathEscapeError, normalize_storage_id
 from fecreator.core.registry import UnknownIdError
+from fecreator.interfaces.errors import store_lock_timeout_diagnostic
 from fecreator.jobs.approvals import ApprovalError, ApprovalRecord
 from fecreator.jobs.model import Job
 from fecreator.jobs.service import InvalidTransitionError
+from fecreator.jobs.store import JobCorruptionError
+from fecreator.lineage.store import UnknownParentAssetError
 from fecreator.references.model import ReferencePack
-from fecreator.references.store import ReferencePackCorruptionError
+from fecreator.references.store import ReferencePackCorruptionError, UnknownReferencePackError
 from fecreator.reporting.bundle import BundleEntry
 from fecreator.reporting.sanitize import (
     OPAQUE_BASE64_KEYS,
@@ -337,6 +342,25 @@ def _file_content(path: str, content: bytes) -> FileContent:
     return FileContent(path=path, content_base64=base64.b64encode(content).decode("ascii"))
 
 
+def _with_lock_conflict_mapping(name: str, handler: ToolHandler) -> ToolHandler:
+    """Report store lock contention as an ordinary structured tool failure.
+
+    Every tool routes through the same locked stores, so the mapping is applied
+    once at the tool boundary rather than repeated in thirty handlers. The tool
+    name is the only location detail returned; the exception text names absolute
+    lock paths and is discarded.
+    """
+
+    @functools.wraps(handler)
+    def guarded(*args: object, **kwargs: object) -> CallToolResult:
+        try:
+            return handler(*args, **kwargs)
+        except LockTimeoutError:
+            return _error_result(store_lock_timeout_diagnostic(where=name))
+
+    return guarded
+
+
 def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
     def list_assets() -> Annotated[CallToolResult, AssetIdsOutput]:
         """List registered asset plugin ids."""
@@ -352,7 +376,12 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
 
     def list_jobs() -> Annotated[CallToolResult, JobsOutput]:
         """List current jobs."""
-        return _success_result(JobsSuccessOutput(ok=True, jobs=tuple(app.list_jobs())))
+        try:
+            return _success_result(JobsSuccessOutput(ok=True, jobs=tuple(app.list_jobs())))
+        except JobCorruptionError:
+            return _error_result(
+                error("CORRUPT_JOB", "job store contains a corrupt job", where="jobs")
+            )
 
     def create_job(manifest: ManifestToolInput) -> Annotated[CallToolResult, JobOutput]:
         """Create a job from a manifest object."""
@@ -373,7 +402,28 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
                 ),
                 is_error=True,
             )
-        return _success_result(JobSuccessOutput(ok=True, job=app.create_job(parsed)))
+        try:
+            return _success_result(JobSuccessOutput(ok=True, job=app.create_job(parsed)))
+        except ReferencePackCorruptionError:
+            return _error_result(
+                error(
+                    "CORRUPT_REFERENCE_PACK",
+                    "reference pack is corrupt",
+                    where=parsed.character_ref_pack,
+                )
+            )
+        except UnknownReferencePackError:
+            return _error_result(
+                error(
+                    "UNKNOWN_REFERENCE_PACK",
+                    "reference pack not found",
+                    where=parsed.character_ref_pack,
+                )
+            )
+        except UnknownParentAssetError:
+            return _error_result(
+                error("UNKNOWN_LINEAGE", "parent asset not found", where=parsed.parent_asset_id)
+            )
 
     def get_job(job_id: str) -> Annotated[CallToolResult, JobOutput]:
         """Get a job snapshot by id."""
@@ -467,6 +517,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
                 ),
                 is_error=True,
             )
+        except LockTimeoutError:
+            raise
         except (InvalidTransitionError, OSError, PathEscapeError, ValueError) as exc:
             return _tool_result(
                 ToolErrorOutput(
@@ -517,6 +569,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
                     where=job.manifest.character_ref_pack,
                 )
             )
+        except LockTimeoutError:
+            raise
         except (InvalidTransitionError, OSError, PathEscapeError, ValueError) as exc:
             return _error_result(
                 error(
@@ -539,6 +593,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
                 ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),
                 is_error=True,
             )
+        except LockTimeoutError:
+            raise
         except (
             FileExistsError,
             FileNotFoundError,
@@ -586,6 +642,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
                 ToolErrorOutput(ok=False, diagnostics=(exc.diagnostic,)),
                 is_error=True,
             )
+        except LockTimeoutError:
+            raise
         except (
             InvalidTransitionError,
             OSError,
@@ -623,6 +681,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
                 ),
                 is_error=True,
             )
+        except LockTimeoutError:
+            raise
         except (OSError, PathEscapeError, ValueError) as exc:
             return _tool_result(
                 ToolErrorOutput(
@@ -648,6 +708,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
             )
         except ExpectedMcpError as exc:
             return _error_result(exc.diagnostic)
+        except LockTimeoutError:
+            raise
         except (OSError, PathEscapeError, UnknownIdError, ValueError) as exc:
             return _error_result(
                 error(
@@ -676,6 +738,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
             )
         except ExpectedMcpError as exc:
             return _error_result(exc.diagnostic)
+        except LockTimeoutError:
+            raise
         except (FileNotFoundError, OSError, PathEscapeError, ValueError) as exc:
             return _error_result(
                 error(
@@ -693,6 +757,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
             return _success_result(ReportSuccessOutput(ok=True, report=app.get_job_report(job.id)))
         except ExpectedMcpError as exc:
             return _error_result(exc.diagnostic)
+        except LockTimeoutError:
+            raise
         except (FileNotFoundError, OSError, PathEscapeError, ValueError) as exc:
             return _error_result(
                 error(
@@ -715,6 +781,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
             )
         except ExpectedMcpError as exc:
             return _error_result(exc.diagnostic)
+        except LockTimeoutError:
+            raise
         except (FileNotFoundError, OSError, PathEscapeError, ValueError) as exc:
             return _error_result(
                 error(
@@ -743,6 +811,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
             )
         except ExpectedMcpError as exc:
             return _error_result(exc.diagnostic)
+        except LockTimeoutError:
+            raise
         except (FileNotFoundError, OSError, PathEscapeError, ValueError) as exc:
             return _error_result(
                 error(
@@ -762,6 +832,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
                     reference_pack_ids=tuple(app.list_reference_packs()),
                 )
             )
+        except LockTimeoutError:
+            raise
         except (OSError, PathEscapeError, ReferencePackCorruptionError, ValueError):
             return _error_result(
                 error(
@@ -949,6 +1021,8 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
             )
         except ExpectedMcpError as exc:
             return _error_result(exc.diagnostic)
+        except LockTimeoutError:
+            raise
         except (ApprovalError, InvalidTransitionError, OSError, PathEscapeError, ValueError) as exc:
             return _error_result(
                 error(
@@ -1003,36 +1077,39 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
             )
 
     return {
-        "list_assets": list_assets,
-        "list_specs": list_specs,
-        "list_providers": list_providers,
-        "list_jobs": list_jobs,
-        "create_job": create_job,
-        "get_job": get_job,
-        "get_job_candidate": get_job_candidate,
-        "list_approval_decisions": list_approval_decisions,
-        "plan_sources": plan_sources,
-        "plan_job_sources": plan_job_sources,
-        "submit_sources": submit_sources,
-        "build_asset": build_asset,
-        "validate_asset": validate_asset,
-        "validate_job": validate_job,
-        "read_job_artifact": read_job_artifact,
-        "get_job_report": get_job_report,
-        "list_bundle_entries": list_bundle_entries,
-        "read_bundle_file": read_bundle_file,
-        "list_reference_packs": list_reference_packs,
-        "list_reference_history": list_reference_history,
-        "get_lineage": get_lineage,
-        "list_lineage_ancestors": list_lineage_ancestors,
-        "list_lineage_children": list_lineage_children,
-        "approve_stage": approve_stage,
-        "reject_stage": reject_stage,
-        "approve_review": approve_review,
-        "reject_review": reject_review,
-        "finalize_job": finalize_job,
-        "retry_job": retry_job,
-        "cancel_job": cancel_job,
+        name: _with_lock_conflict_mapping(name, handler)
+        for name, handler in (
+            ("list_assets", list_assets),
+            ("list_specs", list_specs),
+            ("list_providers", list_providers),
+            ("list_jobs", list_jobs),
+            ("create_job", create_job),
+            ("get_job", get_job),
+            ("get_job_candidate", get_job_candidate),
+            ("list_approval_decisions", list_approval_decisions),
+            ("plan_sources", plan_sources),
+            ("plan_job_sources", plan_job_sources),
+            ("submit_sources", submit_sources),
+            ("build_asset", build_asset),
+            ("validate_asset", validate_asset),
+            ("validate_job", validate_job),
+            ("read_job_artifact", read_job_artifact),
+            ("get_job_report", get_job_report),
+            ("list_bundle_entries", list_bundle_entries),
+            ("read_bundle_file", read_bundle_file),
+            ("list_reference_packs", list_reference_packs),
+            ("list_reference_history", list_reference_history),
+            ("get_lineage", get_lineage),
+            ("list_lineage_ancestors", list_lineage_ancestors),
+            ("list_lineage_children", list_lineage_children),
+            ("approve_stage", approve_stage),
+            ("reject_stage", reject_stage),
+            ("approve_review", approve_review),
+            ("reject_review", reject_review),
+            ("finalize_job", finalize_job),
+            ("retry_job", retry_job),
+            ("cancel_job", cancel_job),
+        )
     }
 
 

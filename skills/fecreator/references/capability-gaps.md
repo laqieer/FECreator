@@ -30,6 +30,11 @@ build paths in the current portrait orchestration.
   "session_refinement".
 - "masked_variant" requires "masked_edit" and benefits from "background_control".
 
+"expression_refine" and "masked_variant" derive from an already-approved portrait, so
+their manifests must set the "parent_asset_id" field to that approved asset's lineage
+id. The originating workflows "text_to_portrait" and "concept_to_portrait" must leave
+"parent_asset_id" unset; supplying one is rejected.
+
 If a provider refuses because a required capability is missing, do not fake the missing
 step. Choose another configured provider or use the manual provider with approved source
 files and the MCP `submit_sources` source handoff.

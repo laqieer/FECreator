@@ -14,7 +14,7 @@ import pytest
 import fecreator.references.store as reference_store
 from fecreator.contracts.capabilities import Capability, CapabilitySet
 from fecreator.contracts.diagnostics import has_errors, warning
-from fecreator.contracts.lineage import Region
+from fecreator.contracts.lineage import LineageNode, Operation, Region
 from fecreator.contracts.manifest import EditSpec, Manifest, SourceSpec
 from fecreator.contracts.result import Artifact
 from fecreator.core.hashing import sha256_file
@@ -36,14 +36,29 @@ from tests.fixtures.gba import build_indices
 def _manifest(
     workflow: str = "text_to_portrait",
     sources: tuple[SourceSpec, ...] | None = None,
+    *,
+    parent_asset_id: str | None = None,
 ) -> Manifest:
     return Manifest(
         asset_type="portrait",
         target_spec="fe-gba-portrait-standard",
         workflow=workflow,
         provider="fake",
+        parent_asset_id=parent_asset_id,
         sources=sources or (SourceSpec(kind="text", ref="a brave knight"),),
     )
+
+
+def _approved_base(data_root: Path, asset_id: str = "approved-base") -> str:
+    """Persist the approved portrait an expression/masked build derives from."""
+    LineageStore(data_root).add(
+        LineageNode(
+            asset_id=asset_id,
+            operation=Operation.CREATE_NEUTRAL,
+            created_at="2026-07-26T00:00:00+00:00",
+        )
+    )
+    return asset_id
 
 
 def _portrait_rgb() -> np.ndarray:
@@ -153,7 +168,11 @@ def test_expression_refine_build_preserves_approved_indices_and_palette(
             )
 
     job = JobStore(data_root).create(
-        _manifest("expression_refine", (SourceSpec(kind="approved_portrait", ref="hero.png"),))
+        _manifest(
+            "expression_refine",
+            (SourceSpec(kind="approved_portrait", ref="hero.png"),),
+            parent_asset_id=_approved_base(data_root),
+        )
     )
     ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
     _write_multicolour_package(ctx.workspace / "submitted")
@@ -213,6 +232,7 @@ def test_masked_variant_build_preserves_approved_indices_and_palette_outside_mas
             target_spec="fe-gba-portrait-standard",
             workflow="masked_variant",
             provider="fake",
+            parent_asset_id=_approved_base(data_root),
             sources=(SourceSpec(kind="approved_portrait", ref="hero.png"),),
             edit=EditSpec(
                 mask_path="mask.png",

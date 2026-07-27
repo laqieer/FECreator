@@ -149,6 +149,7 @@ def _approved_manifest(workflow: str, edit: EditSpec | None = None) -> Manifest:
         target_spec="fe-gba-portrait-standard",
         workflow=workflow,
         provider="test-provider",
+        parent_asset_id="approved-base",
         sources=(SourceSpec(kind="approved_portrait", ref="hero.png"),),
         edit=edit,
     )

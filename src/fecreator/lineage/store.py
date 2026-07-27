@@ -11,6 +11,15 @@ class CycleError(Exception):
     """Raised when adding a node would create a cycle in the lineage DAG."""
 
 
+class UnknownParentAssetError(FileNotFoundError):
+    """Raised when a manifest names a parent asset that has no lineage node.
+
+    Kept distinct from a generic missing file so ``create_job`` can refuse an
+    unknown approved base up front, instead of discovering it only when the
+    candidate is published after a full provider run.
+    """
+
+
 class LineageCorruptionError(Exception):
     """Raised when a visible lineage record is missing required data or is malformed."""
 

@@ -443,7 +443,17 @@ def build_bundle(
         workspace_root,
         febuilder_timeout_seconds,
     )
-    compat_payload = febuilder_compat_report(decode_roundtrip(package_dir), external)
+    roundtrip = decode_roundtrip(package_dir)
+    if not roundtrip.ok:
+        # The deterministic roundtrip is the mandatory compatibility evidence.
+        # Writing a bundle that records its own failure would publish a package
+        # already known not to survive canonical I/O.
+        codes = ", ".join(sorted({diagnostic.code for diagnostic in roundtrip.diagnostics}))
+        raise BundleError(
+            "deterministic compatibility roundtrip failed; refusing to publish bundle"
+            + (f": {codes}" if codes else "")
+        )
+    compat_payload = febuilder_compat_report(roundtrip, external)
     _check_resource_limits([*package_files, report_path, lineage_path])
 
     try:

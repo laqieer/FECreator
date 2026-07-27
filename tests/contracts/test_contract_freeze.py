@@ -12,9 +12,11 @@ from typing import Literal, cast, get_args, get_origin
 
 import pytest
 from fastapi import FastAPI
-from fastapi.routing import APIWebSocketRoute
+from fastapi.routing import APIRoute, APIWebSocketRoute
 from pydantic import BaseModel
+from starlette.routing import Mount
 
+from fecreator import __version__
 from fecreator.app import FeCreatorApp
 from fecreator.assets.portrait.manifest import (
     PREFERRED_CAPS,
@@ -22,6 +24,7 @@ from fecreator.assets.portrait.manifest import (
     REQUIRED_EXPRESSIONS,
     WORKFLOWS,
 )
+from fecreator.cli import main as cli_main
 from fecreator.contracts.capabilities import Capability, CapabilitySet
 from fecreator.contracts.diagnostics import Diagnostic, Severity
 from fecreator.contracts.lineage import LineageNode, Operation, Region
@@ -158,6 +161,7 @@ def test_manifest_fields_and_defaults_are_frozen() -> None:
         "provider",
         "character_ref_pack",
         "character_ref_pack_rev",
+        "parent_asset_id",
         "sources",
         "edit",
         "params",
@@ -166,6 +170,7 @@ def test_manifest_fields_and_defaults_are_frozen() -> None:
     assert Manifest.model_fields["version"].default == V1_CONTRACT_VERSION
     assert Manifest.model_fields["character_ref_pack"].default is None
     assert Manifest.model_fields["character_ref_pack_rev"].default is None
+    assert Manifest.model_fields["parent_asset_id"].default is None
     assert Manifest.model_fields["sources"].default == ()
     assert Manifest.model_fields["edit"].default is None
 
@@ -441,6 +446,66 @@ def test_http_api_publishes_no_schema_or_documentation_endpoints(data_root: Path
     assert api.openapi_url is None
 
 
+def test_no_hidden_api_routes_exist_outside_the_frozen_inventory(data_root: Path) -> None:
+    """The OpenAPI document only lists documented routes; the router is checked too.
+
+    A route added with ``include_in_schema=False`` would be invisible to
+    :func:`_http_routes`, so the real router table is compared against the same
+    frozen inventory. The single documented exception is the root web entry: it
+    is either the static mount or, when the bundle is missing, the ``503``
+    fallback described in ``docs/v1-contract.md``.
+    """
+    api = create_api(FeCreatorApp(Settings(data_root=data_root)))
+    frozen = _http_routes(api)
+    router_routes = {
+        (method, route.path)
+        for route in api.routes
+        if isinstance(route, APIRoute)
+        for method in route.methods
+        if method not in {"HEAD", "OPTIONS"}
+    }
+    mounts = {route.path or "/" for route in api.routes if isinstance(route, Mount)}
+    undocumented = router_routes - frozen
+
+    # Exactly one root entry exists: the static mount when the bundle is built,
+    # or the 503 fallback route when it is not. Never both, and never anything else.
+    assert undocumented <= {("GET", "/")}
+    assert mounts <= {"/"}
+    assert len(mounts) + len(undocumented) == 1
+    assert all(
+        route.include_in_schema
+        for route in api.routes
+        if isinstance(route, APIRoute) and route.path.startswith("/api")
+    )
+
+
+def test_top_level_cli_entrypoints_are_frozen(capsys: pytest.CaptureFixture[str]) -> None:
+    """`fecreator --version` and `fecreator serve` are part of the frozen surface."""
+    assert cli_main(["--version"]) == 0
+    assert capsys.readouterr().out.strip() == f"fecreator {__version__}"
+
+    with pytest.raises(SystemExit) as version_action:
+        cli_json.build_parser().parse_args(["--version"])
+    assert version_action.value.code == 0
+
+    with pytest.raises(SystemExit) as serve_args:
+        cli_main(["serve", "--unknown"])
+    assert serve_args.value.code == 2
+
+
+def test_serve_requires_a_data_root_and_a_loopback_host(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], data_root: Path
+) -> None:
+    monkeypatch.delenv("FECREATOR_DATA_ROOT", raising=False)
+    assert cli_main(["serve"]) == 2
+    assert "FECREATOR_DATA_ROOT" in capsys.readouterr().err
+
+    monkeypatch.setenv("FECREATOR_DATA_ROOT", str(data_root))
+    monkeypatch.setenv("FECREATOR_HOST", "0.0.0.0")
+    assert cli_main(["serve"]) == 2
+    assert "loopback" in capsys.readouterr().err
+
+
 def _cli_commands() -> set[str]:
     def walk(parser: object, prefix: str) -> set[str]:
         commands: set[str] = set()
@@ -598,3 +663,25 @@ def test_manifest_refuses_an_edit_outside_masked_variant() -> None:
             provider="fake",
             edit=EditSpec(mask_path="mask.png"),
         )
+
+
+def test_manifest_binds_approved_base_workflows_to_a_lineage_parent() -> None:
+    """`parent_asset_id` is required exactly where an approved base is consumed."""
+    for workflow in ("expression_refine", "masked_variant"):
+        with pytest.raises(ValueError, match="parent_asset_id"):
+            Manifest(
+                asset_type="portrait",
+                target_spec=TARGET_SPEC_ID,
+                workflow=workflow,
+                provider="fake",
+                edit=EditSpec(mask_path="mask.png") if workflow == "masked_variant" else None,
+            )
+    for workflow in ("text_to_portrait", "concept_to_portrait"):
+        with pytest.raises(ValueError, match="parent_asset_id"):
+            Manifest(
+                asset_type="portrait",
+                target_spec=TARGET_SPEC_ID,
+                workflow=workflow,
+                provider="fake",
+                parent_asset_id="hero-candidate",
+            )

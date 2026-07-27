@@ -44,6 +44,7 @@ Sequences are tuples and mappings are frozen through `freeze_mapping()`.
 | `provider` | `str` | required |
 | `character_ref_pack` | `str \| None` | `None` |
 | `character_ref_pack_rev` | `int \| None` (`>= 1`) | `None` |
+| `parent_asset_id` | `str \| None` | `None` |
 | `sources` | `tuple[SourceSpec, ...]` | `()` |
 | `edit` | `EditSpec \| None` | `None` |
 | `params` | `Mapping[str, str \| int \| float \| bool]` | `{}` (frozen) |
@@ -57,6 +58,12 @@ Cross-field rules (all fail loudly, never silently normalize):
 
 1. `character_ref_pack_rev` requires `character_ref_pack`.
 2. `edit` is only accepted when `workflow == "masked_variant"`.
+3. `parent_asset_id` is **required** for `expression_refine` and `masked_variant`,
+   and **rejected** for `text_to_portrait` and `concept_to_portrait`. It names the
+   approved portrait a derived candidate is built from, and the build promotes it
+   into `LineageNode.parents`, so `list_lineage_ancestors()` returns the approved
+   base. A blank or whitespace-only value is rejected; surrounding whitespace on a
+   real value is stripped.
 
 ### `CandidateSnapshot`
 
@@ -269,6 +276,38 @@ applies to jobs written before pinning existed:
 - such a job cannot be planned, built, or published,
 - the failure is loud and never degrades into "use whatever revision is latest",
 - the fix is to recreate the job, which pins the current revision.
+
+`create_job()` maps reference failures to structured diagnostics on every
+interface: a pack (or pinned revision) that does not exist is
+`UNKNOWN_REFERENCE_PACK` (HTTP `404`, CLI exit `2`, MCP `isError`), and a visible
+but corrupt pack is `CORRUPT_REFERENCE_PACK` (HTTP `409`, CLI exit `2`, MCP
+`isError`). A `parent_asset_id` with no lineage node is `UNKNOWN_LINEAGE`
+(HTTP `404`), refused before any provider runs. A corrupt job directory surfaces
+as `CORRUPT_JOB` (HTTP `409`). No adapter discloses the absolute data root.
+
+A **persisted** manifest for `expression_refine` or `masked_variant` without a
+`parent_asset_id` fails closed the same way an unpinned reference pack does: the
+job cannot be loaded, planned, or built, and the fix is to recreate it. This is
+the final pre-v1 contract change, applied before the `1.0` surface is released.
+
+## 10a. Concurrency and lock contention
+
+A build takes an exclusive sidecar **build lease** for its whole duration, claims
+its job with a short locked transition to `processing`, releases the job lock
+while the provider runs, and reacquires it only to publish the candidate or
+record failure. Ordinary reads therefore stay responsive during a long provider
+call, and a second build of the same job is refused explicitly with
+`InvalidTransitionError` before it can reach the provider. The lease is released
+by the operating system when its owner exits, so a build interrupted mid-flight
+leaves a `processing` job that can simply be built again; it is never stranded.
+
+Whatever lock contention remains is reported as a structured, redacted conflict:
+diagnostic code `STORE_LOCK_TIMEOUT` with HTTP `409`, CLI exit `2`, MCP
+`isError: true`, and WebSocket close code `1013`. `LockTimeoutError` is an
+`OSError` subclass, so every adapter re-raises it ahead of its broad `OSError`
+handling rather than reporting it as an operation-specific failure. The lock path
+is never disclosed. The job event WebSocket performs its storage reads on a
+worker thread, never on the event loop.
 
 ## 11. Compatibility policy
 

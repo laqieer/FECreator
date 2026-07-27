@@ -31,6 +31,16 @@ class ReferencePackCorruptionError(Exception):
     """Raised when a visible reference pack revision is missing or corrupt."""
 
 
+class UnknownReferencePackError(FileNotFoundError):
+    """Raised when a reference pack, or a pinned revision of one, does not exist.
+
+    A dedicated subclass keeps a genuinely absent pack distinguishable from any
+    other missing file an operation might touch, so interface adapters can map
+    it to ``UNKNOWN_REFERENCE_PACK`` without guessing. It stays a
+    ``FileNotFoundError`` so existing callers keep their behaviour.
+    """
+
+
 class UnpinnedReferencePackError(ValueError):
     """Raised when a persisted job cannot replay an exact reference revision."""
 
@@ -125,8 +135,10 @@ class ReferencePackStore:
         try:
             payload = self._read_pack_payload_locked(path)
             pack = ReferencePack.model_validate(payload)
-        except FileNotFoundError:
-            raise
+        except FileNotFoundError as exc:
+            raise UnknownReferencePackError(
+                f"unknown reference pack revision: {pack_id}@{revision}"
+            ) from exc
         except Exception as exc:
             raise ReferencePackCorruptionError(f"corrupt reference pack revision: {path}") from exc
         if pack.id != self._normalize_pack_id(pack_id) or pack.revision != revision:
@@ -136,7 +148,7 @@ class ReferencePackStore:
     def _revision_numbers_locked(self, pack_id: str) -> list[int]:
         pack_dir = self._pack_dir(pack_id)
         if not pack_dir.exists():
-            raise FileNotFoundError(pack_dir)
+            raise UnknownReferencePackError(f"unknown reference pack: {pack_id}")
 
         revisions: list[int] = []
         for entry in pack_dir.iterdir():

@@ -100,6 +100,7 @@ function manifestWithDefaults(manifest: Manifest): Manifest {
     provider: manifest.provider,
     character_ref_pack: manifest.character_ref_pack,
     character_ref_pack_rev: manifest.character_ref_pack_rev,
+    parent_asset_id: manifest.parent_asset_id,
     sources: clone(manifest.sources),
     edit: manifest.edit === null ? null : clone(manifest.edit),
     params: clone(manifest.params),
@@ -167,10 +168,13 @@ function createCandidate(job: Job): CandidateSnapshot {
 }
 
 function createCandidateLineage(job: Job, candidate: CandidateSnapshot): LineageNode {
+  const parents = [job.manifest.parent_asset_id, job.parent_candidate_id].filter(
+    (parent): parent is string => parent !== null,
+  );
   return {
     asset_id: candidate.lineage_id,
     operation: "create_neutral",
-    parents: job.parent_candidate_id === null ? [] : [job.parent_candidate_id],
+    parents,
     provider: job.manifest.provider,
     model: null,
     prompt: createSourcePlan(job.manifest).prompts[0],
@@ -354,6 +358,20 @@ export function assertValidManifest(manifest: Manifest): void {
   }
   if (manifest.character_ref_pack_rev !== null && manifest.character_ref_pack === null) {
     throw new Error("Demo manifest character_ref_pack_rev requires character_ref_pack.");
+  }
+  const usesApprovedBase =
+    workflow === "expression_refine" || workflow === "masked_variant";
+  const parentAssetId = manifest.parent_asset_id;
+  if (usesApprovedBase && (parentAssetId === null || parentAssetId.trim() === "")) {
+    throw new Error(
+      `Demo manifest workflow ${workflow} requires a parent_asset_id naming its approved base.`,
+    );
+  }
+  if (!usesApprovedBase && parentAssetId !== null) {
+    throw new Error(`Demo manifest workflow ${workflow} must not set parent_asset_id.`);
+  }
+  if (parentAssetId !== null && !demoLineage.some((node) => node.asset_id === parentAssetId)) {
+    throw new Error(`Demo lineage asset ${parentAssetId} does not exist.`);
   }
   maybeReferencePack(manifest);
 }

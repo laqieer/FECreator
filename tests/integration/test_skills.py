@@ -73,7 +73,7 @@ def _implemented_build_workflows(tmp_path: Path, monkeypatch) -> set[str]:
     import fecreator.assets.portrait.plugin as plugin_module
     from fecreator.assets.portrait.plugin import PortraitPlugin
     from fecreator.contracts.capabilities import CapabilitySet
-    from fecreator.contracts.manifest import Manifest
+    from fecreator.contracts.manifest import APPROVED_BASE_WORKFLOWS, EditSpec, Manifest
     from fecreator.core.pipeline import PipelineContext
     from fecreator.jobs.store import JobStore
 
@@ -92,6 +92,8 @@ def _implemented_build_workflows(tmp_path: Path, monkeypatch) -> set[str]:
                 target_spec="fe-gba-portrait-standard",
                 workflow=workflow,
                 provider="stub",
+                parent_asset_id=("approved-base" if workflow in APPROVED_BASE_WORKFLOWS else None),
+                edit=(EditSpec(mask_path="mask.png") if workflow == "masked_variant" else None),
             )
         )
         ctx = PipelineContext(job_id=job.id, workspace=tmp_path / "jobs" / job.id)

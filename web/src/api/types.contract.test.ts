@@ -61,6 +61,7 @@ test("the frozen contract key sets never gain or lose a field", () => {
     | "provider"
     | "character_ref_pack"
     | "character_ref_pack_rev"
+    | "parent_asset_id"
     | "sources"
     | "edit"
     | "params"
@@ -104,6 +105,7 @@ test("Manifest mirrors the canonical manifest contract", () => {
     provider: string;
     character_ref_pack: string | null;
     character_ref_pack_rev: number | null;
+    parent_asset_id: string | null;
     sources: {
       kind: "text" | "concept_art" | "approved_portrait";
       ref: string;
@@ -124,6 +126,10 @@ test("Manifest mirrors the canonical manifest contract", () => {
 
 test("Job exposes the persisted parent candidate link", () => {
   expectTypeOf<Job["parent_candidate_id"]>().toEqualTypeOf<string | null>();
+});
+
+test("Manifest names the approved base a derived candidate is built from", () => {
+  expectTypeOf<Manifest["parent_asset_id"]>().toEqualTypeOf<string | null>();
 });
 
 test("CandidateSnapshot and ApprovalRecord mirror review data", () => {

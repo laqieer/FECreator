@@ -60,6 +60,7 @@ export interface Manifest {
   provider: string;
   character_ref_pack: string | null;
   character_ref_pack_rev: number | null;
+  parent_asset_id: string | null;
   sources: SourceSpec[];
   edit: EditSpec | null;
   params: JsonObject;

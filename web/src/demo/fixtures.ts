@@ -29,6 +29,7 @@ export const demoManifest: Manifest = {
   provider: "fake",
   character_ref_pack: null,
   character_ref_pack_rev: null,
+  parent_asset_id: null,
   sources: [{ kind: "text", ref: "hero" }],
   edit: null,
   params: {},

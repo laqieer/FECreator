@@ -157,6 +157,7 @@ def prepare_expression_refine(
         prompt=_expression_prompt(plan.expression_prompts),
         seed=response.seed,
         diagnostics=tuple(response.diagnostics),
+        parents=_approved_base_parents(manifest),
         approved_indices=approved.indices,
         approved_palette=approved.palette,
         edited_mask=_expression_edit_mask(),
@@ -221,6 +222,7 @@ def prepare_masked_variant(
         prompt=prompt,
         seed=response.seed,
         diagnostics=tuple(response.diagnostics) + tuple(diagnostics),
+        parents=_approved_base_parents(manifest),
         mask=manifest.edit.mask_path,
         protected_regions=manifest.edit.protected_regions,
         approved_indices=approved.indices,
@@ -272,6 +274,26 @@ def _prepare(
         seed=response.seed,
         diagnostics=tuple(response.diagnostics),
     )
+
+
+def _approved_base_parents(manifest: Manifest) -> tuple[str, ...]:
+    """Name the approved portrait this candidate is derived from.
+
+    ``Manifest`` already refuses these workflows without a ``parent_asset_id``,
+    so an absent value here is a contract violation rather than a workflow that
+    simply has no base.
+    """
+
+    if manifest.parent_asset_id is None:
+        raise WorkflowInputError(
+            (
+                error(
+                    "WORKFLOW_INPUT_MISSING",
+                    f"{manifest.workflow} requires parent_asset_id to record its approved base",
+                ),
+            )
+        )
+    return (manifest.parent_asset_id,)
 
 
 def _load_approved_sheet(workspace: Path, manifest: Manifest) -> _ApprovedSheet:

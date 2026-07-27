@@ -36,6 +36,7 @@ test("submits the selected workflow and pinned reference revision", async () => 
   await user.selectOptions(screen.getByLabelText("Workflow"), "masked_variant");
   await user.selectOptions(screen.getByLabelText("Reference pack for new job"), "hero-pack");
   await user.selectOptions(screen.getByLabelText("Reference revision for new job"), "2");
+  await user.type(screen.getByLabelText("Approved base asset id"), "hero-candidate");
   await user.type(screen.getByLabelText("Mask path for new job"), "masks/face.png");
   await user.click(screen.getByRole("button", { name: "Create job" }));
 
@@ -47,8 +48,55 @@ test("submits the selected workflow and pinned reference revision", async () => 
       workflow: "masked_variant",
       character_ref_pack: "hero-pack",
       character_ref_pack_rev: 2,
+      parent_asset_id: "hero-candidate",
       edit: { mask_path: "masks/face.png", protected_regions: [] },
     }),
+  );
+});
+
+test("requires an approved base asset id for workflows that consume one", async () => {
+  const onSubmit = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <ManifestControls
+      assets={["portrait"]}
+      specs={["fe-gba-portrait-standard"]}
+      providers={["fake"]}
+      references={references}
+      submitting={false}
+      onSubmit={onSubmit}
+    />,
+  );
+
+  await user.selectOptions(screen.getByLabelText("Workflow"), "expression_refine");
+  await user.type(screen.getByLabelText("Approved base asset id"), "   ");
+  await user.click(screen.getByRole("button", { name: "Create job" }));
+
+  expect(onSubmit).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "An approved base asset id is required for this workflow.",
+  );
+});
+
+test("omits the approved base asset id for originating workflows", async () => {
+  const onSubmit = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <ManifestControls
+      assets={["portrait"]}
+      specs={["fe-gba-portrait-standard"]}
+      providers={["fake"]}
+      references={references}
+      submitting={false}
+      onSubmit={onSubmit}
+    />,
+  );
+
+  expect(screen.queryByLabelText("Approved base asset id")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Create job" }));
+
+  expect(onSubmit).toHaveBeenCalledWith<Parameters<(value: Manifest) => void>>(
+    expect.objectContaining({ workflow: "text_to_portrait", parent_asset_id: null }),
   );
 });
 

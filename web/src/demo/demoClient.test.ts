@@ -23,6 +23,7 @@ const validManifest: Manifest = {
   provider: "fake",
   character_ref_pack: null,
   character_ref_pack_rev: null,
+  parent_asset_id: null,
   sources: [{ kind: "text", ref: "hero" }],
   edit: null,
   params: {},
@@ -240,4 +241,54 @@ test("createJob and validate fail closed on malformed demo inputs", async () => 
     "Demo manifest target_spec must be fe-gba-portrait-standard.",
   );
   await expect(client.validate("wrong", "pkg")).rejects.toThrow("Demo spec wrong is not registered.");
+});
+
+test("createJob fails closed on parent_asset_id that contradicts the workflow", async () => {
+  const client = demoClient();
+  const missingParent: Manifest = {
+    ...validManifest,
+    workflow: "expression_refine",
+    sources: [{ kind: "approved_portrait", ref: "hero.png" }],
+  };
+  const unexpectedParent: Manifest = {
+    ...validManifest,
+    parent_asset_id: "demo-portrait-neutral-candidate",
+  };
+  const unknownParent: Manifest = {
+    ...missingParent,
+    parent_asset_id: "not-a-demo-asset",
+  };
+
+  await expect(client.createJob(missingParent)).rejects.toThrow(
+    "Demo manifest workflow expression_refine requires a parent_asset_id naming its approved base.",
+  );
+  await expect(client.createJob(unexpectedParent)).rejects.toThrow(
+    "Demo manifest workflow text_to_portrait must not set parent_asset_id.",
+  );
+  await expect(client.createJob(unknownParent)).rejects.toThrow(
+    "Demo lineage asset not-a-demo-asset does not exist.",
+  );
+});
+
+test("createJob records the approved base as a demo lineage parent", async () => {
+  const client = demoClient();
+  const derived: Manifest = {
+    ...validManifest,
+    workflow: "expression_refine",
+    parent_asset_id: "demo-portrait-neutral-candidate",
+    sources: [{ kind: "approved_portrait", ref: "hero.png" }],
+  };
+
+  const created = await client.createJob(derived);
+  await client.planSources(created.id);
+  await client.submitSources(created.id, [
+    new File([new Uint8Array([1, 2, 3])], "neutral.png", { type: "image/png" }),
+  ]);
+  const candidate = await client.getJobCandidate(created.id);
+  const ancestors = await client.getLineageAncestors(candidate.lineage_id);
+
+  expect((await client.getLineage(candidate.lineage_id)).parents).toEqual([
+    "demo-portrait-neutral-candidate",
+  ]);
+  expect(ancestors.map((node) => node.asset_id)).toContain("demo-portrait-neutral-candidate");
 });

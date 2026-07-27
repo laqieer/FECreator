@@ -300,12 +300,27 @@ class _FdWriter:
 
     def _run(self) -> None:
         try:
-            if self._payload:
-                os.write(self._fd, self._payload)
+            self._write_all()
         except OSError:
             pass
         finally:
             _close_fd(self._fd)
+
+    def _write_all(self) -> None:
+        """Keep writing until the payload is delivered.
+
+        ``os.write`` is allowed to accept fewer bytes than offered, and a signal
+        can interrupt it. Writing once would silently truncate the versioned
+        JSON request a provider is waiting to parse.
+        """
+
+        payload = self._payload
+        if not payload:
+            return
+        view = memoryview(payload)
+        written = 0
+        while written < len(view):
+            written += os.write(self._fd, view[written:])
 
     def finish(self, timeout: float) -> None:
         self._thread.join(timeout)

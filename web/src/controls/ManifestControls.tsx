@@ -19,6 +19,8 @@ const workflows: Workflow[] = [
   "masked_variant",
 ];
 
+const approvedBaseWorkflows: Workflow[] = ["expression_refine", "masked_variant"];
+
 function isWorkflow(value: string): value is Workflow {
   return workflows.some((workflow) => workflow === value);
 }
@@ -108,6 +110,7 @@ export function ManifestControls({
   const [textSource, setTextSource] = useState("");
   const [conceptSource, setConceptSource] = useState("");
   const [approvedPortraitSource, setApprovedPortraitSource] = useState("");
+  const [parentAssetId, setParentAssetId] = useState("");
   const [maskPath, setMaskPath] = useState("");
   const [protectedRegions, setProtectedRegions] = useState("[]");
   const [params, setParams] = useState("{}");
@@ -115,6 +118,7 @@ export function ManifestControls({
 
   const referenceOptions = sortedReferences(references);
   const revisions = referenceOptions.filter((reference) => reference.id === referencePack);
+  const usesApprovedBase = approvedBaseWorkflows.includes(workflow);
   const isRegistryReady =
     assets.includes("portrait") &&
     specs.includes("fe-gba-portrait-standard") &&
@@ -161,6 +165,11 @@ export function ManifestControls({
       setError("A mask path is required for a masked variant.");
       return;
     }
+    const normalizedParent = parentAssetId.trim();
+    if (usesApprovedBase && normalizedParent === "") {
+      setError("An approved base asset id is required for this workflow.");
+      return;
+    }
 
     const sources: SourceSpec[] = [
       textSource.trim() === "" ? null : { kind: "text", ref: textSource.trim() },
@@ -183,6 +192,7 @@ export function ManifestControls({
       provider,
       character_ref_pack: referencePack === "" ? null : referencePack,
       character_ref_pack_rev: revision,
+      parent_asset_id: usesApprovedBase ? normalizedParent : null,
       sources,
       edit,
       params: parsedParams,
@@ -277,6 +287,16 @@ export function ManifestControls({
           onChange={(event) => setApprovedPortraitSource(event.target.value)}
         />
       </label>
+      {usesApprovedBase ? (
+        <label>
+          Approved base asset id
+          <input
+            value={parentAssetId}
+            required
+            onChange={(event) => setParentAssetId(event.target.value)}
+          />
+        </label>
+      ) : null}
       {workflow === "masked_variant" ? (
         <>
           <label>

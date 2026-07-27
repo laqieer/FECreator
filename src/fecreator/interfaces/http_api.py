@@ -18,6 +18,7 @@ from fecreator.contracts.lineage import LineageNode
 from fecreator.contracts.manifest import Manifest
 from fecreator.contracts.result import JobResult
 from fecreator.contracts.review import CandidateSnapshot
+from fecreator.core.atomicio import LockTimeoutError
 from fecreator.core.paths import (
     PathEscapeError,
     ensure_portable_filename,
@@ -25,13 +26,16 @@ from fecreator.core.paths import (
     safe_join,
 )
 from fecreator.core.registry import UnknownIdError
+from fecreator.interfaces.errors import store_lock_timeout_diagnostic
 from fecreator.interfaces.static import mount_static
 from fecreator.interfaces.websocket import register_ws
 from fecreator.jobs.approvals import ApprovalError, ApprovalRecord
 from fecreator.jobs.model import Job
 from fecreator.jobs.service import InvalidTransitionError
+from fecreator.jobs.store import JobCorruptionError
+from fecreator.lineage.store import UnknownParentAssetError
 from fecreator.references.model import ReferencePack
-from fecreator.references.store import ReferencePackCorruptionError
+from fecreator.references.store import ReferencePackCorruptionError, UnknownReferencePackError
 from fecreator.reporting.bundle import BundleEntry
 from fecreator.reporting.sanitize import JsonObject, as_object, sanitize_json, sanitize_text
 
@@ -304,6 +308,14 @@ def create_api(app: FeCreatorApp) -> FastAPI:
             ],
         )
 
+    @api.exception_handler(LockTimeoutError)
+    async def handle_lock_timeout(_request: Request, exc: LockTimeoutError) -> JSONResponse:
+        del exc
+        return _diagnostic_response(
+            status.HTTP_409_CONFLICT,
+            [store_lock_timeout_diagnostic(where=_request.url.path.lstrip("/"))],
+        )
+
     @router.get("/assets")
     def list_assets() -> list[str]:
         return app.list_assets()
@@ -318,11 +330,51 @@ def create_api(app: FeCreatorApp) -> FastAPI:
 
     @router.get("/jobs")
     def list_jobs() -> list[Job]:
-        return app.list_jobs()
+        try:
+            return app.list_jobs()
+        except JobCorruptionError as exc:
+            raise ExpectedHttpError(
+                status.HTTP_409_CONFLICT,
+                [error("CORRUPT_JOB", "job store contains a corrupt job", where="jobs")],
+            ) from exc
 
     @router.post("/jobs", status_code=status.HTTP_201_CREATED)
     def create_job(manifest: Manifest) -> Job:
-        return app.create_job(manifest)
+        try:
+            return app.create_job(manifest)
+        except ReferencePackCorruptionError as exc:
+            raise ExpectedHttpError(
+                status.HTTP_409_CONFLICT,
+                [
+                    error(
+                        "CORRUPT_REFERENCE_PACK",
+                        "reference pack is corrupt",
+                        where=manifest.character_ref_pack,
+                    )
+                ],
+            ) from exc
+        except UnknownReferencePackError as exc:
+            raise ExpectedHttpError(
+                status.HTTP_404_NOT_FOUND,
+                [
+                    error(
+                        "UNKNOWN_REFERENCE_PACK",
+                        "reference pack not found",
+                        where=manifest.character_ref_pack,
+                    )
+                ],
+            ) from exc
+        except UnknownParentAssetError as exc:
+            raise ExpectedHttpError(
+                status.HTTP_404_NOT_FOUND,
+                [
+                    error(
+                        "UNKNOWN_LINEAGE",
+                        "parent asset not found",
+                        where=manifest.parent_asset_id,
+                    )
+                ],
+            ) from exc
 
     @router.get("/jobs/{job_id}")
     def get_job(job_id: str) -> Job:
@@ -375,6 +427,8 @@ def create_api(app: FeCreatorApp) -> FastAPI:
                     )
                 ],
             ) from exc
+        except LockTimeoutError:
+            raise
         except (InvalidTransitionError, OSError, PathEscapeError, ValueError) as exc:
             raise ExpectedHttpError(
                 status.HTTP_409_CONFLICT,
@@ -403,6 +457,8 @@ def create_api(app: FeCreatorApp) -> FastAPI:
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 [error(exc.code, exc.message, where=exc.where)],
             ) from exc
+        except LockTimeoutError:
+            raise
         except (
             FileExistsError,
             FileNotFoundError,
@@ -428,6 +484,8 @@ def create_api(app: FeCreatorApp) -> FastAPI:
         job = _known_job(app, job_id)
         try:
             return _diagnostics_payload(app.validate_job(job.id))
+        except LockTimeoutError:
+            raise
         except (OSError, PathEscapeError, UnknownIdError, ValueError) as exc:
             raise ExpectedHttpError(
                 status.HTTP_409_CONFLICT,
@@ -446,6 +504,8 @@ def create_api(app: FeCreatorApp) -> FastAPI:
         job = _known_job(app, job_id)
         try:
             content = app.read_job_artifact(job.id, relative_path)
+        except LockTimeoutError:
+            raise
         except (FileNotFoundError, OSError, PathEscapeError, ValueError) as exc:
             raise ExpectedHttpError(
                 status.HTTP_404_NOT_FOUND,
@@ -465,6 +525,8 @@ def create_api(app: FeCreatorApp) -> FastAPI:
         job = _known_job(app, job_id)
         try:
             return JSONResponse(content=app.get_job_report(job.id))
+        except LockTimeoutError:
+            raise
         except (FileNotFoundError, OSError, PathEscapeError, ValueError) as exc:
             raise ExpectedHttpError(
                 status.HTTP_404_NOT_FOUND,
@@ -483,6 +545,8 @@ def create_api(app: FeCreatorApp) -> FastAPI:
         job = _known_job(app, job_id)
         try:
             return app.list_bundle_entries(job.id)
+        except LockTimeoutError:
+            raise
         except (FileNotFoundError, OSError, PathEscapeError, ValueError) as exc:
             raise ExpectedHttpError(
                 status.HTTP_404_NOT_FOUND,
@@ -501,6 +565,8 @@ def create_api(app: FeCreatorApp) -> FastAPI:
         job = _known_job(app, job_id)
         try:
             content = app.read_bundle_file(job.id, relative_path)
+        except LockTimeoutError:
+            raise
         except (FileNotFoundError, OSError, PathEscapeError, ValueError) as exc:
             raise ExpectedHttpError(
                 status.HTTP_404_NOT_FOUND,
@@ -556,6 +622,8 @@ def create_api(app: FeCreatorApp) -> FastAPI:
         job = _known_job(app, job_id)
         try:
             return app.finalize_job(job.id)
+        except LockTimeoutError:
+            raise
         except (ApprovalError, InvalidTransitionError, OSError, PathEscapeError, ValueError) as exc:
             raise ExpectedHttpError(
                 status.HTTP_409_CONFLICT,
@@ -620,6 +688,8 @@ def create_api(app: FeCreatorApp) -> FastAPI:
     def list_reference_packs() -> list[str]:
         try:
             return app.list_reference_packs()
+        except LockTimeoutError:
+            raise
         except (OSError, PathEscapeError, ReferencePackCorruptionError, ValueError) as exc:
             raise ExpectedHttpError(
                 status.HTTP_409_CONFLICT,

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 from fecreator.assets.base import SourcePlan
 from fecreator.assets.portrait import prompt_plan
 from fecreator.assets.portrait.candidate import (
+    CandidatePublication,
     CandidateValidationError,
     prepare_candidate,
 )
@@ -23,6 +26,8 @@ from fecreator.contracts.capabilities import Capability
 from fecreator.contracts.diagnostics import Diagnostic, error
 from fecreator.contracts.manifest import Manifest
 from fecreator.contracts.result import JobResult
+from fecreator.core.atomicio import LockTimeoutError, _path_lock
+from fecreator.core.paths import safe_join
 from fecreator.core.pipeline import PipelineContext
 from fecreator.core.registry import PROVIDER_REGISTRY
 from fecreator.jobs.events import EventLog
@@ -34,6 +39,38 @@ from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore, UnpinnedReferencePackError
 
 _SUPPORTED_TARGET_SPEC = "fe-gba-portrait-standard"
+_SUPPORTED_WORKFLOWS = frozenset(
+    {
+        "text_to_portrait",
+        "concept_to_portrait",
+        "expression_refine",
+        "masked_variant",
+    }
+)
+_CLAIMABLE_STATES = frozenset(
+    {
+        JobState.CREATED,
+        JobState.PLANNING,
+        JobState.WAITING_FOR_PROVIDER,
+        JobState.WAITING_FOR_SOURCES,
+        # `processing` is claimable only behind the build lease below. The lease
+        # proves no other build is live, so an interrupted build (crash, kill,
+        # failed publication) stays resumable instead of being stranded in a
+        # non-terminal state no operation can leave.
+        JobState.PROCESSING,
+    }
+)
+_BUILD_LEASE_TIMEOUT_SECONDS = 0.05
+_BUILD_LEASE_POLL_INTERVAL_SECONDS = 0.01
+
+
+@dataclass(frozen=True)
+class _ClaimedBuild:
+    """Everything phase A resolved so the provider can run without the lock."""
+
+    pack: ReferencePack | None
+    provider: Provider
+    parent_candidate_id: str | None
 
 
 class PortraitPlugin:
@@ -50,82 +87,158 @@ class PortraitPlugin:
 
     def build(self, ctx: PipelineContext, manifest: Manifest) -> JobResult:
         self._assert_manifest_supported(manifest)
-        if manifest.workflow not in {
-            "text_to_portrait",
-            "concept_to_portrait",
-            "expression_refine",
-            "masked_variant",
-        }:
+        if manifest.workflow not in _SUPPORTED_WORKFLOWS:
             raise NotImplementedError(f"workflow not implemented yet: {manifest.workflow}")
 
         ctx.workspace.mkdir(parents=True, exist_ok=True)
         data_root = ctx.workspace.parents[1]
-        publication_pending = False
+        with self._build_lease(data_root, ctx.job_id):
+            claimed = self._claim_build(data_root, ctx.job_id, manifest)
+            prepared = self._run_provider(data_root, ctx, manifest, claimed)
+            if isinstance(prepared, JobResult):
+                return prepared
+            publication = self._stage_candidate(data_root, ctx, manifest, prepared, claimed)
+            if isinstance(publication, JobResult):
+                return publication
+            return self._publish_candidate(data_root, ctx, publication)
+
+    @contextmanager
+    def _build_lease(self, data_root: Path, job_id: str) -> Iterator[None]:
+        """Hold an exclusive, OS-released lease for the whole build.
+
+        The job lock cannot serialize builds any more, because it is
+        deliberately released while the provider runs. A separate sidecar lease
+        keeps exactly one build in flight per job across threads *and*
+        processes, and the operating system drops it if the owner dies, so a
+        stranded ``processing`` job can be built again.
+        """
+
+        lease_target = safe_join(data_root, "jobs", ".locks", f"build-{job_id}")
+        try:
+            with _path_lock(
+                lease_target,
+                lock_path=lease_target.with_suffix(".lock"),
+                timeout=_BUILD_LEASE_TIMEOUT_SECONDS,
+                poll_interval=_BUILD_LEASE_POLL_INTERVAL_SECONDS,
+            ):
+                yield
+        except LockTimeoutError as exc:
+            raise InvalidTransitionError(
+                f"a build is already running for job {job_id}; "
+                f"{JobState.PROCESSING.value} -> {JobState.PROCESSING.value} is not allowed"
+            ) from exc
+
+    def _claim_build(self, data_root: Path, job_id: str, manifest: Manifest) -> _ClaimedBuild:
+        """Take exclusive ownership of the build under a short lock.
+
+        The caller already holds the build lease, so ``processing`` here can only
+        be a previous build that is no longer running. Terminal and review
+        states are still refused before any provider work happens.
+        """
+
         store = JobStore(data_root)
-        with store.locked(ctx.job_id):
+        with store.locked(job_id):
+            job = store._load_locked(job_id)
+            if job.state not in _CLAIMABLE_STATES:
+                raise InvalidTransitionError(
+                    f"{job.state.value} -> {JobState.PROCESSING.value} is not allowed"
+                )
             try:
-                job = store._load_locked(ctx.job_id)
-                if job.state is JobState.WAITING_FOR_REVIEW:
-                    raise InvalidTransitionError("waiting_for_review -> processing is not allowed")
                 pack = self._reference_pack(data_root, manifest)
                 provider = cast(Provider, PROVIDER_REGISTRY.get(manifest.provider))
-                self._transition_job(
-                    data_root,
-                    ctx.job_id,
-                    JobState.PROCESSING,
-                    job_locked=True,
-                )
-                try:
-                    prepared = self._prepare(manifest, pack, provider, ctx.workspace)
-                except ProviderRefusal as exc:
-                    return self._fail(
-                        data_root,
-                        ctx.job_id,
-                        (error("PROVIDER_FAILED", str(exc)),),
-                        job_locked=True,
-                    )
-                except WorkflowFailure as exc:
-                    return self._fail(data_root, ctx.job_id, exc.diagnostics, job_locked=True)
+                self._transition_job(data_root, job_id, JobState.PROCESSING, job_locked=True)
+            except InvalidTransitionError:
+                raise
+            except Exception:
+                self._mark_job_failed_if_possible(data_root, job_id, job_locked=True)
+                raise
+            return _ClaimedBuild(pack, provider, job.parent_candidate_id)
 
-                try:
-                    publication = prepare_candidate(
-                        ctx=ctx,
-                        manifest=manifest,
-                        prepared=prepared,
-                        reference_pack=pack,
-                        parent_candidate_id=job.parent_candidate_id,
-                    )
-                except CandidateValidationError as exc:
-                    return self._fail(
-                        data_root,
-                        ctx.job_id,
-                        prepared.diagnostics + exc.diagnostics,
-                        job_locked=True,
-                    )
+    def _run_provider(
+        self,
+        data_root: Path,
+        ctx: PipelineContext,
+        manifest: Manifest,
+        claimed: _ClaimedBuild,
+    ) -> PreparedPortrait | JobResult:
+        try:
+            return self._prepare(manifest, claimed.pack, claimed.provider, ctx.workspace)
+        except ProviderRefusal as exc:
+            return self._fail(
+                data_root,
+                ctx.job_id,
+                (error("PROVIDER_FAILED", str(exc)),),
+            )
+        except WorkflowFailure as exc:
+            return self._fail(data_root, ctx.job_id, exc.diagnostics)
+        except Exception:
+            self._mark_job_failed_if_possible(data_root, ctx.job_id)
+            raise
 
-                publication_pending = True
+    def _stage_candidate(
+        self,
+        data_root: Path,
+        ctx: PipelineContext,
+        manifest: Manifest,
+        prepared: PreparedPortrait,
+        claimed: _ClaimedBuild,
+    ) -> CandidatePublication | JobResult:
+        try:
+            return prepare_candidate(
+                ctx=ctx,
+                manifest=manifest,
+                prepared=prepared,
+                reference_pack=claimed.pack,
+                parent_candidate_id=claimed.parent_candidate_id,
+            )
+        except CandidateValidationError as exc:
+            return self._fail(
+                data_root,
+                ctx.job_id,
+                prepared.diagnostics + exc.diagnostics,
+            )
+        except Exception:
+            self._mark_job_failed_if_possible(data_root, ctx.job_id)
+            raise
+
+    def _publish_candidate(
+        self,
+        data_root: Path,
+        ctx: PipelineContext,
+        publication: CandidatePublication,
+    ) -> JobResult:
+        store = JobStore(data_root)
+        publish_attempted = False
+
+        def publish(_job: Job) -> None:
+            nonlocal publish_attempted
+            publish_attempted = True
+            publication.publish(ctx.workspace)
+
+        try:
+            with store.locked(ctx.job_id):
                 self._transition_job(
                     data_root,
                     ctx.job_id,
                     JobState.WAITING_FOR_REVIEW,
-                    before_persist=lambda _job: publication.publish(ctx.workspace),
+                    before_persist=publish,
                     rollback=lambda: publication.rollback(ctx.workspace),
                     job_locked=True,
                 )
-                publication_pending = False
-                return JobResult(
-                    job_id=ctx.job_id,
-                    ok=True,
-                    artifacts=publication.snapshot.artifacts,
-                    diagnostics=publication.snapshot.diagnostics,
-                    lineage_id=publication.snapshot.lineage_id,
-                )
-            except InvalidTransitionError:
-                raise
-            except Exception:
-                if not publication_pending:
-                    self._mark_job_failed_if_possible(data_root, ctx.job_id, job_locked=True)
-                raise
+        except BaseException:
+            # The transition is validated before ``before_persist`` runs, so a
+            # job cancelled during the lock-free provider phase never reaches the
+            # service's own rollback and would strand the staged package.
+            if not publish_attempted:
+                publication.rollback(ctx.workspace)
+            raise
+        return JobResult(
+            job_id=ctx.job_id,
+            ok=True,
+            artifacts=publication.snapshot.artifacts,
+            diagnostics=publication.snapshot.diagnostics,
+            lineage_id=publication.snapshot.lineage_id,
+        )
 
     def _prepare(
         self,
@@ -147,10 +260,11 @@ class PortraitPlugin:
         data_root: Path,
         job_id: str,
         diagnostics: tuple[Diagnostic, ...],
-        *,
-        job_locked: bool = False,
     ) -> JobResult:
-        self._transition_job(data_root, job_id, JobState.FAILED, job_locked=job_locked)
+        # The job lock is not held during the provider phase, so the job may have
+        # been cancelled meanwhile. Recording the failure must not swallow the
+        # diagnostics that explain why the build did not produce a candidate.
+        self._mark_job_failed_if_possible(data_root, job_id)
         return JobResult(job_id=job_id, ok=False, diagnostics=diagnostics)
 
     def _reference_pack(self, data_root: Path, manifest: Manifest) -> ReferencePack | None:
