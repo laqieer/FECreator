@@ -192,18 +192,17 @@ def test_http_reports_lock_contention_even_where_oserror_is_handled_broadly(
     data_root: Path, operation: str
 ) -> None:
     """``LockTimeoutError`` is an ``OSError``; broad handlers must not absorb it."""
+    if operation == "build":
+        pytest.skip("generation is deliberately not exposed over HTTP")
     app, job, root = _app_raising_lock_timeout(data_root, operation)
     client = TestClient(create_api(app))
     routes = {
         "validate_job": ("post", f"/api/jobs/{job.id}/validate"),
         "finalize_job": ("post", f"/api/jobs/{job.id}/finalize"),
         "plan_job_sources": ("post", f"/api/jobs/{job.id}/plan-sources"),
-        "build": ("post", f"/api/jobs/{job.id}/validate"),
         "list_bundle_entries": ("get", f"/api/jobs/{job.id}/bundle"),
     }
     method, path = routes[operation]
-    if operation == "build":
-        pytest.skip("generation is deliberately not exposed over HTTP")
 
     response = getattr(client, method)(path)
 
@@ -249,6 +248,61 @@ def test_mcp_reports_lock_contention_even_where_oserror_is_handled_broadly(
     }[operation]
 
     result = handlers[tool](job_id=job.id)
+
+    structured = cast(dict[str, object], result.structuredContent)
+    diagnostics = cast(list[dict[str, object]], structured["diagnostics"])
+    assert result.isError is True
+    assert [diagnostic["code"] for diagnostic in diagnostics] == [LOCK_TIMEOUT_CODE]
+    _assert_redacted(json.dumps(result.model_dump(mode="json")), root)
+
+
+def _build_with_contended_job_lock(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[FeCreatorApp, Job, str]:
+    """Run a real build whose short claim transition hits a held job lock.
+
+    The build lease is acquired successfully, so this is *not* a second build;
+    it is ordinary contention raised from inside the lease body. Before this
+    wave the lease relabelled it as ``InvalidTransitionError`` and the adapters
+    reported ``BUILD_ASSET_FAILED``.
+    """
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.jobs.store import JobStore
+
+    app = FeCreatorApp(Settings(data_root=data_root))
+    job = app.create_job(_manifest())
+    lock_path = data_root / "jobs" / job.id / "job.json"
+    message = f"timed out acquiring lock for {lock_path} via {lock_path}.lock"
+
+    class _ContendedStore(JobStore):
+        def locked(self, job_id: str):  # type: ignore[no-untyped-def]
+            raise LockTimeoutError(message)
+
+    monkeypatch.setattr(plugin_module, "JobStore", _ContendedStore)
+    return app, job, str(data_root)
+
+
+def test_cli_build_reports_job_lock_contention_from_inside_the_build_lease(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, job, root = _build_with_contended_job_lock(data_root, monkeypatch)
+    out = io.StringIO()
+
+    rc = run(app, ["build", "--job", job.id], out)
+
+    payload = out.getvalue()
+    assert rc == 2
+    assert [diagnostic["code"] for diagnostic in json.loads(payload)] == [LOCK_TIMEOUT_CODE]
+    _assert_redacted(payload, root)
+
+
+def test_mcp_build_reports_job_lock_contention_from_inside_the_build_lease(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, job, root = _build_with_contended_job_lock(data_root, monkeypatch)
+    handlers = make_handlers(app)
+
+    result = handlers["build_asset"](job_id=job.id)
 
     structured = cast(dict[str, object], result.structuredContent)
     diagnostics = cast(list[dict[str, object]], structured["diagnostics"])

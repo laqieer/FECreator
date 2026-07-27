@@ -111,18 +111,31 @@ class PortraitPlugin:
         keeps exactly one build in flight per job across threads *and*
         processes, and the operating system drops it if the owner dies, so a
         stranded ``processing`` job can be built again.
+
+        Only a failure to *acquire* the lease means "a build is already
+        running". The build body takes the job lock for its short claim and
+        publish transitions, and that lock can time out for reasons that have
+        nothing to do with a second build, so such a timeout is re-raised
+        unchanged for the adapters to map to ``STORE_LOCK_TIMEOUT``.
         """
 
         lease_target = safe_join(data_root, "jobs", ".locks", f"build-{job_id}")
+        # Appending rather than replacing the suffix keeps `hero.v2` and `hero`
+        # on separate leases; `with_suffix` would map both to `build-hero.lock`.
+        lease_lock = lease_target.with_name(f"{lease_target.name}.lock")
+        acquired = False
         try:
             with _path_lock(
                 lease_target,
-                lock_path=lease_target.with_suffix(".lock"),
+                lock_path=lease_lock,
                 timeout=_BUILD_LEASE_TIMEOUT_SECONDS,
                 poll_interval=_BUILD_LEASE_POLL_INTERVAL_SECONDS,
             ):
+                acquired = True
                 yield
         except LockTimeoutError as exc:
+            if acquired:
+                raise
             raise InvalidTransitionError(
                 f"a build is already running for job {job_id}; "
                 f"{JobState.PROCESSING.value} -> {JobState.PROCESSING.value} is not allowed"

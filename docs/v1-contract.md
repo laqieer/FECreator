@@ -309,6 +309,12 @@ handling rather than reporting it as an operation-specific failure. The lock pat
 is never disclosed. The job event WebSocket performs its storage reads on a
 worker thread, never on the event loop.
 
+The build lease and the job lock are distinct failures. Only a failure to
+*acquire* the lease means "a build is already running" (`InvalidTransitionError`);
+a job-lock timeout raised from inside the lease — during the short claim or
+publish transition — stays a `LockTimeoutError` and is reported as
+`STORE_LOCK_TIMEOUT` like any other contention.
+
 ## 11. Compatibility policy
 
 Within the `1.0` contract version:

@@ -271,3 +271,107 @@ def test_a_refused_publication_leaves_no_staged_candidate_behind(
     assert staged == []
     assert not (ctx.workspace / "candidate").exists()
     assert JobStore(data_root).load(job.id).state is JobState.CANCELLED
+
+
+def test_a_contended_job_lock_at_publish_is_reported_as_lock_contention(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A body ``LockTimeoutError`` must not be relabelled as a second build.
+
+    The lease only proves that no *other* build is in flight. Contention on the
+    job lock during the short claim or publish transitions is a different
+    failure, and every adapter maps it to ``STORE_LOCK_TIMEOUT``.
+    """
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+    from fecreator.core.atomicio import LockTimeoutError
+
+    provider_finished = threading.Event()
+    job = JobStore(data_root).create(_manifest())
+    lock_path = data_root / "jobs" / job.id / "job.json"
+    message = f"timed out acquiring lock for {lock_path} via {lock_path}.lock"
+
+    class _ContendedStore(JobStore):
+        def locked(self, job_id: str):  # type: ignore[no-untyped-def]
+            if provider_finished.is_set():
+                raise LockTimeoutError(message)
+            return super().locked(job_id)
+
+    class _SignallingProvider(_GateProvider):
+        def generate(self, request: GenRequest, workspace: Path) -> GenResponse:
+            response = super().generate(request, workspace)
+            provider_finished.set()
+            return response
+
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    release = threading.Event()
+    release.set()
+    monkeypatch.setattr(plugin_module, "JobStore", _ContendedStore)
+    monkeypatch.setattr(
+        plugin_module.PROVIDER_REGISTRY,
+        "get",
+        lambda provider_id: _SignallingProvider(threading.Event(), release),
+    )
+
+    with pytest.raises(LockTimeoutError):
+        PortraitPlugin().build(ctx, job.manifest)
+
+    assert [entry.name for entry in ctx.workspace.iterdir() if entry.name.startswith(".")] == []
+    assert not (ctx.workspace / "candidate").exists()
+    assert JobStore(data_root).load(job.id).state is JobState.PROCESSING
+
+
+def test_a_contended_job_lock_at_claim_is_reported_as_lock_contention(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Contention before the provider runs is contention, not a duplicate build."""
+    import fecreator.assets.portrait.plugin as plugin_module
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+    from fecreator.core.atomicio import LockTimeoutError
+
+    job = JobStore(data_root).create(_manifest())
+    lock_path = data_root / "jobs" / job.id / "job.json"
+
+    class _ContendedStore(JobStore):
+        def locked(self, job_id: str):  # type: ignore[no-untyped-def]
+            raise LockTimeoutError(f"timed out acquiring lock for {lock_path}")
+
+    ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
+    provider = _GateProvider(threading.Event(), threading.Event())
+    provider._release.set()
+    monkeypatch.setattr(plugin_module, "JobStore", _ContendedStore)
+    monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: provider)
+
+    with pytest.raises(LockTimeoutError):
+        PortraitPlugin().build(ctx, job.manifest)
+
+    assert provider.calls == 0
+
+
+def test_build_leases_are_not_shared_by_dotted_job_ids(data_root: Path) -> None:
+    """`hero.v2` and `hero` are different jobs and must hold different leases."""
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    plugin = PortraitPlugin()
+
+    with plugin._build_lease(data_root, "hero.v2"), plugin._build_lease(data_root, "hero"):
+        pass
+
+    lease_files = sorted(path.name for path in (data_root / "jobs" / ".locks").iterdir())
+    assert lease_files == ["build-hero.lock", "build-hero.v2.lock"]
+
+
+def test_a_second_build_of_the_same_job_still_contends_on_the_lease(data_root: Path) -> None:
+    from fecreator.assets.portrait.plugin import PortraitPlugin
+
+    plugin = PortraitPlugin()
+
+    def take_second_lease() -> None:
+        with plugin._build_lease(data_root, "hero"):
+            raise AssertionError("a second lease must never be granted")
+
+    with (
+        plugin._build_lease(data_root, "hero"),
+        pytest.raises(InvalidTransitionError, match="a build is already running"),
+    ):
+        take_second_lease()
