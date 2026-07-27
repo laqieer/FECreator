@@ -5,6 +5,9 @@ workbench with deterministic imaging, immutable jobs/lineage, human review, and 
 `fe-gba-portrait-standard` export compatible with FEBuilderGBA (file-based, ROM-free).
 
 See `docs/product-statement.md` for scope and `docs/architecture.md` for the module map.
+FEBuilderGBA compatibility evidence levels (mandatory deterministic proof, optional
+CLI validation, opt-in local ROM checks) are documented in
+[`docs/febuilder-interop.md`](docs/febuilder-interop.md).
 
 ## Live demo
 

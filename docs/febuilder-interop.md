@@ -1,0 +1,148 @@
+# FEBuilderGBA interoperability
+
+FECreator exports `fe-gba-portrait-standard` packages that FEBuilderGBA can import.
+This document describes how that compatibility is *evidenced*, and the three levels
+of proof are deliberately kept apart:
+
+| Level | What it proves | Runs in CI | Needs FEBuilderGBA | Needs a ROM |
+| --- | --- | --- | --- | --- |
+| 1. Deterministic roundtrip (mandatory) | The published package satisfies the strict spec contract and survives canonical decode/encode/decode unchanged | Yes, always | No | No |
+| 2. External CLI validation (optional) | A real FEBuilder-compatible executable accepted the package directory | No | Yes | No |
+| 3. ROM import check (opt-in, local only) | A portrait imports into *your* ROM | Never | Yes | Yes, user-owned |
+
+Level 1 is the only mandatory evidence. Levels 2 and 3 are supplementary and can
+never replace, weaken, or substitute for it.
+
+## Level 1: mandatory deterministic evidence
+
+`fecreator.interop.febuilder_roundtrip.decode_roundtrip()` validates the canonical
+package with the strict target spec, re-encodes it through the indexed-PNG and JASC
+boundaries, reloads it, and compares geometry, palette order, background index, and
+array hashes.
+
+Every bundle written by `build_bundle()` contains this evidence in `compat.json`:
+
+```json
+{
+  "source": "deterministic_febuilder_compatible_roundtrip",
+  "validated_by_cli": false,
+  "external_cli": { "status": "not_run", "command": "validate-asset", "exit_code": null },
+  "roundtrip": { "ok": true, "dimensions": [128, 112], "...": "..." }
+}
+```
+
+`verify_bundle()` re-decodes the bundled package and refuses evidence that does not
+describe those exact bytes, so evidence copied from another package cannot verify.
+The evidence is path-free, ROM-free, deterministic, and byte-identical across
+machines and workspaces.
+
+## Level 2: optional external CLI validation
+
+`fecreator.interop.febuilder_cli.run_febuilder_cli()` runs a FEBuilder-compatible
+executable against a package directory. It is **off by default**.
+
+```python
+from fecreator.interop.febuilder_cli import febuilder_cli_from_env, run_febuilder_cli
+from fecreator.reporting.bundle import build_bundle
+
+result = run_febuilder_cli(febuilder_cli_from_env(), "validate-asset", package_dir)
+build_bundle(job, workspace, out_dir, febuilder_cli=febuilder_cli_from_env())
+```
+
+### Configuration
+
+- `FEBUILDER_CLI` holds the path of one executable and is read only when you ask for
+  it (`febuilder_cli_from_env()`); nothing reads it implicitly during job
+  finalization, so normal publication stays offline.
+- The value is **one argv token**, never shell-split, so
+  `C:\Program Files\FEBuilder\fe builder.exe` works unquoted. Multi-token
+  invocations such as `("mono", "FEBuilder.exe")` must be passed as a sequence
+  through the API.
+- Commands are `validate-asset` and `roundtrip-asset`. The adapter builds argv
+  itself:
+
+  ```text
+  <cli argv...> --validate-asset  --kind=portrait-package --path=<package dir>
+  <cli argv...> --roundtrip-asset --kind=portrait-package --path=<package dir> --expect=<expected dir>
+  ```
+
+### Status semantics
+
+`run_febuilder_cli()` returns a frozen result with exactly one status:
+
+- `not_run` — no CLI configured. This is an explicit, recorded state, **not** a
+  skipped mandatory check.
+- `passed` — the process exited `0`.
+- `failed` — nonzero exit, timeout, unusable executable, or output that is not
+  valid UTF-8.
+
+Unsafe or invalid inputs (unknown command, missing or non-directory package path,
+symlinked directory, a path outside the allowed root, an `--expect` directory with
+a non-roundtrip command) raise `FeBuilderCliError` instead of degrading into a
+success-shaped result.
+
+### Safety properties
+
+- `shell=False` with an explicit argv list; a configured string is one token and is
+  never split, so no shell metacharacter can be interpreted.
+- Allowlisted environment only (`fecreator.core.process.safe_subprocess_env`), so
+  provider credentials and ambient configuration never reach the third-party
+  process. `PYTHONIOENCODING` is pinned to `utf-8`.
+- Bounded timeout; on expiry the child is killed and reaped.
+- Output is captured as bytes, decoded strictly, bounded, and redacted before it
+  leaves the adapter, so no absolute path or credential-shaped value reaches a
+  report, diagnostic, or bundle. The argv itself is never logged.
+- Directory arguments are resolved, required to be real directories, refused when
+  they are links, and refused when they escape the caller's root (the job
+  workspace when called from `build_bundle`).
+
+### Reporting semantics
+
+`compat.json` records the external status next to — never merged into — the
+mandatory evidence:
+
+- `external_cli.status` is `not_run`, `passed`, or `failed`.
+- `validated_by_cli` mirrors `external_cli.status == "passed"` and describes the
+  *optional* level only; `source` and `roundtrip` always describe the mandatory
+  deterministic proof.
+- Only status, command, and exit code are stored. External stdout/stderr stay out
+  of bundles because they are environment- and version-specific, which keeps
+  bundles sanitized and byte-reproducible.
+- If a CLI is configured and the check fails, `build_bundle()` raises `BundleError`
+  and publishes nothing. An explicitly requested external validation is never
+  downgraded to a warning or a success.
+- `verify_bundle()` reports `BUNDLE_EXTERNAL_CLI_FAILURE` for a recorded `failed`
+  status and `BUNDLE_INVALID_COMPAT` for a malformed or inconsistent block. A
+  passing CLI never suppresses `BUNDLE_COMPAT_FAILURE` from the mandatory
+  roundtrip.
+
+## Level 3: ROM import checks (opt-in, local only)
+
+Importing a portrait into an actual GBA ROM can only be verified by you, locally,
+with your own legally obtained ROM.
+
+- FECreator never reads, writes, bundles, hashes, or records a ROM path or ROM
+  content.
+- No ROM-dependent check runs in CI, in tests, or as part of bundle creation, and
+  no ROM-related environment variable is forwarded to a child process.
+- Never commit a ROM, a ROM path, or a ROM-derived artifact to this repository.
+
+Suggested manual workflow:
+
+1. Publish the job and confirm the bundle verifies (`verify_bundle()` returns no
+   diagnostics).
+2. Optionally run level 2 against your local FEBuilder-compatible CLI.
+3. Open FEBuilderGBA with your own ROM, import `package/<name>.png` plus the
+   same-basename `.pal`, and confirm the portrait renders as expected.
+
+Results of step 3 are yours alone; report them as prose in an issue, never as
+files, paths, or ROM data.
+
+## Testing
+
+Level 2 is covered by `tests/interop/test_febuilder_cli.py` using a fake CLI
+script invoked through argv. The suite covers argv construction, paths containing
+spaces, missing executables, timeouts (including that the child is killed),
+nonzero exits, output bounds, secret and absolute-path redaction, the environment
+allowlist, undecodable output, containment, and success. No test requires
+FEBuilderGBA or a ROM to be installed.

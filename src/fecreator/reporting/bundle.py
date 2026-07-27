@@ -5,11 +5,11 @@ import re
 import shutil
 import stat
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path, PurePosixPath
 from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from fecreator.contracts.diagnostics import Diagnostic, Severity, error
 from fecreator.contracts.lineage import LineageNode
@@ -24,6 +24,13 @@ from fecreator.core.atomicio import (
 from fecreator.core.hashing import sha256_file
 from fecreator.core.paths import PathEscapeError, safe_join
 from fecreator.core.redaction import contains_secret_key
+from fecreator.interop.febuilder_cli import (
+    DEFAULT_TIMEOUT_SECONDS,
+    FeBuilderCliError,
+    FeBuilderCliResult,
+    FeBuilderCommand,
+    run_febuilder_cli,
+)
 from fecreator.interop.febuilder_roundtrip import (
     RoundtripEvidence,
     decode_package_digest,
@@ -46,6 +53,9 @@ STAGING_PREFIX = ".bundle-stage-"
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _COMPAT_SOURCE = "deterministic_febuilder_compatible_roundtrip"
+_EXTERNAL_CLI_COMMAND: FeBuilderCommand = "validate-asset"
+_EXTERNAL_CLI_KEYS = frozenset({"status", "command", "exit_code"})
+_NOT_RUN_EXTERNAL = FeBuilderCliResult(status="not_run", command=_EXTERNAL_CLI_COMMAND)
 _REQUIRED_BUNDLE_FILES = frozenset(
     {"compat.json", "manifest.json", "report.json", "lineage.json", "hashes.json"}
 )
@@ -388,7 +398,23 @@ def _canonicalize_report_payload(
     }
 
 
-def build_bundle(job: Job, workspace: Path, out_dir: Path) -> Path:
+def build_bundle(
+    job: Job,
+    workspace: Path,
+    out_dir: Path,
+    *,
+    febuilder_cli: Sequence[str] | str | Path | None = None,
+    febuilder_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+) -> Path:
+    """Publish a reproducibility bundle for one completed job.
+
+    ``febuilder_cli`` is optional external validation and is off by default: the
+    mandatory compatibility evidence is always the deterministic, ROM-free
+    roundtrip. When nothing is configured the bundle records an explicit
+    ``not_run`` external status, never a silently skipped check. When a CLI *is*
+    configured, a failed external check refuses to publish the bundle instead of
+    being downgraded to a warning.
+    """
     for key in job.manifest.params:
         if contains_secret_key(key):
             raise BundleError(f"manifest param names a credential: {key}")
@@ -404,7 +430,13 @@ def build_bundle(job: Job, workspace: Path, out_dir: Path) -> Path:
     raw_report_payload = _read_json_object(report_path, label="report")
     raw_lineage_payload = _read_json_list(lineage_path, label="lineage")
     lineage_payload = _validated_lineage_payload(raw_lineage_payload)
-    compat_payload = febuilder_compat_report(decode_roundtrip(package_dir))
+    external = _external_cli_evidence(
+        febuilder_cli,
+        package_dir,
+        workspace_root,
+        febuilder_timeout_seconds,
+    )
+    compat_payload = febuilder_compat_report(decode_roundtrip(package_dir), external)
     _check_resource_limits([*package_files, report_path, lineage_path])
 
     try:
@@ -448,6 +480,46 @@ def build_bundle(job: Job, workspace: Path, out_dir: Path) -> Path:
             f"bundle destination lock contention while publishing to {destination}"
         ) from exc
     return out_dir
+
+
+def _external_cli_evidence(
+    febuilder_cli: Sequence[str] | str | Path | None,
+    package_dir: Path,
+    workspace_root: Path,
+    timeout_seconds: float,
+) -> FeBuilderCliResult:
+    """Run the optional external check, refusing to publish when it fails.
+
+    The adapter is pointed only at the package inside this workspace, is
+    bounded by ``timeout_seconds``, and returns redacted output. A configured
+    check that fails raises :class:`BundleError` so an explicitly requested
+    external validation can never be published as a success.
+    """
+    if febuilder_cli is None:
+        return _NOT_RUN_EXTERNAL
+    try:
+        result = run_febuilder_cli(
+            febuilder_cli,
+            _EXTERNAL_CLI_COMMAND,
+            package_dir,
+            root=workspace_root,
+            timeout_seconds=timeout_seconds,
+        )
+    except FeBuilderCliError as exc:
+        raise BundleError(
+            f"febuilder cli validation could not run: {sanitize_text(str(exc))}"
+        ) from exc
+    if result.status == "failed":
+        raise BundleError(
+            f"configured febuilder cli validation failed{_external_failure_suffix(result)}"
+        )
+    return result
+
+
+def _external_failure_suffix(result: FeBuilderCliResult) -> str:
+    exit_code = "" if result.exit_code is None else f" with exit code {result.exit_code}"
+    detail = sanitize_text(result.stderr or result.stdout)
+    return f"{exit_code}: {detail}" if detail else exit_code
 
 
 def _report_missing_file(name: str, diagnostics: list[Diagnostic], missing: set[str]) -> None:
@@ -554,9 +626,33 @@ def _validate_hashes_file(
     return payload
 
 
+class _CompatEvidence(BaseModel):
+    """Both compatibility levels recorded in one bundle's ``compat.json``."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    roundtrip: RoundtripEvidence
+    external: FeBuilderCliResult
+
+
+def _parse_external_cli(payload: JsonObject) -> FeBuilderCliResult | None:
+    raw = payload.get("external_cli")
+    if not isinstance(raw, dict) or set(raw) != _EXTERNAL_CLI_KEYS:
+        return None
+    try:
+        result = FeBuilderCliResult.model_validate(raw)
+    except ValidationError:
+        return None
+    if result.status == "not_run" and result.exit_code is not None:
+        return None
+    if result.status == "passed" and result.exit_code != 0:
+        return None
+    return result
+
+
 def _validate_compat_file(
     bundle_dir: Path, diagnostics: list[Diagnostic], missing: set[str]
-) -> RoundtripEvidence | None:
+) -> _CompatEvidence | None:
     path = bundle_dir / "compat.json"
     if not path.is_file():
         _report_missing_file("compat.json", diagnostics, missing)
@@ -578,11 +674,21 @@ def _validate_compat_file(
             )
         )
         return None
-    if payload.get("validated_by_cli") is not False:
+    external = _parse_external_cli(payload)
+    if external is None:
         diagnostics.append(
             error(
                 "BUNDLE_INVALID_COMPAT",
-                "compat.json must not claim external CLI validation",
+                "compat.json has malformed external CLI evidence",
+                where="compat.json",
+            )
+        )
+        return None
+    if payload.get("validated_by_cli") is not (external.status == "passed"):
+        diagnostics.append(
+            error(
+                "BUNDLE_INVALID_COMPAT",
+                "compat.json external CLI claim does not match its recorded status",
                 where="compat.json",
             )
         )
@@ -607,7 +713,7 @@ def _validate_compat_file(
             )
         )
         return None
-    return evidence
+    return _CompatEvidence(roundtrip=evidence, external=external)
 
 
 def _is_sanitized_diagnostic(diagnostic: Diagnostic) -> bool:
@@ -815,13 +921,21 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
         )
 
     if compat is not None:
-        if compat.ok:
-            _verify_compat_matches_package(bundle_dir, compat, diagnostics)
+        if compat.roundtrip.ok:
+            _verify_compat_matches_package(bundle_dir, compat.roundtrip, diagnostics)
         else:
             diagnostics.append(
                 error(
                     "BUNDLE_COMPAT_FAILURE",
                     "deterministic compatibility roundtrip did not succeed",
+                    where="compat.json",
+                )
+            )
+        if compat.external.status == "failed":
+            diagnostics.append(
+                error(
+                    "BUNDLE_EXTERNAL_CLI_FAILURE",
+                    "optional external febuilder cli validation did not pass",
                     where="compat.json",
                 )
             )
@@ -863,7 +977,17 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
     return diagnostics
 
 
-def febuilder_compat_report(evidence: RoundtripEvidence) -> dict[str, object]:
+def febuilder_compat_report(
+    evidence: RoundtripEvidence, external: FeBuilderCliResult | None = None
+) -> dict[str, object]:
+    """Render compatibility evidence with the two levels kept clearly apart.
+
+    ``source``/``roundtrip`` are the mandatory deterministic, ROM-free proof.
+    ``external_cli`` is the optional third-party CLI status and carries only the
+    status, command, and exit code: external output is environment-specific and
+    stays out of bundles so they remain sanitized and reproducible.
+    """
+    external_result = external or _NOT_RUN_EXTERNAL
     diagnostics = sorted(
         evidence.diagnostics,
         key=lambda diagnostic: (
@@ -875,7 +999,12 @@ def febuilder_compat_report(evidence: RoundtripEvidence) -> dict[str, object]:
     )
     return {
         "source": _COMPAT_SOURCE,
-        "validated_by_cli": False,
+        "validated_by_cli": external_result.status == "passed",
+        "external_cli": {
+            "status": external_result.status,
+            "command": external_result.command,
+            "exit_code": external_result.exit_code,
+        },
         "roundtrip": evidence.model_dump(mode="json"),
         "errors": sum(1 for diagnostic in diagnostics if diagnostic.severity is Severity.ERROR),
         "warnings": sum(1 for diagnostic in diagnostics if diagnostic.severity is Severity.WARNING),

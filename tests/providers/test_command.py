@@ -6,8 +6,9 @@ import textwrap
 import pytest
 
 from fecreator.contracts.capabilities import Capability, CapabilitySet
+from fecreator.core.process import safe_subprocess_env
 from fecreator.providers.base import GenRequest, ProviderRefusal
-from fecreator.providers.command import CommandProvider, _safe_subprocess_env
+from fecreator.providers.command import CommandProvider
 
 PYTHON = sys.executable
 CAPABILITIES = CapabilitySet(capabilities=frozenset({Capability.TEXT_TO_IMAGE}))
@@ -172,7 +173,7 @@ def test_command_provider_refuses_unconfigured_provider(tmp_path) -> None:
 
 
 def test_safe_subprocess_env_posix_keeps_path_but_drops_secret_keys() -> None:
-    env = _safe_subprocess_env(
+    env = safe_subprocess_env(
         {
             "PATH": "/usr/bin",
             "HOME": "/tmp/home",
@@ -189,7 +190,7 @@ def test_safe_subprocess_env_posix_keeps_path_but_drops_secret_keys() -> None:
 
 
 def test_safe_subprocess_env_windows_keeps_required_startup_keys() -> None:
-    env = _safe_subprocess_env(
+    env = safe_subprocess_env(
         {
             "PATH": r"C:\Windows\System32",
             "SYSTEMROOT": r"C:\Windows",

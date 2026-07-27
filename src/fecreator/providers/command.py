@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
@@ -12,17 +11,11 @@ from fecreator.contracts.diagnostics import Diagnostic, error, warning
 from fecreator.contracts.result import Artifact
 from fecreator.core.hashing import sha256_file
 from fecreator.core.paths import PathEscapeError, safe_join
+from fecreator.core.process import bounded_redacted_text, safe_subprocess_env
 from fecreator.core.redaction import redact
 from fecreator.providers.base import GenRequest, GenResponse, ProviderRefusal
 
 PROTOCOL_VERSION = "fecreator-provider/v1"
-_COMMON_SAFE_ENV_KEYS = frozenset({"PATH", "PYTHONIOENCODING"})
-_POSIX_SAFE_ENV_KEYS = frozenset(
-    {"DYLD_LIBRARY_PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "LD_LIBRARY_PATH", "TMPDIR"}
-)
-_WINDOWS_SAFE_ENV_KEYS = frozenset(
-    {"COMSPEC", "PATHEXT", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "WINDIR"}
-)
 
 
 class CommandProvider:
@@ -59,7 +52,7 @@ class CommandProvider:
                 text=True,
                 shell=False,
                 timeout=self._timeout,
-                env=_safe_subprocess_env(),
+                env=safe_subprocess_env(),
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
@@ -76,7 +69,7 @@ class CommandProvider:
                 ),
             )
 
-        stderr_text = _bounded_redacted_text(proc.stderr, self._max_output_chars)
+        stderr_text = bounded_redacted_text(proc.stderr, self._max_output_chars)
         if proc.returncode != 0:
             return GenResponse(
                 ok=False,
@@ -123,28 +116,6 @@ class CommandProvider:
             model=_optional_string(decoded.get("model")),
             diagnostics=diagnostics,
         )
-
-
-def _safe_subprocess_env(
-    source_env: Mapping[str, str] | None = None,
-    *,
-    os_name: str | None = None,
-) -> dict[str, str]:
-    env_source = source_env or os.environ
-    safe_env = {"PYTHONIOENCODING": env_source.get("PYTHONIOENCODING", "utf-8")}
-    allowed = set(_COMMON_SAFE_ENV_KEYS)
-    if (os_name or os.name) == "nt":
-        allowed.update(_WINDOWS_SAFE_ENV_KEYS)
-    else:
-        allowed.update(_POSIX_SAFE_ENV_KEYS)
-
-    for key in sorted(allowed):
-        if key == "PYTHONIOENCODING":
-            continue
-        value = env_source.get(key)
-        if value:
-            safe_env[key] = value
-    return safe_env
 
 
 def _invalid_response(provider_id: str, message: str) -> GenResponse:
@@ -215,16 +186,6 @@ def _coerce_text(value: str | bytes | None) -> str | None:
     return value.decode("utf-8", errors="replace")
 
 
-def _bounded_redacted_text(text: str | None, limit: int) -> str:
-    if not text:
-        return ""
-
-    redacted = redact(text.strip())
-    if len(redacted) <= limit:
-        return redacted
-    return f"{redacted[:limit]}... [truncated]"
-
-
 def _diagnostic_suffix(text: str | None, limit: int = 4096) -> str:
-    bounded = _bounded_redacted_text(text, limit)
+    bounded = bounded_redacted_text(text, limit)
     return f": {bounded}" if bounded else ""

@@ -18,6 +18,7 @@ from fecreator.contracts.manifest import Manifest, SourceSpec
 from fecreator.contracts.result import Artifact, StageResult
 from fecreator.core.atomicio import LockTimeoutError, write_json_atomic
 from fecreator.core.hashing import sha256_file
+from fecreator.interop.febuilder_cli import FeBuilderCliResult
 from fecreator.interop.febuilder_roundtrip import decode_roundtrip
 from fecreator.jobs.model import Job, JobState
 from fecreator.reporting.bundle import (
@@ -598,3 +599,231 @@ def test_febuilder_compat_report_preserves_diagnostics_without_claiming_cli_proo
     assert "MISSING_PALETTE" in report["codes"]
     assert report["diagnostics"][0]["severity"] in {"error", "warning", "info"}
     assert report["diagnostics"][0]["where"] is not None
+
+
+_FAKE_FEBUILDER = """
+from __future__ import annotations
+
+import sys
+
+
+def main() -> int:
+    exit_code = int(sys.argv[1])
+    print("fake febuilder inspected " + " ".join(sys.argv[2:]))
+    if exit_code:
+        print("fake febuilder rejected the package", file=sys.stderr)
+    return exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+
+
+def _fake_febuilder(tmp_path: Path, exit_code: int) -> tuple[str, ...]:
+    script = tmp_path / "fake_febuilder_cli.py"
+    script.write_text(
+        textwrap.dedent(_FAKE_FEBUILDER).strip() + "\n", encoding="utf-8", newline="\n"
+    )
+    return (sys.executable, str(script), str(exit_code))
+
+
+def test_build_bundle_records_not_run_external_cli_by_default(tmp_path: Path) -> None:
+    job, workspace = _workspace(tmp_path)
+
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+
+    compat = json.loads((bundle / "compat.json").read_text(encoding="utf-8"))
+    assert compat["external_cli"] == {
+        "status": "not_run",
+        "command": "validate-asset",
+        "exit_code": None,
+    }
+    assert compat["validated_by_cli"] is False
+    assert compat["roundtrip"]["ok"] is True
+    assert verify_bundle(bundle) == []
+
+
+def test_build_bundle_records_a_passing_external_cli_without_leaking_output(
+    tmp_path: Path,
+) -> None:
+    job, workspace = _workspace(tmp_path)
+
+    bundle = build_bundle(
+        job,
+        workspace,
+        tmp_path / "bundle",
+        febuilder_cli=_fake_febuilder(tmp_path, 0),
+    )
+
+    compat = json.loads((bundle / "compat.json").read_text(encoding="utf-8"))
+    assert compat["external_cli"] == {
+        "status": "passed",
+        "command": "validate-asset",
+        "exit_code": 0,
+    }
+    assert compat["validated_by_cli"] is True
+    assert compat["source"] == "deterministic_febuilder_compatible_roundtrip"
+    assert compat["roundtrip"]["ok"] is True
+    serialized = json.dumps(compat)
+    assert str(tmp_path) not in serialized
+    assert "fake febuilder inspected" not in serialized
+    assert verify_bundle(bundle) == []
+
+
+def test_build_bundle_fails_when_the_configured_cli_rejects_the_package(tmp_path: Path) -> None:
+    job, workspace = _workspace(tmp_path)
+    out_dir = tmp_path / "bundle"
+
+    with pytest.raises(BundleError, match="febuilder"):
+        build_bundle(job, workspace, out_dir, febuilder_cli=_fake_febuilder(tmp_path, 4))
+
+    assert not out_dir.exists()
+    assert not list(tmp_path.glob(".bundle-stage-*"))
+
+
+def test_build_bundle_fails_when_the_configured_cli_is_missing(tmp_path: Path) -> None:
+    job, workspace = _workspace(tmp_path)
+    out_dir = tmp_path / "bundle"
+
+    with pytest.raises(BundleError) as exc_info:
+        build_bundle(job, workspace, out_dir, febuilder_cli=str(tmp_path / "absent febuilder.exe"))
+
+    assert not out_dir.exists()
+    assert str(tmp_path) not in str(exc_info.value)
+
+
+def test_verify_bundle_reports_a_failed_external_cli(tmp_path: Path) -> None:
+    job, workspace = _workspace(tmp_path)
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+
+    def mutate(payload: dict[str, Any]) -> None:
+        payload["external_cli"] = {
+            "status": "failed",
+            "command": "validate-asset",
+            "exit_code": 4,
+        }
+
+    _rewrite_compat(bundle, mutate)
+
+    diagnostics = verify_bundle(bundle)
+
+    external = [
+        diagnostic for diagnostic in diagnostics if diagnostic.code == "BUNDLE_EXTERNAL_CLI_FAILURE"
+    ]
+    assert len(external) == 1
+    assert external[0].where == "compat.json"
+
+
+def test_verify_bundle_still_fails_when_a_passing_cli_hides_a_broken_roundtrip(
+    tmp_path: Path,
+) -> None:
+    job, workspace = _workspace(tmp_path)
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+
+    def mutate(payload: dict[str, Any]) -> None:
+        payload["roundtrip"]["ok"] = False
+        payload["validated_by_cli"] = True
+        payload["external_cli"] = {
+            "status": "passed",
+            "command": "validate-asset",
+            "exit_code": 0,
+        }
+
+    _rewrite_compat(bundle, mutate)
+
+    codes = {diagnostic.code for diagnostic in verify_bundle(bundle)}
+
+    assert "BUNDLE_COMPAT_FAILURE" in codes
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda payload: payload.pop("external_cli"), id="missing-external"),
+        pytest.param(
+            lambda payload: payload["external_cli"].__setitem__("status", "skipped"),
+            id="unknown-status",
+        ),
+        pytest.param(
+            lambda payload: payload["external_cli"].__setitem__("command", "flash-rom"),
+            id="unknown-command",
+        ),
+        pytest.param(
+            lambda payload: payload["external_cli"].__setitem__("stdout", "leaked output"),
+            id="unexpected-output-field",
+        ),
+        pytest.param(
+            lambda payload: payload["external_cli"].__setitem__("exit_code", 7),
+            id="not-run-with-exit-code",
+        ),
+        pytest.param(
+            lambda payload: payload.__setitem__("external_cli", "passed"),
+            id="non-object-external",
+        ),
+    ],
+)
+def test_verify_bundle_rejects_untrustworthy_external_cli_evidence(
+    tmp_path: Path, mutate: Callable[[dict[str, Any]], None]
+) -> None:
+    job, workspace = _workspace(tmp_path)
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+    _rewrite_compat(bundle, mutate)
+
+    invalid = [
+        diagnostic
+        for diagnostic in verify_bundle(bundle)
+        if diagnostic.code == "BUNDLE_INVALID_COMPAT"
+    ]
+
+    assert len(invalid) == 1
+    assert invalid[0].where == "compat.json"
+    assert str(tmp_path) not in invalid[0].message
+
+
+def test_verify_bundle_rejects_a_cli_claim_that_does_not_match_the_external_status(
+    tmp_path: Path,
+) -> None:
+    job, workspace = _workspace(tmp_path)
+    bundle = build_bundle(
+        job,
+        workspace,
+        tmp_path / "bundle",
+        febuilder_cli=_fake_febuilder(tmp_path, 0),
+    )
+    _rewrite_compat(bundle, lambda payload: payload.__setitem__("validated_by_cli", False))
+
+    invalid = [
+        diagnostic
+        for diagnostic in verify_bundle(bundle)
+        if diagnostic.code == "BUNDLE_INVALID_COMPAT"
+    ]
+
+    assert len(invalid) == 1
+
+
+def test_febuilder_compat_report_separates_mandatory_and_external_evidence(
+    tmp_path: Path,
+) -> None:
+    package_dir = tmp_path / "package"
+    write_valid_package(package_dir)
+    evidence = decode_roundtrip(package_dir)
+    external = FeBuilderCliResult(
+        status="passed",
+        command="validate-asset",
+        exit_code=0,
+        stdout="fake cli output",
+        stderr="",
+    )
+
+    report = febuilder_compat_report(evidence, external)
+
+    assert report["source"] == "deterministic_febuilder_compatible_roundtrip"
+    assert report["roundtrip"]["ok"] is True
+    assert report["validated_by_cli"] is True
+    assert report["external_cli"] == {
+        "status": "passed",
+        "command": "validate-asset",
+        "exit_code": 0,
+    }
+    assert "fake cli output" not in json.dumps(report)
