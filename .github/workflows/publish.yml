@@ -7,30 +7,36 @@ on:
   push:
     tags:
       - "v*.*.*"
+  # A manual run selects an existing tag with `--ref v0.1.0`; there is no tag
+  # input, so `github.ref_name` is always a ref GitHub itself resolved.
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing semantic version tag to publish
-        required: true
-        type: string
 
 permissions:
   contents: read
 
+# Queue concurrent runs of the same tag instead of cancelling them: an upload
+# that is already talking to PyPI must never be interrupted halfway.
+concurrency:
+  group: publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
 env:
-  RELEASE_TAG: >-
-    ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  RELEASE_TAG: ${{ github.ref_name }}
 
 jobs:
   build:
     name: Build distributions
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
+      # `refs/tags/` is qualified so a branch of the same name cannot shadow
+      # the tag, and no git credential is left in the build checkout.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -38,15 +44,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
       - run: npm ci
-      - run: python -m pip install --upgrade build twine
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: pip install --upgrade twine
       # Fail before any artifact exists when the tag, pyproject version, and
       # package __version__ do not agree exactly.
       - run: python scripts/validate_release_tag.py --tag "$RELEASE_TAG"
       - run: npm run -w @laqieer/fecreator-web build
       - run: python -m build
-      - run: python -m twine check dist/*
+      - run: python -m twine check --strict dist/*
+      - name: Prove the distributions carry the frontend exactly once
+        run: pytest -q tests/test_package.py
       - uses: actions/upload-artifact@v4
         with:
           name: python-distributions
@@ -59,6 +68,7 @@ jobs:
     needs:
       - build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment:
       name: pypi
       url: https://pypi.org/p/fecreator
@@ -71,3 +81,5 @@ jobs:
           name: python-distributions
           path: dist/
       - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247
+        with:
+          attestations: true

@@ -57,6 +57,17 @@ def _text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
 
 
+def _normalized(expression: object) -> str:
+    """Collapse YAML folding so an expression compares exactly."""
+    return " ".join(str(expression).split())
+
+
+def _checkout(job: str) -> dict[str, Any]:
+    return next(
+        step for step in _steps(job) if str(step.get("uses", "")).startswith("actions/checkout@")
+    )
+
+
 def test_publish_workflow_exists_and_is_not_reusable() -> None:
     assert WORKFLOW.is_file()
     triggers = _triggers()
@@ -68,18 +79,42 @@ def test_publish_workflow_triggers_on_semantic_tags_and_manual_dispatch() -> Non
 
     assert triggers["push"]["tags"] == ["v*.*.*"]
     assert "branches" not in triggers["push"]
-
-    dispatch_input = triggers["workflow_dispatch"]["inputs"]["tag"]
-    assert dispatch_input["required"] is True
-    assert dispatch_input["type"] == "string"
+    assert "workflow_dispatch" in triggers
 
 
-def test_release_tag_prefers_the_dispatch_input_over_the_pushed_ref() -> None:
+def test_workflow_dispatch_takes_no_tag_input() -> None:
+    """A manual run selects an existing tag through ``--ref``, never a free-form input.
+
+    A typed input would let a run publish a ref that the trigger filter never
+    vetted; ``github.ref_name`` is the ref GitHub itself resolved.
+    """
+    dispatch = _triggers()["workflow_dispatch"]
+
+    assert dispatch is None or "inputs" not in dispatch
+    assert "inputs." not in _text()
+
+
+def test_release_tag_is_exactly_the_selected_ref_name() -> None:
     release_tag = _workflow()["env"]["RELEASE_TAG"]
 
-    assert "github.event_name == 'workflow_dispatch'" in release_tag
-    assert "inputs.tag" in release_tag
-    assert "github.ref_name" in release_tag
+    assert _normalized(release_tag) == "${{ github.ref_name }}"
+
+
+def test_publish_workflow_serializes_runs_per_tag_without_cancelling() -> None:
+    """Two runs of one tag must queue, never race or cancel a live upload."""
+    concurrency = _workflow()["concurrency"]
+
+    assert _normalized(concurrency["group"]) == "publish-${{ github.ref_name }}"
+    assert concurrency["cancel-in-progress"] is False
+
+
+def test_every_job_has_a_bounded_timeout() -> None:
+    jobs = _workflow()["jobs"]
+
+    for name, job in jobs.items():
+        timeout = job.get("timeout-minutes")
+        assert isinstance(timeout, int), f"{name} has no timeout-minutes"
+        assert 0 < timeout <= 60
 
 
 def test_workflow_default_permissions_are_read_only() -> None:
@@ -116,14 +151,28 @@ def test_publish_job_runs_on_ubuntu_and_targets_the_project_page() -> None:
     assert publish["environment"]["url"] == "https://pypi.org/p/fecreator"
 
 
-def test_build_job_checks_out_the_immutable_release_tag() -> None:
-    checkout = next(
+def test_build_job_checks_out_the_qualified_release_tag() -> None:
+    """A branch named like the tag must not be able to shadow it."""
+    checkout = _checkout("build")
+
+    assert _normalized(checkout["with"]["ref"]) == "refs/tags/${{ env.RELEASE_TAG }}"
+
+
+def test_build_job_checkout_leaves_no_git_credential_behind() -> None:
+    checkout = _checkout("build")
+
+    assert checkout["with"]["persist-credentials"] is False
+
+
+def test_build_job_does_not_restore_a_shared_pip_cache() -> None:
+    """A release build resolves dependencies fresh instead of trusting a cache."""
+    setup_python = next(
         step
         for step in _steps("build")
-        if str(step.get("uses", "")).startswith("actions/checkout@")
+        if str(step.get("uses", "")).startswith("actions/setup-python@")
     )
 
-    assert checkout["with"]["ref"] == "${{ env.RELEASE_TAG }}"
+    assert "cache" not in setup_python.get("with", {})
 
 
 def test_build_job_validates_the_tag_before_building_anything() -> None:
@@ -143,7 +192,31 @@ def test_publish_workflow_builds_web_before_python_distribution() -> None:
     assert commands.index("npm run -w @laqieer/fecreator-web build") < commands.index(
         "python -m build"
     )
-    assert "python -m twine check dist/*" in commands
+
+
+def test_build_job_validates_the_distributions_strictly() -> None:
+    """``--strict`` turns a rendering warning into a failure before upload."""
+    assert "python -m twine check --strict dist/*" in _commands("build")
+
+
+def test_build_job_runs_the_real_package_test_before_uploading() -> None:
+    """The distributions that get published are the ones the packaging test inspected."""
+    steps = _steps("build")
+    package_test = next(
+        index
+        for index, step in enumerate(steps)
+        if "run" in step and "tests/test_package.py" in str(step["run"])
+    )
+    built = next(
+        index for index, step in enumerate(steps) if str(step.get("run", "")) == "python -m build"
+    )
+    upload = next(
+        index
+        for index, step in enumerate(steps)
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    )
+
+    assert built < package_test < upload
 
 
 def test_build_job_installs_node_and_python_toolchains() -> None:
@@ -197,6 +270,15 @@ def test_publish_action_is_immutable_and_has_no_token() -> None:
     assert "softprops/action-gh-release" not in text
 
 
+def test_publish_step_requests_attestations_explicitly() -> None:
+    """Attestation signing is pinned here, not inherited from the action default."""
+    publish_step = next(
+        step for step in _steps("publish") if str(step.get("uses", "")) == PINNED_PUBLISH_ACTION
+    )
+
+    assert publish_step["with"]["attestations"] is True
+
+
 def test_publish_workflow_carries_no_credentials_release_or_rom_steps() -> None:
     lowered = _text().lower()
 
@@ -236,8 +318,40 @@ def test_docs_list_the_exact_pending_publisher_fields() -> None:
 def test_docs_show_the_manual_dispatch_command_and_pin() -> None:
     text = DOCS.read_text(encoding="utf-8")
 
-    assert "gh workflow run publish.yml --ref main -f tag=v0.1.0" in text
+    assert "gh workflow run publish.yml --ref v0.1.0" in text
+    assert "-f tag=" not in text
     assert PINNED_PUBLISH_ACTION in text
+
+
+def test_docs_require_environment_protection_rules() -> None:
+    """Environment protection is the human gate in front of the OIDC token."""
+    text = DOCS.read_text(encoding="utf-8")
+    lowered = text.lower()
+
+    assert "required reviewer" in lowered
+    assert "laqieer" in text
+    assert "v*.*.*" in text
+    assert "deployment tag" in lowered
+    assert "recommended" not in lowered
+
+
+def test_docs_record_the_one_time_v0_1_0_tag_recreation() -> None:
+    """The existing tag predates this workflow, so its single reset is documented."""
+    text = DOCS.read_text(encoding="utf-8")
+    lowered = text.lower()
+
+    assert "v0.1.0" in text
+    assert "predates" in lowered
+    assert "delete" in lowered and "recreate" in lowered
+    assert "immutable" in lowered
+
+
+def test_docs_cross_link_the_security_guide() -> None:
+    publishing = DOCS.read_text(encoding="utf-8")
+    security = (REPO_ROOT / "docs" / "security.md").read_text(encoding="utf-8")
+
+    assert "[`docs/security.md`](security.md)" in publishing
+    assert "[`docs/pypi-publishing.md`](pypi-publishing.md)" in security
 
 
 def test_readme_links_the_publishing_guide() -> None:

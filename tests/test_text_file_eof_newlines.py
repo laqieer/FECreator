@@ -3,6 +3,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEXT_FILES = [
     REPO_ROOT / ".github" / "workflows" / "ci.yml",
+    REPO_ROOT / ".github" / "workflows" / "publish.yml",
+    REPO_ROOT / "docs" / "pypi-publishing.md",
     REPO_ROOT / "pyproject.toml",
     REPO_ROOT / "web" / ".env.demo",
     REPO_ROOT / "web" / "package.json",

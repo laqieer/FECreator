@@ -75,9 +75,12 @@ is set; no gate ever requires a ROM.
 
 Releases go to PyPI through Trusted Publishing (OIDC); no PyPI API token exists
 in this repository. Pushing a `v*.*.*` tag builds the distributions in an
-unprivileged job and publishes them from a separate `pypi` environment job.
+unprivileged job that checks out `refs/tags/<tag>`, then publishes them from a
+separate `pypi` environment job that a required reviewer must approve and that
+only `v*.*.*` tags may deploy to. A manual re-run is dispatched on the tag
+itself (`gh workflow run publish.yml --ref v0.1.0`).
 See [`docs/pypi-publishing.md`](docs/pypi-publishing.md) for the trust boundary,
-the exact pending-publisher fields, and the manual re-run command.
+the exact pending-publisher fields, and the required environment protection.
 
 ## Live demo
 

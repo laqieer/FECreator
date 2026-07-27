@@ -27,9 +27,16 @@ PyPI Trusted Publishing, PyPA `gh-action-pypi-publish`.
   `id-token: write`.
 - Publish only an existing semantic tag whose version exactly matches both
   `pyproject.toml` and `src/fecreator/__init__.py`.
+- Check out the fully qualified `refs/tags/<tag>` so a branch cannot shadow a
+  tag, and take no free-form tag input: a manual run is dispatched on the tag
+  itself with `gh workflow run publish.yml --ref <tag>`.
+- Treat the `pypi` environment protection rules as required: reviewer `laqieer`
+  plus a custom deployment tag policy `v*.*.*`.
 - Do not skip existing files or overwrite a published version.
 - Do not create a GitHub Release.
-- Keep `v0.1.0` immutable and publish it through manual workflow dispatch.
+- The existing `v0.1.0` tag predates the release workflow and scripts. It is
+  unpublished, so it is deleted and recreated exactly once at the final merge
+  commit before the first publication, and is immutable afterwards.
 - Push every commit immediately and monitor CI asynchronously.
 
 ---
@@ -213,7 +220,7 @@ git push
 - Modify: `README.md`
 
 **Interfaces:**
-- Tag push and manual dispatch select an immutable `RELEASE_TAG`.
+- Tag push and manual dispatch on the tag select an immutable `RELEASE_TAG`.
 - Build job produces artifact `python-distributions`.
 - Publish job consumes only that artifact and obtains an OIDC token through
   environment `pypi`.
@@ -232,6 +239,10 @@ def _workflow() -> dict[str, object]:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
+def _normalized(expression: object) -> str:
+    return " ".join(str(expression).split())
+
+
 def test_publish_workflow_uses_separate_oidc_job() -> None:
     workflow = _workflow()
     jobs = workflow["jobs"]
@@ -247,6 +258,20 @@ def test_publish_workflow_uses_separate_oidc_job() -> None:
     }
 
 
+def test_release_tag_is_exactly_the_selected_ref_name() -> None:
+    assert _normalized(_workflow()["env"]["RELEASE_TAG"]) == "${{ github.ref_name }}"
+
+
+def test_build_job_checks_out_the_qualified_release_tag() -> None:
+    steps = _workflow()["jobs"]["build"]["steps"]
+    checkout = next(
+        step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")
+    )
+
+    assert _normalized(checkout["with"]["ref"]) == "refs/tags/${{ env.RELEASE_TAG }}"
+    assert checkout["with"]["persist-credentials"] is False
+
+
 def test_publish_action_is_immutable_and_has_no_token() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
 
@@ -258,6 +283,7 @@ def test_publish_action_is_immutable_and_has_no_token() -> None:
     assert "password:" not in text
     assert "skip-existing" not in text
     assert "softprops/action-gh-release" not in text
+    assert "inputs." not in text
 
 
 def test_publish_workflow_builds_web_before_python_distribution() -> None:
@@ -272,8 +298,15 @@ def test_publish_workflow_builds_web_before_python_distribution() -> None:
     assert commands.index("npm run -w @laqieer/fecreator-web build") < commands.index(
         "python -m build"
     )
-    assert "python -m twine check dist/*" in commands
+    assert "python -m twine check --strict dist/*" in commands
 ```
+
+Also pin, in the same module: the absent `workflow_dispatch` input, the
+`publish-${{ github.ref_name }}` concurrency group with
+`cancel-in-progress: false`, `timeout-minutes` on every job, the absent pip
+cache, `pytest -q tests/test_package.py` between `python -m build` and the
+artifact upload, explicit `attestations: true`, and the documented environment
+protection rules and `v0.1.0` recreation.
 
 - [ ] **Step 2: Run tests and verify the workflow is missing**
 
@@ -295,29 +328,29 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing semantic version tag to publish
-        required: true
-        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
 env:
-  RELEASE_TAG: >-
-    ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  RELEASE_TAG: ${{ github.ref_name }}
 
 jobs:
   build:
     name: Build distributions
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -325,13 +358,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
       - run: npm ci
-      - run: python -m pip install --upgrade build twine
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: pip install --upgrade twine
       - run: python scripts/validate_release_tag.py --tag "$RELEASE_TAG"
       - run: npm run -w @laqieer/fecreator-web build
       - run: python -m build
-      - run: python -m twine check dist/*
+      - run: python -m twine check --strict dist/*
+      - name: Prove the distributions carry the frontend exactly once
+        run: pytest -q tests/test_package.py
       - uses: actions/upload-artifact@v4
         with:
           name: python-distributions
@@ -344,6 +380,7 @@ jobs:
     needs:
       - build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment:
       name: pypi
       url: https://pypi.org/p/fecreator
@@ -356,6 +393,8 @@ jobs:
           name: python-distributions
           path: dist/
       - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247
+        with:
+          attestations: true
 ```
 
 - [ ] **Step 4: Document pending-publisher setup and run checks**
@@ -370,16 +409,17 @@ Workflow: publish.yml
 Environment: pypi
 ```
 
-It also documents:
+It also documents the required environment protection (reviewer `laqieer`,
+custom deployment tag policy `v*.*.*`), the one-time `v0.1.0` recreation, and:
 
 ```powershell
-gh workflow run publish.yml --ref main -f tag=v0.1.0
+gh workflow run publish.yml --ref v0.1.0
 ```
 
 Run:
 
 ```powershell
-C:\Projects\FECreator\.venv\Scripts\python.exe -m pytest -q tests/test_release_tag.py tests/test_pypi_publish_workflow.py tests/test_ci_pages_workflow.py
+C:\Projects\FECreator\.venv\Scripts\python.exe -m pytest -q tests/test_release_tag.py tests/test_pypi_publish_workflow.py tests/test_ci_pages_workflow.py tests/test_text_file_eof_newlines.py
 C:\Projects\FECreator\.venv\Scripts\ruff.exe check .
 C:\Projects\FECreator\.venv\Scripts\ruff.exe format --check .
 C:\Projects\FECreator\.venv\Scripts\python.exe -m mypy src scripts/validate_release_tag.py
@@ -402,19 +442,38 @@ git push
   correction.
 
 **Interfaces:**
-- GitHub environment `pypi`.
+- GitHub environment `pypi` with required protection rules.
 - PyPI pending publisher matching the exact repository identity.
+- The `v0.1.0` tag recreated once at the final merge commit.
 - Manual workflow run publishing tag `v0.1.0`.
 
-- [ ] **Step 1: Create the GitHub environment**
+- [ ] **Step 1: Create the GitHub environment and require protection**
+
+The environment protection is required, not optional: it is the human gate in
+front of the OIDC token.
 
 Run:
 
 ```powershell
-gh api --method PUT repos/laqieer/FECreator/environments/pypi
+gh api --method PUT repos/laqieer/FECreator/environments/pypi `
+  -f 'reviewers[][type]=User' `
+  -F "reviewers[][id]=$(gh api users/laqieer --jq .id)" `
+  -F 'deployment_branch_policy[protected_branches]=false' `
+  -F 'deployment_branch_policy[custom_branch_policies]=true'
+
+gh api --method POST repos/laqieer/FECreator/environments/pypi/deployment-branch-policies `
+  -f name='v*.*.*' -f type=tag
 ```
 
-Expected: the API returns environment `pypi`.
+Verify:
+
+```powershell
+gh api repos/laqieer/FECreator/environments/pypi --jq '.protection_rules'
+gh api repos/laqieer/FECreator/environments/pypi/deployment-branch-policies
+```
+
+Expected: environment `pypi` exists, `laqieer` is a required reviewer, and the
+only deployment policy is the tag pattern `v*.*.*`.
 
 - [ ] **Step 2: Configure the pending publisher in the authenticated PyPI UI**
 
@@ -434,22 +493,38 @@ Workflow: publish.yml
 Environment: pypi
 ```
 
-No credential is entered into the repository, GitHub Secrets, chat, or assistant
-tools.
+The publisher identity is the environment `pypi`; the protection rules above
+constrain who and what may use it. No credential is entered into the repository,
+GitHub Secrets, chat, or assistant tools.
 
-- [ ] **Step 3: Dispatch the existing v0.1.0 tag**
+- [ ] **Step 3: Recreate the unpublished v0.1.0 tag, once**
+
+The current `v0.1.0` predates `publish.yml` and
+`scripts/validate_release_tag.py`, and `0.1.0` has never been uploaded to PyPI.
+Reset it exactly once, at the final merge commit of this work:
+
+```powershell
+git push origin :refs/tags/v0.1.0
+git tag -d v0.1.0
+git tag v0.1.0 <final-merge-commit>
+git push origin v0.1.0
+```
+
+Expected: the tag push starts `publish.yml`. The tag is immutable afterwards.
+
+- [ ] **Step 4: Dispatch the existing v0.1.0 tag if a re-run is needed**
 
 Run:
 
 ```powershell
-gh workflow run publish.yml --repo laqieer/FECreator --ref main -f tag=v0.1.0
+gh workflow run publish.yml --repo laqieer/FECreator --ref v0.1.0
 ```
 
-Monitor the run asynchronously. If authentication fails, compare the workflow,
-environment, owner, repository, and project fields exactly; do not fall back to
-an API token.
+Approve the `pypi` deployment as the required reviewer, then monitor the run
+asynchronously. If authentication fails, compare the workflow, environment,
+owner, repository, and project fields exactly; do not fall back to an API token.
 
-- [ ] **Step 4: Verify PyPI publication**
+- [ ] **Step 5: Verify PyPI publication**
 
 Run:
 
@@ -462,7 +537,7 @@ Expected: version `0.1.0` is listed and the wheel or sdist downloads.
 
 Delete only `.pytest-pypi-probe` after verification.
 
-- [ ] **Step 5: Record completion**
+- [ ] **Step 6: Record completion**
 
 Confirm:
 

@@ -32,14 +32,18 @@ The workflow has two jobs with separate trust boundaries.
 
 The build job has read-only repository permissions and no OIDC permission.
 
-1. Check out the selected version tag.
+1. Check out `refs/tags/<selected tag>` with `persist-credentials: false`.
 2. Verify the tag is exactly `v<project version>`.
-3. Install the supported Python and Node toolchains.
+3. Install the supported Python and Node toolchains without a restored pip
+   cache.
 4. Install locked npm dependencies.
 5. Build the local web assets into `src/fecreator/_web`.
 6. Build the wheel and source distribution.
-7. Validate both files with Twine.
-8. Upload the immutable `dist/` directory as a GitHub Actions artifact.
+7. Validate both files with `twine check --strict`.
+8. Run the repository packaging test against the built distributions.
+9. Upload the immutable `dist/` directory as a GitHub Actions artifact.
+
+The checkout ref is fully qualified so a branch cannot shadow the tag.
 
 Build tools and project code never receive an OIDC token.
 
@@ -53,36 +57,62 @@ The publish job:
 - has only `id-token: write` and `contents: read`
 - downloads the previously built distributions
 - publishes with the official PyPA action
-- uploads PyPI digital attestations through Trusted Publishing
+- uploads PyPI digital attestations through Trusted Publishing with an explicit
+  `attestations: true`
 
 The PyPA action is pinned to an immutable commit SHA.
+
+### Run hygiene
+
+Both jobs declare `timeout-minutes`. The workflow serializes runs of one tag
+with concurrency group `publish-${{ github.ref_name }}` and
+`cancel-in-progress: false`, so a second run queues instead of interrupting an
+upload in flight.
 
 ## Triggers
 
 The workflow supports:
 
 - pushes of semantic version tags matching `v*.*.*`
-- manual dispatch with an explicit existing version tag
+- manual dispatch **on an existing tag**, with no workflow input
 
-Manual dispatch checks out the requested tag, not the default branch. Both
-trigger paths validate that the tag version matches `pyproject.toml` and
+`RELEASE_TAG` is exactly `${{ github.ref_name }}`, and the checkout ref is
+`refs/tags/${{ env.RELEASE_TAG }}`. A manual run is therefore started with
+`gh workflow run publish.yml --ref v0.1.0`: GitHub resolves the ref, so no
+free-form string can name a ref the trigger never vetted. Both trigger paths
+validate that the tag version matches `pyproject.toml` and
 `fecreator.__version__`.
 
-This permits publishing the already-created `v0.1.0` tag after the pending
-publisher is configured, without moving or recreating the tag.
+## Release tag history
+
+The `v0.1.0` tag that exists today predates `publish.yml` and
+`scripts/validate_release_tag.py`, so it cannot be published as-is. Version
+`0.1.0` has never been uploaded to PyPI, so exactly once — before the first
+publication — the unpublished tag is deleted and recreated at the final merge
+commit of this work. From then on the tag is immutable: a published version is
+never re-uploaded, moved, or recreated, and a mistake is corrected by releasing
+a new version.
 
 ## GitHub environment
 
-The repository has a `pypi` environment. Environment protection rules are
-maintainer-configurable; the workflow does not require a stored environment
-secret.
+The repository has a `pypi` environment, and its protection rules are required,
+not advisory:
+
+- a required reviewer, `laqieer`, must approve every deployment
+- a custom deployment tag policy limits deployments to refs matching `v*.*.*`
+
+The publisher identity remains the environment `pypi` named in the PyPI pending
+publisher. The workflow requires no stored environment secret.
 
 ## Failure behavior
 
 - A missing or malformed tag fails before building.
 - A tag/version mismatch fails before artifact upload.
 - Missing web assets fail the Python build.
-- Invalid distributions fail Twine validation.
+- Invalid distributions fail `twine check --strict`.
+- A distribution that does not carry the frontend exactly once fails
+  `tests/test_package.py` before upload.
+- An unapproved deployment never reaches the publish job.
 - Missing or mismatched PyPI trusted-publisher configuration fails the publish
   job without falling back to a token.
 - A version already present on PyPI fails; existing files are never skipped or
@@ -94,11 +124,19 @@ secret.
 Repository tests verify:
 
 - tag parsing and project-version matching
-- the workflow's trigger, permissions, environment, job separation, artifact
-  handoff, and immutable action pin
+- the workflow's triggers, the absence of a dispatch tag input, the exact
+  `RELEASE_TAG` expression and qualified checkout ref, permissions, environment,
+  job separation, artifact handoff, concurrency, timeouts, and immutable action
+  pin
+- checkout credential settings, absence of a restored pip cache, strict Twine
+  validation, the packaging test's position before upload, and explicit
+  attestations
 - absence of PyPI token or password configuration
 - build-before-publish ordering
 - no GitHub Release step
+- documentation of the pending publisher fields, the required environment
+  protection rules, the one-time `v0.1.0` recreation, and the manual dispatch
+  command
 
 The OIDC exchange itself cannot be exercised in ordinary CI. The first real
 publish verifies the pending publisher and creates the PyPI project.
@@ -112,7 +150,10 @@ automation:
 2. Add a pending GitHub publisher for project `fecreator`.
 3. Enter owner `laqieer`, repository `FECreator`, workflow `publish.yml`, and
    environment `pypi`.
-4. Run the workflow for tag `v0.1.0`.
+4. Configure the `pypi` environment with the required reviewer `laqieer` and a
+   custom deployment tag policy `v*.*.*`.
+5. Recreate the unpublished `v0.1.0` tag at the final merge commit, once.
+6. Run the workflow for tag `v0.1.0`.
 
 This step proves control of the PyPI account without exposing credentials to
 the assistant or repository.

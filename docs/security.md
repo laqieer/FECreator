@@ -3,6 +3,10 @@
 This document covers FECreator's secret-scanning guardrails and how to operate
 them.
 
+Release credentials are covered separately: FECreator publishes to PyPI with
+OIDC Trusted Publishing and stores no publishing token at all, as described in
+[`docs/pypi-publishing.md`](pypi-publishing.md).
+
 ## GitGuardian alert: synthetic JWT test fixture
 
 A GitGuardian alert was raised for a JWT-shaped value (and an adjacent
