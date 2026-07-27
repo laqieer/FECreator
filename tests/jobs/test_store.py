@@ -308,3 +308,73 @@ def test_load_raises_when_visible_job_id_does_not_match_payload(data_root) -> No
 
     with pytest.raises(JobCorruptionError, match="job id"):
         store.load(job.id)
+
+
+def test_load_distinguishes_a_missing_job_from_a_corrupt_one(data_root) -> None:
+    """A job that was never written is missing; a visible broken one is corrupt."""
+    store = JobStore(data_root)
+    job = store.create(_manifest())
+    (data_root / "jobs" / job.id / "job.json").write_text("{", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError):
+        store.load("never-created")
+
+    with pytest.raises(JobCorruptionError) as corrupt:
+        store.load(job.id)
+
+    assert corrupt.value.job_id == job.id
+
+
+def test_load_reports_a_legacy_derived_manifest_as_corruption(data_root) -> None:
+    """A persisted derived manifest with no parent is unusable under the v1 contract."""
+    store = JobStore(data_root)
+    job = store.create(_manifest())
+    manifest_path = data_root / "jobs" / job.id / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["workflow"] = "expression_refine"
+    payload.pop("parent_asset_id", None)
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(JobCorruptionError) as corrupt:
+        store.load(job.id)
+
+    assert corrupt.value.job_id == job.id
+    assert str(data_root) not in str(corrupt.value)
+
+
+def test_load_reports_a_missing_manifest_as_corruption(data_root) -> None:
+    store = JobStore(data_root)
+    job = store.create(_manifest())
+    (data_root / "jobs" / job.id / "manifest.json").unlink()
+
+    with pytest.raises(JobCorruptionError) as corrupt:
+        store.load(job.id)
+
+    assert corrupt.value.job_id == job.id
+
+
+def test_list_identifies_the_corrupt_job_without_disclosing_its_path(data_root) -> None:
+    jobs_dir = data_root / "jobs"
+    broken = jobs_dir / "broken"
+    broken.mkdir(parents=True)
+    (broken / "manifest.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(JobCorruptionError) as corrupt:
+        JobStore(data_root).list()
+
+    assert corrupt.value.job_id == "broken"
+    assert str(data_root) not in str(corrupt.value)
+
+
+def test_a_corrupt_job_id_mismatch_carries_the_visible_job_id(data_root) -> None:
+    store = JobStore(data_root)
+    job = store.create(_manifest())
+    job_path = data_root / "jobs" / job.id / "job.json"
+    payload = json.loads(job_path.read_text(encoding="utf-8"))
+    payload["id"] = "different-id"
+    job_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(JobCorruptionError) as corrupt:
+        store.load(job.id)
+
+    assert corrupt.value.job_id == job.id

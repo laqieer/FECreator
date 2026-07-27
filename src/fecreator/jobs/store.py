@@ -27,7 +27,18 @@ STAGING_PREFIX = ".tmp-"
 
 
 class JobCorruptionError(Exception):
-    """Raised when a visible job directory is missing or contains corrupt state."""
+    """Raised when a visible job directory contains unusable persisted state.
+
+    A job that was never written is *missing* and still raises ``FileNotFoundError``;
+    a job whose directory exists but whose payload cannot be read as the current
+    contract is *corrupt*. ``job_id`` names the offending job as structured
+    metadata so an adapter can report which job failed without echoing the
+    absolute store path that the underlying error quotes.
+    """
+
+    def __init__(self, message: str, *, job_id: str | None = None) -> None:
+        super().__init__(message)
+        self.job_id = job_id
 
 
 class RevisionConflictError(Exception):
@@ -141,20 +152,36 @@ class JobStore:
 
     def _load_locked(self, job_id: str) -> Job:
         normalized = self._normalize_job_id(job_id)
-        payload = self._read_job_payload_locked(normalized)
-        manifest_payload = _read_json_unlocked(self._manifest_path(normalized))
-        payload_id = str(payload["id"])
-        if payload_id != normalized:
-            raise JobCorruptionError(f"job id mismatch: expected {normalized}, found {payload_id}")
-        return Job(
-            id=payload_id,
-            state=JobState(str(payload["state"])),
-            manifest=Manifest.model_validate(manifest_payload),
-            parent_candidate_id=payload.get("parent_candidate_id"),
-            revision=int(payload["revision"]),
-            created_at=str(payload["created_at"]),
-            updated_at=str(payload["updated_at"]),
-        )
+        if not self._job_dir(normalized).is_dir():
+            raise FileNotFoundError(f"job not found: {normalized}")
+        try:
+            payload = self._read_job_payload_locked(normalized)
+            manifest_payload = _read_json_unlocked(self._manifest_path(normalized))
+            payload_id = str(payload["id"])
+            if payload_id != normalized:
+                raise JobCorruptionError(
+                    f"job id mismatch: expected {normalized}, found {payload_id}",
+                    job_id=normalized,
+                )
+            return Job(
+                id=payload_id,
+                state=JobState(str(payload["state"])),
+                manifest=Manifest.model_validate(manifest_payload),
+                parent_candidate_id=payload.get("parent_candidate_id"),
+                revision=int(payload["revision"]),
+                created_at=str(payload["created_at"]),
+                updated_at=str(payload["updated_at"]),
+            )
+        except JobCorruptionError:
+            raise
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            # The directory is visible, so this is corruption rather than a
+            # missing job: a truncated payload, an unknown state, or a manifest
+            # that no longer satisfies the v1 contract. The cause quotes absolute
+            # paths, so only the job id is kept as reportable metadata.
+            raise JobCorruptionError(
+                f"job state is unreadable: {normalized}", job_id=normalized
+            ) from exc
 
     def create(self, manifest: Manifest, *, parent_candidate_id: str | None = None) -> Job:
         self._cleanup_stale_staging_dirs()
@@ -254,14 +281,24 @@ class JobStore:
             if entry.name == ".locks" or entry.name.startswith(STAGING_PREFIX):
                 continue
             if entry.name.startswith("."):
-                raise JobCorruptionError(f"unexpected hidden directory in jobs store: {entry}")
+                raise JobCorruptionError(
+                    f"unexpected hidden directory in jobs store: {entry.name}",
+                    job_id=entry.name,
+                )
             if not (entry / "job.json").exists() or not (entry / "manifest.json").exists():
-                raise JobCorruptionError(f"job directory is missing required files: {entry}")
+                raise JobCorruptionError(
+                    f"job directory is missing required files: {entry.name}",
+                    job_id=entry.name,
+                )
             try:
                 with self.locked(entry.name):
                     job = self._load_locked(entry.name)
+            except JobCorruptionError:
+                raise
             except Exception as exc:  # pragma: no cover - exact error preserved by chaining
-                raise JobCorruptionError(f"job directory is corrupt: {entry}") from exc
+                raise JobCorruptionError(
+                    f"job directory is corrupt: {entry.name}", job_id=entry.name
+                ) from exc
             jobs.append(job)
         return sorted(jobs, key=lambda job: job.id)
 

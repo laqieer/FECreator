@@ -26,7 +26,7 @@ from fecreator.core.paths import (
     safe_join,
 )
 from fecreator.core.registry import UnknownIdError
-from fecreator.interfaces.errors import store_lock_timeout_diagnostic
+from fecreator.interfaces.errors import corrupt_job_diagnostic, store_lock_timeout_diagnostic
 from fecreator.interfaces.static import mount_static
 from fecreator.interfaces.websocket import register_ws
 from fecreator.jobs.approvals import ApprovalError, ApprovalRecord
@@ -316,6 +316,16 @@ def create_api(app: FeCreatorApp) -> FastAPI:
             [store_lock_timeout_diagnostic(where=_request.url.path.lstrip("/"))],
         )
 
+    @api.exception_handler(JobCorruptionError)
+    async def handle_job_corruption(_request: Request, exc: JobCorruptionError) -> JSONResponse:
+        # Every route that touches a job routes through the same store, so the
+        # mapping is applied once at the app boundary. The exception's job id is
+        # the reported location; the route path is only the fallback.
+        return _diagnostic_response(
+            status.HTTP_409_CONFLICT,
+            [corrupt_job_diagnostic(exc, where=_request.url.path.lstrip("/"))],
+        )
+
     @router.get("/assets")
     def list_assets() -> list[str]:
         return app.list_assets()
@@ -330,13 +340,7 @@ def create_api(app: FeCreatorApp) -> FastAPI:
 
     @router.get("/jobs")
     def list_jobs() -> list[Job]:
-        try:
-            return app.list_jobs()
-        except JobCorruptionError as exc:
-            raise ExpectedHttpError(
-                status.HTTP_409_CONFLICT,
-                [error("CORRUPT_JOB", "job store contains a corrupt job", where="jobs")],
-            ) from exc
+        return app.list_jobs()
 
     @router.post("/jobs", status_code=status.HTTP_201_CREATED)
     def create_job(manifest: Manifest) -> Job:

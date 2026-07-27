@@ -135,6 +135,14 @@ backslash-separated paths, symlinks, and reparse points are refused. Reference r
 map corrupt or invalid stored pack ids to structured `CORRUPT_REFERENCE_PACK`
 diagnostics instead of a bare 500.
 
+Two store failures are mapped once at each adapter's boundary rather than in
+every handler, because every action that touches a job routes through the same
+store: `LockTimeoutError` becomes `STORE_LOCK_TIMEOUT` and `JobCorruptionError`
+becomes `CORRUPT_JOB` (both HTTP `409`, CLI exit `2`, MCP `isError`). The
+corruption diagnostic reports the offending job id from the exception's
+structured metadata; neither ever echoes the exception text, which quotes
+absolute store paths. See `docs/v1-contract.md` §10 for the recovery procedure.
+
 ## MCP server
 
 `fecreator.interfaces.mcp_server.build_mcp()` registers these deterministic MCP tools:

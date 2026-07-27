@@ -6,9 +6,13 @@ from starlette.concurrency import run_in_threadpool
 from fecreator.app import FeCreatorApp
 from fecreator.core.atomicio import LockTimeoutError
 from fecreator.core.paths import PathEscapeError, normalize_storage_id
+from fecreator.jobs.store import JobCorruptionError
 
 _UNKNOWN_JOB_CLOSE_CODE = status.WS_1008_POLICY_VIOLATION
 _LOCK_CONTENTION_CLOSE_CODE = status.WS_1013_TRY_AGAIN_LATER
+# Corruption is neither "no such job" nor "retry shortly": the job is on disk and
+# no retry will fix it, so it gets its own close code.
+_CORRUPT_JOB_CLOSE_CODE = status.WS_1011_INTERNAL_ERROR
 
 
 def _job_events_payload(app: FeCreatorApp, job_id: str) -> dict[str, object]:
@@ -31,6 +35,9 @@ def register_ws(api: FastAPI, app: FeCreatorApp) -> None:
             payload = await run_in_threadpool(_job_events_payload, app, job_id)
         except LockTimeoutError:
             await websocket.close(code=_LOCK_CONTENTION_CLOSE_CODE)
+            return
+        except JobCorruptionError:
+            await websocket.close(code=_CORRUPT_JOB_CLOSE_CODE)
             return
         except (FileNotFoundError, PathEscapeError, ValueError):
             await websocket.close(code=_UNKNOWN_JOB_CLOSE_CODE)

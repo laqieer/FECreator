@@ -16,7 +16,7 @@ from fecreator.contracts.manifest import Manifest
 from fecreator.core.atomicio import LockTimeoutError
 from fecreator.core.paths import PathEscapeError, normalize_storage_id
 from fecreator.core.registry import UnknownIdError
-from fecreator.interfaces.errors import store_lock_timeout_diagnostic
+from fecreator.interfaces.errors import corrupt_job_diagnostic, store_lock_timeout_diagnostic
 from fecreator.jobs.approvals import ApprovalError
 from fecreator.jobs.model import Job
 from fecreator.jobs.service import InvalidTransitionError
@@ -199,12 +199,7 @@ def _run_job_status(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, J
 
 
 def _run_job_list(app: FeCreatorApp, _args: argparse.Namespace) -> tuple[int, JsonValue]:
-    try:
-        return 0, _models_payload(app.list_jobs())
-    except JobCorruptionError as exc:
-        raise ExpectedCliError(
-            error("CORRUPT_JOB", "job store contains a corrupt job", where="jobs")
-        ) from exc
+    return 0, _models_payload(app.list_jobs())
 
 
 def _run_job_candidate(app: FeCreatorApp, args: argparse.Namespace) -> tuple[int, JsonValue]:
@@ -770,6 +765,14 @@ def dispatch(app: FeCreatorApp, args: argparse.Namespace, out: TextIO) -> int:
         _write_json(
             out,
             _diagnostics_payload([store_lock_timeout_diagnostic(where=_command_label(args))]),
+        )
+        return 2
+    except JobCorruptionError as exc:
+        # Every command that touches a job loads it through the same store, so
+        # corruption is mapped once here rather than in each handler.
+        _write_json(
+            out,
+            _diagnostics_payload([corrupt_job_diagnostic(exc, where=_command_label(args))]),
         )
         return 2
     _write_json(out, payload)

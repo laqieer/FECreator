@@ -21,7 +21,7 @@ from fecreator.contracts.review import CandidateSnapshot
 from fecreator.core.atomicio import LockTimeoutError
 from fecreator.core.paths import PathEscapeError, normalize_storage_id
 from fecreator.core.registry import UnknownIdError
-from fecreator.interfaces.errors import store_lock_timeout_diagnostic
+from fecreator.interfaces.errors import corrupt_job_diagnostic, store_lock_timeout_diagnostic
 from fecreator.jobs.approvals import ApprovalError, ApprovalRecord
 from fecreator.jobs.model import Job
 from fecreator.jobs.service import InvalidTransitionError
@@ -342,13 +342,14 @@ def _file_content(path: str, content: bytes) -> FileContent:
     return FileContent(path=path, content_base64=base64.b64encode(content).decode("ascii"))
 
 
-def _with_lock_conflict_mapping(name: str, handler: ToolHandler) -> ToolHandler:
-    """Report store lock contention as an ordinary structured tool failure.
+def _with_store_failure_mapping(name: str, handler: ToolHandler) -> ToolHandler:
+    """Report store lock contention and job corruption as structured tool failures.
 
     Every tool routes through the same locked stores, so the mapping is applied
     once at the tool boundary rather than repeated in thirty handlers. The tool
-    name is the only location detail returned; the exception text names absolute
-    lock paths and is discarded.
+    name is the only location detail returned for contention, and the corrupt
+    job's id for corruption; both exception texts name absolute paths and are
+    discarded.
     """
 
     @functools.wraps(handler)
@@ -357,6 +358,8 @@ def _with_lock_conflict_mapping(name: str, handler: ToolHandler) -> ToolHandler:
             return handler(*args, **kwargs)
         except LockTimeoutError:
             return _error_result(store_lock_timeout_diagnostic(where=name))
+        except JobCorruptionError as exc:
+            return _error_result(corrupt_job_diagnostic(exc, where=name))
 
     return guarded
 
@@ -376,12 +379,7 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
 
     def list_jobs() -> Annotated[CallToolResult, JobsOutput]:
         """List current jobs."""
-        try:
-            return _success_result(JobsSuccessOutput(ok=True, jobs=tuple(app.list_jobs())))
-        except JobCorruptionError:
-            return _error_result(
-                error("CORRUPT_JOB", "job store contains a corrupt job", where="jobs")
-            )
+        return _success_result(JobsSuccessOutput(ok=True, jobs=tuple(app.list_jobs())))
 
     def create_job(manifest: ManifestToolInput) -> Annotated[CallToolResult, JobOutput]:
         """Create a job from a manifest object."""
@@ -1077,7 +1075,7 @@ def make_handlers(app: FeCreatorApp) -> dict[str, ToolHandler]:
             )
 
     return {
-        name: _with_lock_conflict_mapping(name, handler)
+        name: _with_store_failure_mapping(name, handler)
         for name, handler in (
             ("list_assets", list_assets),
             ("list_specs", list_specs),

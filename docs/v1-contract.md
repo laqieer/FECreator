@@ -290,6 +290,35 @@ A **persisted** manifest for `expression_refine` or `masked_variant` without a
 job cannot be loaded, planned, or built, and the fix is to recreate it. This is
 the final pre-v1 contract change, applied before the `1.0` surface is released.
 
+### Corrupt persisted jobs
+
+`JobStore.load()` distinguishes the two failures a job directory can present:
+
+- the directory does not exist — the job is **missing**, reported as
+  `UNKNOWN_JOB` (HTTP `404`, CLI exit `2`, MCP `isError`, WebSocket close
+  `1008`);
+- the directory exists but its `job.json` or `manifest.json` cannot be read as
+  the current contract — the job is **corrupt**, reported as `CORRUPT_JOB`
+  (HTTP `409`, CLI exit `2`, MCP `isError`, WebSocket close `1011`).
+
+`JobCorruptionError` carries the offending job id as structured metadata, so
+every adapter reports `where` = that job id. This holds for `list_jobs()` as well
+as for direct reads, and for every adapter action that loads a job — not only
+`get_job` / `job status`. The chained cause quotes absolute paths and is never
+echoed; no adapter discloses the data root.
+
+**Recovery is manual and fail-closed.** FECreator never migrates or reinterprets
+a corrupt job:
+
+1. back up `data/jobs/<job-id>` if anything in it is worth keeping (submitted
+   sources, a candidate package, the event log),
+2. remove the `data/jobs/<job-id>` directory,
+3. recreate the job from a manifest that satisfies the current contract — which
+   re-pins the reference revision and records the approved base.
+
+Silently rewriting the persisted manifest would invent a lineage edge or a
+reference revision that never existed, so it is not offered.
+
 ## 10a. Concurrency and lock contention
 
 A build takes an exclusive sidecar **build lease** for its whole duration, claims
