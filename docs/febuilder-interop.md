@@ -33,8 +33,13 @@ Every bundle written by `build_bundle()` contains this evidence in `compat.json`
 
 `verify_bundle()` re-decodes the bundled package and refuses evidence that does not
 describe those exact bytes, so evidence copied from another package cannot verify.
-The evidence is path-free, ROM-free, deterministic, and byte-identical across
-machines and workspaces.
+It also refuses *self-inconsistent* success: a successful roundtrip compared a
+package against its own re-encoded copy, so `pixel_sha256` must equal
+`roundtrip_pixel_sha256`, `palette_sha256` must equal `roundtrip_palette_sha256`,
+the dimensions must be 128x112, the palette must hold 1-16 colors, the background
+index must be an earned index inside that palette, and no diagnostics may be
+present. Anything else is `BUNDLE_INVALID_COMPAT`. The evidence is path-free,
+ROM-free, deterministic, and byte-identical across machines and workspaces.
 
 ## Level 2: optional external CLI validation
 
@@ -173,3 +178,19 @@ absolute paths and runtime-constructed synthetic credentials on both streams, th
 environment allowlist, NUL rejection, undecodable output, containment, and
 success. The shared process boundary is covered by `tests/core/test_process.py`.
 No test requires FEBuilderGBA or a ROM to be installed.
+
+## Continuous integration
+
+The `febuilder-interop` CI job runs on every push and pull request:
+
+- it **always** runs the deterministic level-1 tests
+  (`tests/interop/test_febuilder_roundtrip.py`, `tests/interop/test_febuilder_cli.py`,
+  and `tests/reporting/test_bundle.py`);
+- it additionally runs `tests/interop/test_febuilder_cli_smoke.py` when the
+  `FEBUILDER_CLI` **repository variable** is a non-empty executable path. That
+  smoke check builds a canonical package in a temporary directory, asks the
+  configured executable to validate it, and fails the job on any nonzero exit.
+  Locally the same test skips itself unless `FEBUILDER_CLI` is set.
+
+Level 3 never runs in CI. No job requires, downloads, or references a ROM.
+

@@ -60,8 +60,10 @@ npm run -w @laqieer/fecreator-web build:demo
 
 `hatch_build.py` deliberately rejects non-editable Python builds when
 `src/fecreator/_web/index.html` is missing. The generated `_web` directory is ignored
-and should not be committed. The root `package-lock.json` is authoritative for the npm
-workspace.
+and should not be committed; `[tool.hatch.build]` states its packaging exclusions
+explicitly (and sets `skip-excluded-dirs`) so the force-include tables are the only
+source of `_web` in a clone and in a linked worktree alike. The root
+`package-lock.json` is authoritative for the npm workspace.
 
 ## High-level architecture
 
@@ -101,8 +103,12 @@ workspace.
   with `model_dump(mode="json")` and validate input with `model_validate()`.
 - When a Python public contract changes, regenerate `schemas/` with
   `export_schemas(Path("schemas"))`, update `web/src/api/types.ts` when the UI consumes
-  it, and run `tests/contracts/test_schemas.py` plus
-  `web/src/api/types.contract.test.ts`.
+  it, update `docs/v1-contract.md`, and run `tests/contracts/test_schemas.py`,
+  `tests/contracts/test_contract_freeze.py`, plus `web/src/api/types.contract.test.ts`.
+- `docs/v1-contract.md` is the frozen v1 public surface (contracts, literals, HTTP
+  routes, CLI commands, MCP tools, capability semantics, compatibility policy).
+  `tests/contracts/test_contract_freeze.py` introspects the real models, routers,
+  parser, and tool inventory, so removing or renaming any of them fails CI.
 - Do not bypass `safe_join()`, storage-ID normalization, atomic I/O helpers, or store
   locks when writing job, lineage, reference, event, or approval data. Store corruption,
   stale revisions, invalid transitions, budget overruns, and unsafe paths fail loudly;

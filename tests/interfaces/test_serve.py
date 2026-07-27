@@ -11,6 +11,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from fecreator.cli import main
+from fecreator.interfaces import static as static_module
 
 
 @pytest.fixture()
@@ -58,7 +59,16 @@ def test_serve_uses_the_configured_loopback_host_and_port(
 async def test_serve_mounts_the_api_and_the_packaged_web_assets(
     serve_env: Path,
     captured_uvicorn: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    assets = tmp_path / "_web"
+    (assets / "assets").mkdir(parents=True)
+    index_html = "<!doctype html><title>FECreator</title>\n"
+    (assets / "index.html").write_text(index_html, encoding="utf-8", newline="\n")
+    (assets / "assets" / "app.js").write_text("export {};\n", encoding="utf-8", newline="\n")
+    monkeypatch.setattr(static_module, "web_dir", lambda: assets)
+
     assert main(["serve"]) == 0
 
     api = captured_uvicorn["api"]
@@ -69,12 +79,44 @@ async def test_serve_mounts_the_api_and_the_packaged_web_assets(
         specs = await client.get("/api/specs")
         jobs = await client.get("/api/jobs")
         root = await client.get("/")
+        script = await client.get("/assets/app.js")
+        missing = await client.get("/assets/absent.js")
 
     assert specs.status_code == 200
     assert "fe-gba-portrait-standard" in specs.json()
     assert jobs.json() == []
-    assert root.status_code in {200, 503}
+
+    # The static mount serves the real built entry point, not a placeholder,
+    # and it never shadows the API or the WebSocket route.
+    assert root.status_code == 200
+    assert root.text == index_html
+    assert root.headers["content-type"].startswith("text/html")
+    assert script.status_code == 200
+    assert script.text == "export {};\n"
+    assert missing.status_code == 404
+    assert any(getattr(route, "name", None) == "web" for route in api.routes)
     assert api.url_path_for("job_events", job_id="job-1") == "/ws/jobs/job-1"
+
+
+async def test_serve_reports_a_clear_failure_when_web_assets_are_absent(
+    serve_env: Path,
+    captured_uvicorn: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(static_module, "web_dir", lambda: None)
+
+    assert main(["serve"]) == 0
+
+    api = captured_uvicorn["api"]
+    transport = httpx.ASGITransport(app=api)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        root = await client.get("/")
+        specs = await client.get("/api/specs")
+
+    assert root.status_code == 503
+    assert "npm run -w @laqieer/fecreator-web build" in root.text
+    assert specs.status_code == 200
+    assert not any(getattr(route, "name", None) == "web" for route in api.routes)
 
 
 def test_serve_refuses_a_non_loopback_host(

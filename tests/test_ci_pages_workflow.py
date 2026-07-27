@@ -58,8 +58,112 @@ def _job(name: str) -> dict:
     return _workflow()["jobs"][name]
 
 
+RELEASE_GATE_JOBS = frozenset(
+    {"python", "web", "browser", "package", "febuilder-interop", "secret-scan"}
+)
+
+
 def test_deploy_pages_needs_all_build_and_test_jobs() -> None:
-    assert set(_deploy_job()["needs"]) == {"python", "web", "package", "secret-scan"}
+    assert set(_deploy_job()["needs"]) == RELEASE_GATE_JOBS
+
+
+def test_pages_deploy_requires_all_release_gates() -> None:
+    assert set(_deploy_job()["needs"]) >= RELEASE_GATE_JOBS
+
+
+def _step_text(job: dict) -> str:
+    return " ".join(str(step.get("run", "")) for step in job["steps"])
+
+
+def _uses(job: dict) -> list[str]:
+    return [str(step.get("uses", "")) for step in job["steps"]]
+
+
+def test_browser_job_runs_on_every_push_and_pull_request() -> None:
+    browser = _job("browser")
+    assert "if" not in browser
+    triggers = _triggers()
+    assert "push" in triggers and "pull_request" in triggers
+
+
+def test_browser_job_installs_node_python_and_playwright_chromium() -> None:
+    browser = _job("browser")
+    uses = _uses(browser)
+    assert any(u.startswith("actions/setup-node@") for u in uses)
+    assert any(u.startswith("actions/setup-python@") for u in uses)
+
+    run_text = _step_text(browser)
+    assert "npm ci" in run_text
+    assert 'pip install -e ".[dev]"' in run_text
+    assert "playwright install --with-deps chromium" in run_text
+
+
+def test_browser_job_runs_the_local_and_demo_end_to_end_suite() -> None:
+    assert "npm run -w @laqieer/fecreator-web test:e2e" in _step_text(_job("browser"))
+
+
+def test_browser_job_points_playwright_at_a_quoted_python_path() -> None:
+    """The interpreter path is quoted, so a path containing spaces still runs."""
+    e2e_step = next(
+        step for step in _job("browser")["steps"] if "test:e2e" in str(step.get("run", ""))
+    )
+    python_path = e2e_step["env"]["FECREATOR_PYTHON"]
+
+    assert python_path.startswith('"') and python_path.endswith('"')
+    assert "python" in python_path
+
+
+def test_browser_job_uploads_the_playwright_output_directory_on_failure() -> None:
+    """Traces are retained on failure, so the uploaded path must be outputDir."""
+    upload = next(
+        step
+        for step in _job("browser")["steps"]
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    )
+
+    assert upload["if"] == "failure()"
+    assert upload["with"]["path"] == "web/test-results"
+
+    config = (REPO_ROOT / "web" / "playwright.config.ts").read_text(encoding="utf-8")
+    # Playwright only writes `playwright-report/` with the html reporter, which
+    # this project does not enable; traces go to the default `test-results/`.
+    assert "playwright-report" not in config
+    assert '"html"' not in config
+
+
+def test_febuilder_interop_job_always_runs_the_deterministic_tests() -> None:
+    interop = _job("febuilder-interop")
+    assert "if" not in interop
+
+    roundtrip_step = next(
+        step
+        for step in interop["steps"]
+        if "tests/interop/test_febuilder_roundtrip.py" in str(step.get("run", ""))
+    )
+    assert "if" not in roundtrip_step
+
+
+def test_febuilder_interop_external_smoke_is_opt_in_through_a_repository_variable() -> None:
+    interop = _job("febuilder-interop")
+    smoke = next(step for step in interop["steps"] if "FEBUILDER_CLI" in str(step.get("env", {})))
+
+    assert smoke["if"] == "${{ vars.FEBUILDER_CLI != '' }}"
+    assert smoke["env"]["FEBUILDER_CLI"] == "${{ vars.FEBUILDER_CLI }}"
+    assert "tests/interop/test_febuilder_cli_smoke.py" in smoke["run"]
+
+
+def test_febuilder_interop_job_never_requires_a_rom() -> None:
+    interop = _job("febuilder-interop")
+    env_keys = {key for step in interop["steps"] for key in (step.get("env") or {})}
+
+    assert env_keys <= {"FEBUILDER_CLI"}
+    assert not any("ROM" in key.upper() for key in env_keys)
+    assert "rom" not in _step_text(interop).lower().replace("from", "")
+
+
+def test_release_gate_jobs_are_declared() -> None:
+    jobs = _workflow()["jobs"]
+    assert set(jobs) >= RELEASE_GATE_JOBS
 
 
 def test_deploy_pages_needs_secret_scan_so_leaks_block_deploy() -> None:

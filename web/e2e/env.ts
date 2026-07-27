@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { pythonExecutable, pythonServeCommand } from "./shell";
 
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -26,9 +27,11 @@ export const dataRoot =
 
 process.env.FECREATOR_E2E_DATA_ROOT = dataRoot;
 
-const pythonCommand = process.env.FECREATOR_PYTHON ?? "python";
+const pythonCommand = pythonExecutable(process.env.FECREATOR_PYTHON);
 
-export const serveCommand = `${pythonCommand} -m fecreator serve`;
+// Playwright starts `webServer.command` through a shell, so the interpreter is
+// quoted here; `pythonCommand` stays bare for the argv based spawns below.
+export const serveCommand = pythonServeCommand(process.env.FECREATOR_PYTHON);
 
 export const serveEnv: Record<string, string> = {
   FECREATOR_DATA_ROOT: dataRoot,

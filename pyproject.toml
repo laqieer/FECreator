@@ -47,6 +47,38 @@ fecreator = "fecreator.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/fecreator"]
 
+[tool.hatch.build]
+# Hatchling discards *every* VCS ignore pattern when the project root itself
+# matches one of them, which is exactly what a linked worktree under
+# `.worktrees/` looks like.  The generated frontend bundle would then be picked
+# up by normal file selection *and* by the force-include tables below, and the
+# wheel build fails with "A second file is being added to the wheel archive at
+# the same path".  Packaging exclusions are therefore stated explicitly so a
+# clone and a worktree produce the same archives.
+#
+# `skip-excluded-dirs` keeps excluded directories out of the file walk itself.
+# Without it the npm workspace link `node_modules/@laqieer/fecreator-web` is
+# visited first and claims the identity of `web/`, so hatchling's loop
+# detection then silently drops the real `web/` sources from the sdist.
+skip-excluded-dirs = true
+exclude = [
+  "/src/fecreator/_web",
+  "node_modules",
+  "/.worktrees",
+  "/.superpowers",
+  "/.playwright-mcp",
+  "/.venv",
+  "/data",
+  "/web/dist-demo",
+  "/web/.e2e-data",
+  "/web/playwright-report",
+  "/web/test-results",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  "*.egg-info",
+]
+
 [tool.hatch.build.hooks.custom]
 path = "hatch_build.py"
 

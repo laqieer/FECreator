@@ -5,9 +5,71 @@ workbench with deterministic imaging, immutable jobs/lineage, human review, and 
 `fe-gba-portrait-standard` export compatible with FEBuilderGBA (file-based, ROM-free).
 
 See `docs/product-statement.md` for scope and `docs/architecture.md` for the module map.
+The frozen v1 public surface — contracts, HTTP routes, CLI commands, MCP tools,
+capability semantics, and the compatibility policy — is in
+[`docs/v1-contract.md`](docs/v1-contract.md).
 FEBuilderGBA compatibility evidence levels (mandatory deterministic proof, optional
 CLI validation, opt-in local ROM checks) are documented in
 [`docs/febuilder-interop.md`](docs/febuilder-interop.md).
+
+## Getting started
+
+Supported runtimes are Python 3.11-3.13 and Node.js 20.19-24. Run everything from
+the repository root.
+
+```powershell
+python -m pip install -e ".[dev]"
+npm ci
+pre-commit install
+```
+
+Build the web bundle before packaging or serving; the generated
+`src/fecreator/_web` directory is ignored and must never be committed.
+
+```powershell
+# Local app: root-relative assets, written into src/fecreator/_web
+npm run -w @laqieer/fecreator-web build
+python -m build
+
+# GitHub Pages demo: assets use the /FECreator/ base path
+npm run -w @laqieer/fecreator-web build:demo
+```
+
+Run the local workbench (loopback only, `FECREATOR_DATA_ROOT` required):
+
+```powershell
+$env:FECREATOR_DATA_ROOT = "$PWD\data"
+fecreator serve
+```
+
+## Checks
+
+```powershell
+# Python
+ruff check .
+ruff format --check .
+mypy src
+pytest -q
+
+# Web
+npm run -w @laqieer/fecreator-web typecheck
+npm run -w @laqieer/fecreator-web lint
+npm run -w @laqieer/fecreator-web test
+
+# Browser end-to-end flows (builds the local and demo bundles first)
+npx playwright install chromium
+npm run -w @laqieer/fecreator-web test:e2e
+```
+
+Set `FECREATOR_PYTHON` when the interpreter that has FECreator installed is not
+`python`; a path containing spaces is quoted automatically, and an already quoted
+value is accepted as-is.
+
+CI runs `python`, `web`, `browser`, `package`, `febuilder-interop`, and
+`secret-scan` on every push and pull request. The GitHub Pages deployment is
+limited to successful `main` pushes and depends on all six. The optional external
+FEBuilder-compatible check runs only when the `FEBUILDER_CLI` repository variable
+is set; no gate ever requires a ROM.
 
 ## Live demo
 

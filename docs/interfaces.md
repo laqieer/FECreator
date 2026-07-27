@@ -1,6 +1,9 @@
 # Interfaces
 
-Every interface stays thin and calls the same `FeCreatorApp` facade.
+Every interface stays thin and calls the same `FeCreatorApp` facade. The exact
+frozen v1 operation inventory (and the compatibility policy that governs
+changing it) is in [`v1-contract.md`](v1-contract.md); this page documents how
+each adapter behaves.
 
 ## JSON CLI
 

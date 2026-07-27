@@ -33,6 +33,7 @@ from fecreator.interop.febuilder_cli import (
     run_febuilder_cli,
 )
 from fecreator.interop.febuilder_roundtrip import (
+    UNKNOWN_BACKGROUND_INDEX,
     RoundtripEvidence,
     decode_package_digest,
     decode_roundtrip,
@@ -46,6 +47,11 @@ from fecreator.reporting.sanitize import (
     sanitize_json,
     sanitize_path,
     sanitize_text,
+)
+from fecreator.specs.fire_emblem.gba.portrait_standard.layout import (
+    MAX_COLORS,
+    SHEET_H,
+    SHEET_W,
 )
 
 MAX_BUNDLE_FILE_COUNT = 64
@@ -728,7 +734,47 @@ def _validate_compat_file(
             )
         )
         return None
+    if not _is_self_consistent_success(evidence):
+        diagnostics.append(
+            error(
+                "BUNDLE_INVALID_COMPAT",
+                "compat.json claims a successful roundtrip that contradicts itself",
+                where="compat.json",
+            )
+        )
+        return None
     return _CompatEvidence(roundtrip=evidence, external=external)
+
+
+def _is_self_consistent_success(evidence: RoundtripEvidence) -> bool:
+    """Refuse success evidence no real roundtrip could have produced.
+
+    A successful :func:`decode_roundtrip` compared the source package against
+    its own re-encoded copy and only reports ``ok`` when both sides agree, so
+    the recorded source and roundtrip hashes are necessarily equal and the
+    geometry, palette size, and background index necessarily satisfy the strict
+    target-spec contract. Evidence that claims success while contradicting any
+    of that was hand-edited or written by a broken writer.
+    """
+    if not evidence.ok:
+        return True
+    if evidence.diagnostics:
+        return False
+    if evidence.dimensions != (SHEET_W, SHEET_H):
+        return False
+    if not 1 <= evidence.color_count <= MAX_COLORS:
+        return False
+    if evidence.background_index == UNKNOWN_BACKGROUND_INDEX:
+        return False
+    if not 0 <= evidence.background_index < evidence.color_count:
+        return False
+    if evidence.pixel_sha256 != evidence.roundtrip_pixel_sha256:
+        return False
+    if evidence.palette_sha256 != evidence.roundtrip_palette_sha256:
+        return False
+    return bool(_HASH_RE.match(evidence.pixel_sha256)) and bool(
+        _HASH_RE.match(evidence.palette_sha256)
+    )
 
 
 def _is_sanitized_diagnostic(diagnostic: Diagnostic) -> bool:

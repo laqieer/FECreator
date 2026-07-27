@@ -18,3 +18,4 @@ src/fecreator/_web/
 data/
 .pytest-build-probe-*/
 .pytest-editable-probe-*/
+.pytest-package-probe-*/

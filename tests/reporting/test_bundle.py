@@ -425,6 +425,44 @@ def _rewrite_compat(bundle: Path, mutate: Callable[[dict[str, Any]], None]) -> N
             ),
             id="unsafe-diagnostic-where",
         ),
+        pytest.param(
+            lambda payload: payload["roundtrip"].__setitem__("roundtrip_pixel_sha256", "a" * 64),
+            id="success-with-differing-roundtrip-pixels",
+        ),
+        pytest.param(
+            lambda payload: payload["roundtrip"].__setitem__("roundtrip_palette_sha256", "b" * 64),
+            id="success-with-differing-roundtrip-palette",
+        ),
+        pytest.param(
+            lambda payload: payload["roundtrip"].__setitem__("dimensions", [64, 56]),
+            id="success-with-non-canonical-dimensions",
+        ),
+        pytest.param(
+            lambda payload: payload["roundtrip"].__setitem__("color_count", 17),
+            id="success-with-too-many-colors",
+        ),
+        pytest.param(
+            lambda payload: payload["roundtrip"].__setitem__("background_index", -1),
+            id="success-without-an-earned-background-index",
+        ),
+        pytest.param(
+            lambda payload: payload["roundtrip"].__setitem__("background_index", 9),
+            id="success-with-background-outside-the-palette",
+        ),
+        pytest.param(
+            lambda payload: payload["roundtrip"].__setitem__(
+                "diagnostics",
+                [
+                    {
+                        "code": "ROUNDTRIP_PIXEL_MISMATCH",
+                        "severity": "error",
+                        "message": "roundtrip index pixels differ",
+                        "where": None,
+                    }
+                ],
+            ),
+            id="success-carrying-failure-diagnostics",
+        ),
     ],
 )
 def test_verify_bundle_rejects_untrustworthy_compat_evidence(

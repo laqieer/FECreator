@@ -63,9 +63,68 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install build twine
+      - run: pip install -e ".[dev]"
+      - run: pip install twine
       - run: python -m build
       - run: twine check dist/*
+      - name: Prove the distributions carry the frontend exactly once
+        run: pytest -q tests/test_package.py
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Run the local and demo browser flows
+        env:
+          # Quoted so an interpreter path containing spaces still starts the
+          # Playwright webServer, on POSIX shells and on Windows alike.
+          FECREATOR_PYTHON: '"${{ steps.python.outputs.python-path }}"'
+        run: npm run -w @laqieer/fecreator-web test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          # `trace: "retain-on-failure"` writes into Playwright's default
+          # outputDir, so this is where failure diagnostics actually land.
+          name: playwright-traces
+          path: web/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  febuilder-interop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - name: Deterministic file-based compatibility evidence
+        run: >-
+          pytest -q
+          tests/interop/test_febuilder_roundtrip.py
+          tests/interop/test_febuilder_cli.py
+          tests/reporting/test_bundle.py
+      - name: Configured external executable check
+        # Opt in by setting the FEBUILDER_CLI repository variable to an
+        # executable path.  The check stays file-based: a nonzero exit fails
+        # this job, and no ROM is ever required, downloaded, or referenced.
+        if: ${{ vars.FEBUILDER_CLI != '' }}
+        env:
+          FEBUILDER_CLI: ${{ vars.FEBUILDER_CLI }}
+        run: pytest -q tests/interop/test_febuilder_cli_smoke.py
 
   secret-scan:
     # Runs on pushes and on internal (same-repo) pull requests, where the
@@ -103,7 +162,7 @@ jobs:
 
   deploy-pages:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    needs: [python, web, package, secret-scan]
+    needs: [python, web, browser, package, febuilder-interop, secret-scan]
     runs-on: ubuntu-latest
     permissions:
       contents: read

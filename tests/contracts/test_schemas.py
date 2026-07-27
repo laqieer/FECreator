@@ -60,3 +60,33 @@ def test_manifest_schema_includes_pinned_reference_revision(tmp_path: Path) -> N
     manifest_schema = json.loads((tmp_path / "manifest.schema.json").read_text(encoding="utf-8"))
 
     assert manifest_schema["properties"]["character_ref_pack_rev"]["anyOf"][0]["minimum"] == 1
+
+
+def test_committed_schema_files_match_the_exported_inventory() -> None:
+    committed = {path.name for path in REPO_SCHEMAS.glob("*.schema.json")}
+
+    assert committed == {f"{name}.schema.json" for name in SCHEMA_MODELS}
+
+
+def test_committed_manifest_schema_pins_the_frozen_v1_literals() -> None:
+    manifest_schema = json.loads((REPO_SCHEMAS / "manifest.schema.json").read_text("utf-8"))
+    properties = manifest_schema["properties"]
+
+    assert properties["version"]["const"] == "1.0"
+    assert properties["version"]["default"] == "1.0"
+    assert properties["asset_type"]["const"] == "portrait"
+    assert properties["target_spec"]["const"] == "fe-gba-portrait-standard"
+    assert properties["workflow"]["enum"] == [
+        "text_to_portrait",
+        "concept_to_portrait",
+        "expression_refine",
+        "masked_variant",
+    ]
+    assert manifest_schema["additionalProperties"] is False
+
+
+def test_committed_candidate_schema_pins_the_frozen_v1_version() -> None:
+    candidate_schema = json.loads((REPO_SCHEMAS / "candidate.schema.json").read_text("utf-8"))
+
+    assert candidate_schema["properties"]["version"]["const"] == "1.0"
+    assert candidate_schema["additionalProperties"] is False

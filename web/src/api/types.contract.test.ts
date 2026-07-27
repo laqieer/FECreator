@@ -4,14 +4,92 @@ import type {
   ApprovalRecord,
   BundleEntry,
   CandidateSnapshot,
+  Diagnostic,
   Job,
   JobResult,
+  JobState,
   LineageNode,
   Manifest,
+  Operation,
   ReferencePack,
   Report,
+  SourceKind,
   SourcePlan,
+  Workflow,
 } from "./types";
+
+test("the v1 wire version literal is frozen on both versioned contracts", () => {
+  expectTypeOf<Manifest["version"]>().toEqualTypeOf<"1.0">();
+  expectTypeOf<CandidateSnapshot["version"]>().toEqualTypeOf<"1.0">();
+  expectTypeOf<Manifest["asset_type"]>().toEqualTypeOf<"portrait">();
+  expectTypeOf<Manifest["target_spec"]>().toEqualTypeOf<"fe-gba-portrait-standard">();
+});
+
+test("the frozen unions mirror the Python enumerations exactly", () => {
+  expectTypeOf<Workflow>().toEqualTypeOf<
+    "text_to_portrait" | "concept_to_portrait" | "expression_refine" | "masked_variant"
+  >();
+  expectTypeOf<SourceKind>().toEqualTypeOf<"text" | "concept_art" | "approved_portrait">();
+  expectTypeOf<Operation>().toEqualTypeOf<
+    | "import_concept"
+    | "create_neutral"
+    | "refine_expression"
+    | "variant_masked_edit"
+    | "export_spec"
+  >();
+  expectTypeOf<JobState>().toEqualTypeOf<
+    | "created"
+    | "planning"
+    | "waiting_for_provider"
+    | "waiting_for_sources"
+    | "processing"
+    | "waiting_for_review"
+    | "validating"
+    | "completed"
+    | "failed"
+    | "cancelled"
+  >();
+  expectTypeOf<Diagnostic["severity"]>().toEqualTypeOf<"error" | "warning" | "info">();
+});
+
+test("the frozen contract key sets never gain or lose a field", () => {
+  expectTypeOf<keyof Manifest>().toEqualTypeOf<
+    | "version"
+    | "asset_type"
+    | "target_spec"
+    | "workflow"
+    | "provider"
+    | "character_ref_pack"
+    | "character_ref_pack_rev"
+    | "sources"
+    | "edit"
+    | "params"
+  >();
+  expectTypeOf<keyof CandidateSnapshot>().toEqualTypeOf<
+    "version" | "job_id" | "lineage_id" | "artifacts" | "diagnostics" | "metrics" | "created_at"
+  >();
+  expectTypeOf<keyof JobResult>().toEqualTypeOf<
+    "job_id" | "ok" | "artifacts" | "diagnostics" | "lineage_id"
+  >();
+  expectTypeOf<keyof LineageNode>().toEqualTypeOf<
+    | "asset_id"
+    | "operation"
+    | "parents"
+    | "provider"
+    | "model"
+    | "prompt"
+    | "reference_pack"
+    | "reference_pack_rev"
+    | "seed"
+    | "params"
+    | "mask"
+    | "protected_regions"
+    | "metrics"
+    | "approved_by"
+    | "output_hashes"
+    | "created_at"
+  >();
+});
 
 test("Manifest mirrors the canonical manifest contract", () => {
   expectTypeOf<Manifest>().toEqualTypeOf<{
