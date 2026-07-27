@@ -295,7 +295,10 @@ def test_linked_worktree_build_includes_the_frontend_entrypoint_exactly_once() -
         assert not [n for n in _sdist_names(sdist) if "node_modules/" in n]
         assert not [n for n in _sdist_names(sdist) if "dist-demo/" in n]
         assert _stale_entries(_sdist_names(sdist), sdist_root=SDIST_ROOT) == []
-        assert _stale_entries(_wheel_names(wheel), sdist_root=None) == []
+        assert {name.split("/", 1)[0] for name in _wheel_names(wheel)} == {
+            "fecreator",
+            f"fecreator-{fecreator.__version__}.dist-info",
+        }
     finally:
         shutil.rmtree(probe, ignore_errors=True)
 
@@ -321,12 +324,10 @@ _STALE_BUILD_ARTIFACT_PREFIXES = (
 )
 
 
-def _stale_entries(names: list[str], *, sdist_root: str | None) -> list[str]:
+def _stale_entries(names: list[str], *, sdist_root: str) -> list[str]:
     offending: list[str] = []
     for name in names:
-        relative = (
-            name[len(sdist_root) + 1 :] if sdist_root and name.startswith(sdist_root) else name
-        )
+        relative = name[len(sdist_root) + 1 :] if name.startswith(sdist_root) else name
         if relative.startswith(_STALE_BUILD_ARTIFACT_PREFIXES):
             offending.append(name)
     return offending
@@ -339,9 +340,14 @@ def test_built_archives_never_carry_stale_build_or_probe_directories(
     sdist, wheel = clone_distributions
 
     assert _stale_entries(_sdist_names(sdist), sdist_root=SDIST_ROOT) == []
-    assert _stale_entries(_wheel_names(wheel), sdist_root=None) == []
     assert not [n for n in _sdist_names(sdist) if n.endswith("/stale.py")]
-    assert not [n for n in _wheel_names(wheel) if n.endswith("/stale.py")]
+    # A wheel entry can only be repository-root junk if the wheel stops being
+    # built from `packages = ["src/fecreator"]`, so that restriction is what the
+    # wheel side has to assert; a prefix scan there could never fail.
+    assert {name.split("/", 1)[0] for name in _wheel_names(wheel)} == {
+        "fecreator",
+        f"fecreator-{fecreator.__version__}.dist-info",
+    }
 
 
 def test_sdist_keeps_the_frontend_sources_next_to_the_workspace_link(

@@ -309,3 +309,30 @@ def test_mcp_build_reports_job_lock_contention_from_inside_the_build_lease(
     assert result.isError is True
     assert [diagnostic["code"] for diagnostic in diagnostics] == [LOCK_TIMEOUT_CODE]
     _assert_redacted(json.dumps(result.model_dump(mode="json")), root)
+
+
+def test_job_listing_reports_a_held_lock_as_contention_not_corruption(data_root: Path) -> None:
+    """Listing must never advise deleting a job that is merely locked."""
+    app = FeCreatorApp(Settings(data_root=data_root))
+    job = app.create_job(_manifest())
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold_lock() -> None:
+        with app._jobs.locked(job.id):
+            holding.set()
+            assert release.wait(timeout=30)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert holding.wait(timeout=10)
+    client = TestClient(create_api(app))
+    try:
+        response = client.get("/api/jobs")
+    finally:
+        release.set()
+        holder.join(timeout=10)
+
+    assert response.status_code == 409
+    assert [diagnostic["code"] for diagnostic in response.json()] == [LOCK_TIMEOUT_CODE]
+    _assert_redacted(response.text, str(data_root))

@@ -174,6 +174,10 @@ class JobStore:
             )
         except JobCorruptionError:
             raise
+        except LockTimeoutError:
+            # Nothing inside the block takes a lock today; re-raising keeps that
+            # true by construction rather than by inspection.
+            raise
         except (KeyError, OSError, TypeError, ValueError) as exc:
             # The directory is visible, so this is corruption rather than a
             # missing job: a truncated payload, an unknown state, or a manifest
@@ -293,8 +297,14 @@ class JobStore:
             try:
                 with self.locked(entry.name):
                     job = self._load_locked(entry.name)
-            except JobCorruptionError:
+            except (JobCorruptionError, LockTimeoutError):
+                # Contention is retryable and must stay `STORE_LOCK_TIMEOUT`;
+                # rewriting it as corruption would advise deleting a healthy job.
                 raise
+            except FileNotFoundError:
+                # Removed between the directory scan and the lock: the job is
+                # gone, not corrupt, so it simply is not in this listing.
+                continue
             except Exception as exc:  # pragma: no cover - exact error preserved by chaining
                 raise JobCorruptionError(
                     f"job directory is corrupt: {entry.name}", job_id=entry.name

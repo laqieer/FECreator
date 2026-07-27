@@ -378,3 +378,52 @@ def test_a_corrupt_job_id_mismatch_carries_the_visible_job_id(data_root) -> None
         store.load(job.id)
 
     assert corrupt.value.job_id == job.id
+
+
+def test_list_reports_lock_contention_as_contention_not_corruption(data_root) -> None:
+    """A held job lock is a retryable conflict, not a reason to delete the job."""
+    from fecreator.core.atomicio import LockTimeoutError
+
+    store = JobStore(data_root)
+    job = store.create(_manifest())
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold_lock() -> None:
+        with store.locked(job.id):
+            holding.set()
+            assert release.wait(timeout=30)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert holding.wait(timeout=10)
+    try:
+        with pytest.raises(LockTimeoutError):
+            JobStore(data_root).list()
+    finally:
+        release.set()
+        holder.join(timeout=10)
+
+
+def test_list_skips_a_job_removed_while_the_listing_runs(
+    data_root, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job deleted between the directory scan and its lock is gone, not corrupt."""
+    import shutil
+    from contextlib import contextmanager
+
+    store = JobStore(data_root)
+    healthy = store.create(_manifest())
+    doomed = store.create(_manifest())
+    original_locked = JobStore.locked
+
+    @contextmanager
+    def removing_locked(self, job_id: str):
+        if job_id == doomed.id:
+            shutil.rmtree(data_root / "jobs" / doomed.id)
+        with original_locked(self, job_id):
+            yield
+
+    monkeypatch.setattr(JobStore, "locked", removing_locked)
+
+    assert [job.id for job in JobStore(data_root).list()] == [healthy.id]
