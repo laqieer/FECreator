@@ -71,6 +71,14 @@ limited to successful `main` pushes and depends on all six. The optional externa
 FEBuilder-compatible check runs only when the `FEBUILDER_CLI` repository variable
 is set; no gate ever requires a ROM.
 
+## Releasing
+
+Releases go to PyPI through Trusted Publishing (OIDC); no PyPI API token exists
+in this repository. Pushing a `v*.*.*` tag builds the distributions in an
+unprivileged job and publishes them from a separate `pypi` environment job.
+See [`docs/pypi-publishing.md`](docs/pypi-publishing.md) for the trust boundary,
+the exact pending-publisher fields, and the manual re-run command.
+
 ## Live demo
 
 A static, sample-data demo is published to GitHub Pages:
