@@ -306,7 +306,9 @@ Also pin, in the same module: the absent `workflow_dispatch` input, the
 `cancel-in-progress: false`, `timeout-minutes` on every job, the absent pip
 cache, `pytest -q tests/test_package.py` between `python -m build` and the
 artifact upload, explicit `attestations: true`, and the documented environment
-protection rules and `v0.1.0` recreation.
+protection rules and `v0.1.0` recreation. The packaging test should be
+described as re-proving invariants with isolated probe builds, not as checking
+the exact `dist/` files from the earlier build step.
 
 - [ ] **Step 2: Run tests and verify the workflow is missing**
 
@@ -366,7 +368,7 @@ jobs:
       - run: npm run -w @laqieer/fecreator-web build
       - run: python -m build
       - run: python -m twine check --strict dist/*
-      - name: Prove the distributions carry the frontend exactly once
+      - name: Re-prove packaging invariants with isolated probe builds
         run: pytest -q tests/test_package.py
       - uses: actions/upload-artifact@v4
         with:

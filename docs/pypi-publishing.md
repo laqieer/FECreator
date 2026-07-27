@@ -45,9 +45,10 @@ Consequences of that split:
   git remote.
 - **No restored pip cache.** The build resolves dependencies fresh; a release
   build does not trust a cache another workflow run wrote.
-- **Real packaging proof before upload.** `pytest -q tests/test_package.py` runs
-  against the distributions that were just built, before they leave the job as
-  an artifact.
+- **Packaging invariants are re-proved before upload.** `pytest -q
+  tests/test_package.py` runs isolated probe builds to re-prove the packaging
+  invariants before the artifact is uploaded; it does not inspect the exact
+  `dist/` files built earlier in the job.
 - **Strict metadata validation.** `twine check --strict` turns a README
   rendering warning into a failure.
 - **Serialized runs.** Concurrency group `publish-${{ github.ref_name }}` with

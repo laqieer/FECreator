@@ -199,8 +199,8 @@ def test_build_job_validates_the_distributions_strictly() -> None:
     assert "python -m twine check --strict dist/*" in _commands("build")
 
 
-def test_build_job_runs_the_real_package_test_before_uploading() -> None:
-    """The distributions that get published are the ones the packaging test inspected."""
+def test_build_job_runs_the_probe_package_test_before_uploading() -> None:
+    """The isolated probe builds re-prove packaging invariants before upload."""
     steps = _steps("build")
     package_test = next(
         index

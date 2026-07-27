@@ -259,9 +259,10 @@ def clone_distributions() -> Iterator[tuple[Path, Path]]:
         shutil.rmtree(probe, ignore_errors=True)
 
 
-def test_clone_build_includes_the_frontend_entrypoint_exactly_once(
+def test_clone_probe_build_re_proves_packaging_invariants(
     clone_distributions: tuple[Path, Path],
 ) -> None:
+    """Use an isolated probe build to re-prove the packaging invariants."""
     sdist, wheel = clone_distributions
 
     assert [n for n in _sdist_names(sdist) if n.endswith("src/fecreator/_web/index.html")] == [
@@ -272,7 +273,7 @@ def test_clone_build_includes_the_frontend_entrypoint_exactly_once(
     ]
 
 
-def test_linked_worktree_build_includes_the_frontend_entrypoint_exactly_once() -> None:
+def test_linked_worktree_probe_build_re_proves_packaging_invariants() -> None:
     """Build from a project root that its own `.gitignore` matches.
 
     Hatchling discards every VCS ignore pattern when the project root itself is

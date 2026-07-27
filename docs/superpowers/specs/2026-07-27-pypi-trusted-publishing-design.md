@@ -40,7 +40,8 @@ The build job has read-only repository permissions and no OIDC permission.
 5. Build the local web assets into `src/fecreator/_web`.
 6. Build the wheel and source distribution.
 7. Validate both files with `twine check --strict`.
-8. Run the repository packaging test against the built distributions.
+8. Run the repository packaging test, which re-proves the packaging invariants
+   with isolated probe builds before upload.
 9. Upload the immutable `dist/` directory as a GitHub Actions artifact.
 
 The checkout ref is fully qualified so a branch cannot shadow the tag.
@@ -110,8 +111,7 @@ publisher. The workflow requires no stored environment secret.
 - A tag/version mismatch fails before artifact upload.
 - Missing web assets fail the Python build.
 - Invalid distributions fail `twine check --strict`.
-- A distribution that does not carry the frontend exactly once fails
-  `tests/test_package.py` before upload.
+- A packaging invariant regression fails `tests/test_package.py` before upload.
 - An unapproved deployment never reaches the publish job.
 - Missing or mismatched PyPI trusted-publisher configuration fails the publish
   job without falling back to a token.
@@ -132,7 +132,7 @@ Repository tests verify:
   validation, the packaging test's position before upload, and explicit
   attestations
 - absence of PyPI token or password configuration
-- build-before-publish ordering
+- build-before-publish ordering and the packaging test's isolated probe builds
 - no GitHub Release step
 - documentation of the pending publisher fields, the required environment
   protection rules, the one-time `v0.1.0` recreation, and the manual dispatch
