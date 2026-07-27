@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         print(validate_release_tag(args.tag, args.pyproject, args.package_init))
-    except (OSError, ValueError, tomllib.TOMLDecodeError):
+    except (OSError, SyntaxError, ValueError, tomllib.TOMLDecodeError):
         print("invalid release tag", file=sys.stderr)
         return 1
     return 0
