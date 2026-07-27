@@ -24,7 +24,11 @@ from fecreator.core.atomicio import (
 from fecreator.core.hashing import sha256_file
 from fecreator.core.paths import PathEscapeError, safe_join
 from fecreator.core.redaction import contains_secret_key
-from fecreator.interop.febuilder_roundtrip import RoundtripEvidence, decode_roundtrip
+from fecreator.interop.febuilder_roundtrip import (
+    RoundtripEvidence,
+    decode_package_digest,
+    decode_roundtrip,
+)
 from fecreator.jobs.approvals import ApprovalRecord
 from fecreator.jobs.model import Job
 from fecreator.reporting.sanitize import (
@@ -446,15 +450,24 @@ def build_bundle(job: Job, workspace: Path, out_dir: Path) -> Path:
     return out_dir
 
 
-def _validate_manifest_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> Manifest | None:
+def _report_missing_file(name: str, diagnostics: list[Diagnostic], missing: set[str]) -> None:
+    """Record one missing bundle file so later scans do not repeat the finding."""
+    if name in missing:
+        return
+    missing.add(name)
+    diagnostics.append(error("BUNDLE_MISSING_FILE", f"missing {name}", where=name))
+
+
+def _validate_manifest_file(
+    bundle_dir: Path, diagnostics: list[Diagnostic], missing: set[str]
+) -> Manifest | None:
     path = bundle_dir / "manifest.json"
+    if not path.is_file():
+        _report_missing_file("manifest.json", diagnostics, missing)
+        return None
     try:
         return Manifest.model_validate(_read_json_unlocked(path))
-    except FileNotFoundError:
-        diagnostics.append(
-            error("BUNDLE_MISSING_FILE", "missing manifest.json", where="manifest.json")
-        )
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         diagnostics.append(
             error(
                 "BUNDLE_INVALID_MANIFEST",
@@ -465,13 +478,16 @@ def _validate_manifest_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> 
     return None
 
 
-def _validate_report_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> JsonObject | None:
+def _validate_report_file(
+    bundle_dir: Path, diagnostics: list[Diagnostic], missing: set[str]
+) -> JsonObject | None:
     path = bundle_dir / "report.json"
+    if not path.is_file():
+        _report_missing_file("report.json", diagnostics, missing)
+        return None
     try:
         payload = _read_json_object(path, label="report")
         return _validated_report_payload(payload)
-    except FileNotFoundError:
-        diagnostics.append(error("BUNDLE_MISSING_FILE", "missing report.json", where="report.json"))
     except BundleError as exc:
         diagnostics.append(
             error("BUNDLE_INVALID_REPORT", sanitize_text(str(exc)), where="report.json")
@@ -480,21 +496,20 @@ def _validate_report_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> Js
 
 
 def _validate_lineage_file(
-    bundle_dir: Path, diagnostics: list[Diagnostic]
+    bundle_dir: Path, diagnostics: list[Diagnostic], missing: set[str]
 ) -> list[JsonObject] | None:
     path = bundle_dir / "lineage.json"
+    if not path.is_file():
+        _report_missing_file("lineage.json", diagnostics, missing)
+        return None
     try:
         payload = _read_json_list(path, label="lineage")
         return _validated_lineage_payload(payload)
-    except FileNotFoundError:
-        diagnostics.append(
-            error("BUNDLE_MISSING_FILE", "missing lineage.json", where="lineage.json")
-        )
     except BundleError as exc:
         diagnostics.append(
             error("BUNDLE_INVALID_LINEAGE", sanitize_text(str(exc)), where="lineage.json")
         )
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         diagnostics.append(
             error(
                 "BUNDLE_INVALID_LINEAGE",
@@ -505,13 +520,15 @@ def _validate_lineage_file(
     return None
 
 
-def _validate_hashes_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> JsonObject | None:
+def _validate_hashes_file(
+    bundle_dir: Path, diagnostics: list[Diagnostic], missing: set[str]
+) -> JsonObject | None:
     path = bundle_dir / "hashes.json"
+    if not path.is_file():
+        _report_missing_file("hashes.json", diagnostics, missing)
+        return None
     try:
         payload = _read_json_object(path, label="hashes")
-    except FileNotFoundError:
-        diagnostics.append(error("BUNDLE_MISSING_FILE", "missing hashes.json", where="hashes.json"))
-        return None
     except BundleError as exc:
         diagnostics.append(
             error("BUNDLE_INVALID_HASHES", sanitize_text(str(exc)), where="hashes.json")
@@ -538,14 +555,14 @@ def _validate_hashes_file(bundle_dir: Path, diagnostics: list[Diagnostic]) -> Js
 
 
 def _validate_compat_file(
-    bundle_dir: Path, diagnostics: list[Diagnostic]
+    bundle_dir: Path, diagnostics: list[Diagnostic], missing: set[str]
 ) -> RoundtripEvidence | None:
     path = bundle_dir / "compat.json"
+    if not path.is_file():
+        _report_missing_file("compat.json", diagnostics, missing)
+        return None
     try:
         payload = _read_json_object(path, label="compatibility evidence")
-    except FileNotFoundError:
-        diagnostics.append(error("BUNDLE_MISSING_FILE", "missing compat.json", where="compat.json"))
-        return None
     except BundleError as exc:
         diagnostics.append(
             error("BUNDLE_INVALID_COMPAT", sanitize_text(str(exc)), where="compat.json")
@@ -572,20 +589,16 @@ def _validate_compat_file(
         return None
     try:
         evidence = RoundtripEvidence.model_validate(payload["roundtrip"])
-    except (KeyError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError):
         diagnostics.append(
             error(
                 "BUNDLE_INVALID_COMPAT",
-                sanitize_text(f"compat.json roundtrip evidence is invalid: {exc}"),
+                "compat.json roundtrip evidence is malformed",
                 where="compat.json",
             )
         )
         return None
-    if any(
-        diagnostic.message != sanitize_text(diagnostic.message)
-        or (diagnostic.where is not None and diagnostic.where != sanitize_path(diagnostic.where))
-        for diagnostic in evidence.diagnostics
-    ):
+    if any(not _is_sanitized_diagnostic(diagnostic) for diagnostic in evidence.diagnostics):
         diagnostics.append(
             error(
                 "BUNDLE_INVALID_COMPAT",
@@ -595,6 +608,61 @@ def _validate_compat_file(
         )
         return None
     return evidence
+
+
+def _is_sanitized_diagnostic(diagnostic: Diagnostic) -> bool:
+    if diagnostic.message != sanitize_text(diagnostic.message):
+        return False
+    if diagnostic.where is not None and diagnostic.where != sanitize_path(diagnostic.where):
+        return False
+    return all(
+        value == sanitize_text(value)
+        for value in (diagnostic.data or {}).values()
+        if isinstance(value, str)
+    )
+
+
+def _verify_compat_matches_package(
+    bundle_dir: Path, compat: RoundtripEvidence, diagnostics: list[Diagnostic]
+) -> None:
+    """Bind successful roundtrip evidence to the package bytes in this bundle.
+
+    Structurally valid evidence copied from another package must not verify, so
+    the bundled package is decoded again and compared against the recorded
+    geometry, palette size, earned background index, and array hashes.
+    """
+    digest = decode_package_digest(bundle_dir / "package")
+    if digest is None:
+        diagnostics.append(
+            error(
+                "BUNDLE_COMPAT_EVIDENCE_MISMATCH",
+                "compat.json reports success but the bundled package cannot be decoded",
+                where="compat.json",
+            )
+        )
+        return
+    recorded = (
+        compat.dimensions,
+        compat.color_count,
+        compat.background_index,
+        compat.pixel_sha256,
+        compat.palette_sha256,
+    )
+    decoded = (
+        digest.dimensions,
+        digest.color_count,
+        digest.background_index,
+        digest.pixel_sha256,
+        digest.palette_sha256,
+    )
+    if recorded != decoded:
+        diagnostics.append(
+            error(
+                "BUNDLE_COMPAT_EVIDENCE_MISMATCH",
+                "compat.json roundtrip evidence does not describe the bundled package",
+                where="compat.json",
+            )
+        )
 
 
 def _append_casefold_collision_diagnostics(
@@ -625,11 +693,12 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
             )
         ]
 
-    manifest = _validate_manifest_file(bundle_dir, diagnostics)
-    report = _validate_report_file(bundle_dir, diagnostics)
-    lineage = _validate_lineage_file(bundle_dir, diagnostics)
-    compat = _validate_compat_file(bundle_dir, diagnostics)
-    hashes_payload = _validate_hashes_file(bundle_dir, diagnostics)
+    missing_files: set[str] = set()
+    manifest = _validate_manifest_file(bundle_dir, diagnostics, missing_files)
+    report = _validate_report_file(bundle_dir, diagnostics, missing_files)
+    lineage = _validate_lineage_file(bundle_dir, diagnostics, missing_files)
+    compat = _validate_compat_file(bundle_dir, diagnostics, missing_files)
+    hashes_payload = _validate_hashes_file(bundle_dir, diagnostics, missing_files)
     if hashes_payload is None:
         return diagnostics
 
@@ -687,13 +756,15 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
 
         expected_files.add(normalized_path)
         if not target.exists():
-            diagnostics.append(
-                error(
-                    "BUNDLE_MISSING_FILE",
-                    f"declared file is missing: {normalized_path}",
-                    where=normalized_path,
+            if normalized_path not in missing_files:
+                missing_files.add(normalized_path)
+                diagnostics.append(
+                    error(
+                        "BUNDLE_MISSING_FILE",
+                        f"declared file is missing: {normalized_path}",
+                        where=normalized_path,
+                    )
                 )
-            )
             continue
         if _is_unsafe_entry(target):
             diagnostics.append(
@@ -734,7 +805,7 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
             )
         )
 
-    for relative_path in sorted(_REQUIRED_BUNDLE_FILES - actual_files):
+    for relative_path in sorted(_REQUIRED_BUNDLE_FILES - actual_files - missing_files):
         diagnostics.append(
             error(
                 "BUNDLE_MISSING_FILE",
@@ -743,14 +814,17 @@ def verify_bundle(bundle_dir: Path) -> list[Diagnostic]:
             )
         )
 
-    if compat is not None and not compat.ok:
-        diagnostics.append(
-            error(
-                "BUNDLE_COMPAT_FAILURE",
-                "deterministic compatibility roundtrip did not succeed",
-                where="compat.json",
+    if compat is not None:
+        if compat.ok:
+            _verify_compat_matches_package(bundle_dir, compat, diagnostics)
+        else:
+            diagnostics.append(
+                error(
+                    "BUNDLE_COMPAT_FAILURE",
+                    "deterministic compatibility roundtrip did not succeed",
+                    where="compat.json",
+                )
             )
-        )
 
     if manifest is not None and report is not None and lineage is not None:
         expected_manifest_hash = manifest.content_hash()

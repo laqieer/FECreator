@@ -6,8 +6,10 @@ import subprocess
 import sys
 import textwrap
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -352,10 +354,146 @@ def test_verify_bundle_rejects_missing_or_invalid_roundtrip_evidence(tmp_path: P
 
     diagnostics = verify_bundle(bundle)
 
-    assert any(
-        diagnostic.code == "BUNDLE_MISSING_FILE" and diagnostic.where == "compat.json"
+    missing_compat = [
+        diagnostic
         for diagnostic in diagnostics
+        if diagnostic.where == "compat.json" and diagnostic.code == "BUNDLE_MISSING_FILE"
+    ]
+    assert len(missing_compat) == 1
+    assert not any(diagnostic.code == "BUNDLE_INVALID_COMPAT" for diagnostic in diagnostics)
+
+
+def _rewrite_compat(bundle: Path, mutate: Callable[[dict[str, Any]], None]) -> None:
+    payload = json.loads((bundle / "compat.json").read_text(encoding="utf-8"))
+    mutate(payload)
+    write_json_atomic(bundle / "compat.json", payload)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda payload: payload.__setitem__("source", "febuilder_cli"),
+            id="wrong-source",
+        ),
+        pytest.param(
+            lambda payload: payload.__setitem__("validated_by_cli", True),
+            id="claims-cli-validation",
+        ),
+        pytest.param(
+            lambda payload: payload.__setitem__("validated_by_cli", "false"),
+            id="non-boolean-cli-claim",
+        ),
+        pytest.param(
+            lambda payload: payload.pop("roundtrip"),
+            id="missing-roundtrip",
+        ),
+        pytest.param(
+            lambda payload: payload.__setitem__("roundtrip", {"ok": True}),
+            id="malformed-roundtrip",
+        ),
+        pytest.param(
+            lambda payload: payload["roundtrip"].__setitem__("dimensions", "128x112"),
+            id="malformed-dimensions",
+        ),
+        pytest.param(
+            lambda payload: payload["roundtrip"].__setitem__(
+                "diagnostics",
+                [
+                    {
+                        "code": "ROUNDTRIP_DECODE_FAILED",
+                        "severity": "error",
+                        "message": "cannot decode C:\\workspace\\secret\\hero.png",
+                        "where": None,
+                    }
+                ],
+            ),
+            id="unsafe-diagnostic-text",
+        ),
+        pytest.param(
+            lambda payload: payload["roundtrip"].__setitem__(
+                "diagnostics",
+                [
+                    {
+                        "code": "ROUNDTRIP_DECODE_FAILED",
+                        "severity": "error",
+                        "message": "cannot decode canonical package",
+                        "where": "C:\\workspace\\secret\\hero.png",
+                    }
+                ],
+            ),
+            id="unsafe-diagnostic-where",
+        ),
+    ],
+)
+def test_verify_bundle_rejects_untrustworthy_compat_evidence(
+    tmp_path: Path, mutate: Callable[[dict[str, Any]], None]
+) -> None:
+    job, workspace = _workspace(tmp_path)
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+    _rewrite_compat(bundle, mutate)
+
+    diagnostics = verify_bundle(bundle)
+
+    invalid = [
+        diagnostic for diagnostic in diagnostics if diagnostic.code == "BUNDLE_INVALID_COMPAT"
+    ]
+    assert len(invalid) == 1
+    assert invalid[0].where == "compat.json"
+    assert str(tmp_path) not in invalid[0].message
+
+
+def test_verify_bundle_rejects_evidence_that_does_not_match_the_bundled_package(
+    tmp_path: Path,
+) -> None:
+    job, workspace = _workspace(tmp_path)
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+    _rewrite_compat(
+        bundle,
+        lambda payload: payload["roundtrip"].update(
+            {"pixel_sha256": "a" * 64, "roundtrip_pixel_sha256": "a" * 64}
+        ),
     )
+
+    codes = {diagnostic.code for diagnostic in verify_bundle(bundle)}
+
+    assert "BUNDLE_COMPAT_EVIDENCE_MISMATCH" in codes
+
+
+def test_verify_bundle_rejects_evidence_palette_hash_that_does_not_match_package(
+    tmp_path: Path,
+) -> None:
+    job, workspace = _workspace(tmp_path)
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+    _rewrite_compat(
+        bundle,
+        lambda payload: payload["roundtrip"].update(
+            {"palette_sha256": "b" * 64, "roundtrip_palette_sha256": "b" * 64}
+        ),
+    )
+
+    codes = {diagnostic.code for diagnostic in verify_bundle(bundle)}
+
+    assert "BUNDLE_COMPAT_EVIDENCE_MISMATCH" in codes
+
+
+def test_verify_bundle_rejects_successful_evidence_for_an_undecodable_package(
+    tmp_path: Path,
+) -> None:
+    job, workspace = _workspace(tmp_path)
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+    (bundle / "package" / "hero.png").write_bytes(b"not a png")
+
+    codes = {diagnostic.code for diagnostic in verify_bundle(bundle)}
+
+    assert "BUNDLE_COMPAT_EVIDENCE_MISMATCH" in codes
+
+
+def test_verify_bundle_accepts_evidence_matching_the_bundled_package(tmp_path: Path) -> None:
+    job, workspace = _workspace(tmp_path)
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+
+    assert verify_bundle(bundle) == []
 
 
 def test_verify_bundle_sanitizes_missing_root_where(tmp_path: Path) -> None:

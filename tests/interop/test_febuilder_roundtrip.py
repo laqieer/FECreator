@@ -8,8 +8,15 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
+from fecreator.contracts.diagnostics import Diagnostic
 from fecreator.imaging.io import ResourceBudget, save_indexed_png, save_png
-from fecreator.interop.febuilder_roundtrip import RoundtripEvidence, decode_roundtrip
+from fecreator.interop.febuilder_roundtrip import (
+    UNKNOWN_BACKGROUND_INDEX,
+    RoundtripEvidence,
+    decode_package_digest,
+    decode_roundtrip,
+)
+from fecreator.specs.fire_emblem.gba.portrait_standard.layout import BACKGROUND_ZONES
 from fecreator.specs.fire_emblem.gba.portrait_standard.palette import write_jasc
 from tests.fixtures.gba import PALETTE, build_indices, write_raw_indexed_png, write_valid_package
 
@@ -203,3 +210,176 @@ def test_roundtrip_returns_safe_diagnostic_for_symlinked_package_input(tmp_path:
     assert evidence.ok is False
     assert "UNSAFE_PATH" in _codes(evidence)
     assert str(tmp_path) not in evidence.model_dump_json()
+
+
+def _patch_indexed_loader(
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: Callable[[int, np.ndarray], np.ndarray],
+) -> None:
+    import fecreator.interop.febuilder_roundtrip as roundtrip_module
+
+    original_load = roundtrip_module.load_indexed
+    loads = 0
+
+    def patched(path: Path, budget: ResourceBudget | None = None) -> tuple[np.ndarray, np.ndarray]:
+        nonlocal loads
+        loads += 1
+        indices, palette = original_load(path, budget)
+        return mutate(loads, indices.copy()), palette
+
+    monkeypatch.setattr(roundtrip_module, "load_indexed", patched)
+
+
+def test_roundtrip_decode_failure_is_path_free_and_typed(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_valid_package(package)
+
+    evidence = decode_roundtrip(package, budget=ResourceBudget(max_pixels=1))
+
+    failures = [
+        diagnostic
+        for diagnostic in evidence.diagnostics
+        if diagnostic.code == "ROUNDTRIP_DECODE_FAILED"
+    ]
+    assert len(failures) == 1
+    assert failures[0].message == "cannot decode canonical package"
+    assert failures[0].where is None
+    assert failures[0].data == {"exception_type": "image_budget_error"}
+    assert "hero" not in evidence.model_dump_json()
+
+
+def test_roundtrip_validation_failure_hides_exception_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "package"
+    write_valid_package(package)
+    import fecreator.interop.febuilder_roundtrip as roundtrip_module
+
+    class _ExplodingSpec:
+        def validate(self, package_dir: Path) -> list[Diagnostic]:
+            raise OSError(f"cannot read {package_dir / 'hero.png'}")
+
+    monkeypatch.setattr(roundtrip_module, "FeGbaPortraitStandard", _ExplodingSpec)
+
+    evidence = decode_roundtrip(package)
+
+    assert evidence.ok is False
+    assert evidence.background_index == UNKNOWN_BACKGROUND_INDEX
+    diagnostic = evidence.diagnostics[0]
+    assert diagnostic.code == "ROUNDTRIP_VALIDATION_FAILED"
+    assert diagnostic.message == "cannot strictly validate canonical package"
+    assert diagnostic.data == {"exception_type": "os_error"}
+    assert str(tmp_path) not in evidence.model_dump_json()
+    assert "cannot read" not in evidence.model_dump_json()
+
+
+def test_roundtrip_reencode_failure_is_path_free_and_typed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "package"
+    write_valid_package(package)
+    import fecreator.interop.febuilder_roundtrip as roundtrip_module
+
+    def refuse(path: Path, indices: np.ndarray, palette: np.ndarray) -> None:
+        raise OSError(f"cannot write {path}")
+
+    monkeypatch.setattr(roundtrip_module, "save_indexed_png", refuse)
+
+    evidence = decode_roundtrip(package)
+
+    assert evidence.ok is False
+    failures = [
+        diagnostic
+        for diagnostic in evidence.diagnostics
+        if diagnostic.code == "ROUNDTRIP_REENCODE_FAILED"
+    ]
+    assert len(failures) == 1
+    assert failures[0].message == "cannot re-encode or reload canonical package"
+    assert failures[0].data == {"exception_type": "os_error"}
+    assert "roundtrip" not in failures[0].message
+    assert "fecreator-febuilder-roundtrip" not in evidence.model_dump_json()
+
+
+def test_roundtrip_does_not_swallow_programming_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "package"
+    write_valid_package(package)
+    import fecreator.interop.febuilder_roundtrip as roundtrip_module
+
+    def explode(path: Path, budget: ResourceBudget | None = None) -> tuple[np.ndarray, np.ndarray]:
+        raise TypeError("programming error")
+
+    monkeypatch.setattr(roundtrip_module, "load_indexed", explode)
+
+    with pytest.raises(TypeError):
+        decode_roundtrip(package)
+
+
+def test_roundtrip_background_index_is_read_from_decoded_zones(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_valid_package(package)
+    zone = BACKGROUND_ZONES[0]
+    observed = int(build_indices()[zone.y, zone.x])
+
+    evidence = decode_roundtrip(package)
+
+    assert evidence.ok is True
+    assert evidence.background_index == observed
+
+    digest = decode_package_digest(package)
+
+    assert digest is not None
+    assert digest.background_index == observed
+    assert digest.pixel_sha256 == evidence.pixel_sha256
+    assert digest.palette_sha256 == evidence.palette_sha256
+
+
+def test_roundtrip_rejects_decoded_background_zones_that_are_not_uniform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "package"
+    write_valid_package(package)
+    zone = BACKGROUND_ZONES[0]
+
+    def corrupt_background(_load: int, indices: np.ndarray) -> np.ndarray:
+        indices[zone.y, zone.x] = 1
+        return indices
+
+    _patch_indexed_loader(monkeypatch, corrupt_background)
+
+    evidence = decode_roundtrip(package)
+
+    assert evidence.ok is False
+    assert "ROUNDTRIP_BACKGROUND_INDEX_MISMATCH" in _codes(evidence)
+    assert evidence.background_index == UNKNOWN_BACKGROUND_INDEX
+
+
+def test_roundtrip_detects_reloaded_background_index_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "package"
+    write_valid_package(package)
+    zone = BACKGROUND_ZONES[0]
+
+    def corrupt_reloaded_background(load: int, indices: np.ndarray) -> np.ndarray:
+        if load == 2:
+            indices[zone.y, zone.x] = 1
+        return indices
+
+    _patch_indexed_loader(monkeypatch, corrupt_reloaded_background)
+
+    evidence = decode_roundtrip(package)
+
+    assert evidence.ok is False
+    assert "ROUNDTRIP_BACKGROUND_INDEX_MISMATCH" in _codes(evidence)
+
+
+def test_decode_package_digest_returns_none_for_undecodable_package(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    save_png(package / "hero.png", np.zeros((112, 128, 3), dtype=np.uint8))
+    write_jasc(package / "hero.pal", PALETTE)
+
+    assert decode_package_digest(package) is None
+    assert decode_package_digest(tmp_path / "absent") is None
