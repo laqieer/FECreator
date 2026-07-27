@@ -82,6 +82,9 @@ export function App() {
   const [maskHistory, setMaskHistory] = useState<MaskGrid[]>(() => [
     emptyMask(sampleMaskWidth, sampleMaskHeight),
   ]);
+  const [reviewer, setReviewer] = useState("");
+  const [reviewerError, setReviewerError] = useState<string | null>(null);
+  const seededJobIdRef = useRef<string | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const assetsQuery = useQuery({ queryKey: ["assets"], queryFn: () => client.listAssets() });
@@ -104,23 +107,40 @@ export function App() {
     workbench.selectedJob?.revision ?? 0,
   );
 
+  // Seeding is keyed on the job id, not the Job object: every event or action
+  // refresh replaces the object, and re-seeding there would silently discard an
+  // in-progress manifest edit or mask stroke while the painted history stayed.
   useEffect(() => {
-    if (workbench.selectedJob !== null) {
-      setManifestText(JSON.stringify(workbench.selectedJob.manifest, null, 2));
-      setMaskDraft(workbench.selectedJob.manifest.edit);
-      if (
-        workbench.selectedJob.manifest.character_ref_pack !== null &&
-        workbench.selectedJob.manifest.character_ref_pack_rev !== null
-      ) {
-        setReferenceSelection({
-          id: workbench.selectedJob.manifest.character_ref_pack,
-          revision: workbench.selectedJob.manifest.character_ref_pack_rev,
-        });
-      } else {
-        setReferenceSelection(null);
-      }
+    const job = workbench.selectedJob;
+    if (job === null || seededJobIdRef.current === job.id) {
+      return;
+    }
+    seededJobIdRef.current = job.id;
+    setManifestText(JSON.stringify(job.manifest, null, 2));
+    setMaskDraft(job.manifest.edit);
+    setMaskHistory([emptyMask(sampleMaskWidth, sampleMaskHeight)]);
+    if (
+      job.manifest.character_ref_pack !== null &&
+      job.manifest.character_ref_pack_rev !== null
+    ) {
+      setReferenceSelection({
+        id: job.manifest.character_ref_pack,
+        revision: job.manifest.character_ref_pack_rev,
+      });
+    } else {
+      setReferenceSelection(null);
     }
   }, [workbench.selectedJob]);
+
+  const withReviewer = (run: (actor: string) => void | Promise<void>) => {
+    const actor = reviewer.trim();
+    if (actor === "") {
+      setReviewerError("A reviewer name is required.");
+      return;
+    }
+    setReviewerError(null);
+    void run(actor);
+  };
 
   const currentMask =
     maskHistory[maskHistory.length - 1] ?? emptyMask(sampleMaskWidth, sampleMaskHeight);
@@ -243,6 +263,21 @@ export function App() {
       >
         {activeTab === "Review" ? (
           <>
+            <section aria-label="reviewer-identity">
+              <label>
+                Reviewer name
+                <input
+                  value={reviewer}
+                  required
+                  aria-invalid={reviewerError !== null}
+                  onChange={(event) => {
+                    setReviewer(event.target.value);
+                    setReviewerError(null);
+                  }}
+                />
+              </label>
+              {reviewerError ? <p role="alert">{reviewerError}</p> : null}
+            </section>
             {reviewArtifacts.loading ? <p role="status">Loading review images…</p> : null}
             {reviewArtifacts.error ? <p role="alert">{reviewArtifacts.error}</p> : null}
             {workbench.candidateError ? (
@@ -257,10 +292,12 @@ export function App() {
                 cropRect: { x: 0, y: 0, w: 128, h: 112 },
                 specRect: { x: 0, y: 0, w: 128, h: 112 },
               }))}
-              onApprove={() => workbench.approveReview("local-user")}
-              onReject={(_candidateId, reason) => workbench.rejectReview("local-user", reason)}
+              onApprove={() => withReviewer((actor) => workbench.approveReview(actor))}
+              onReject={(_candidateId, reason) =>
+                withReviewer((actor) => workbench.rejectReview(actor, reason))
+              }
               onFinalize={workbench.finalizeJob}
-              onRetry={() => workbench.retryJob("local-user")}
+              onRetry={() => withReviewer((actor) => workbench.retryJob(actor))}
               approvals={workbench.approvals}
               approvalsError={workbench.approvalsError}
               pendingAction={workbench.reviewAction}

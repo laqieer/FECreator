@@ -117,7 +117,11 @@ test("demo mode creates, reviews, and finalizes an in-memory job", async ({ page
   await expect(selectionStatus(page)).toHaveText("Selected job demo-job-1 is waiting_for_review.");
 
   await page.getByRole("button", { name: "Approve candidate/package/portrait.png" }).click();
-  await expect(page.getByText("Latest review: approved by local-user.")).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveText("A reviewer name is required.");
+
+  await page.getByLabel("Reviewer name", { exact: true }).fill("demo-reviewer");
+  await page.getByRole("button", { name: "Approve candidate/package/portrait.png" }).click();
+  await expect(page.getByText("Latest review: approved by demo-reviewer.")).toBeVisible();
 
   await page.getByRole("button", { name: "Finalize review", exact: true }).click();
   await expect(selectionStatus(page)).toHaveText("Selected job demo-job-1 is completed.");

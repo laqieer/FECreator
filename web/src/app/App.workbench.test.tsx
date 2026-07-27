@@ -18,6 +18,7 @@ const createdJob: Job = {
     provider: "fake",
     character_ref_pack: null,
     character_ref_pack_rev: null,
+    parent_asset_id: null,
     sources: [],
     edit: null,
     params: {},
@@ -351,6 +352,8 @@ test("persists review actions and refreshes the selected job after each success"
   );
 
   await screen.findByAltText("Candidate candidate/package/portrait.png");
+
+  await user.type(screen.getByLabelText("Reviewer name"), "local-user");
   await user.click(screen.getByRole("button", { name: /approve candidate\/package\/portrait\.png/i }));
   await waitFor(() => expect(approveReview).toHaveBeenCalledWith("review-job", "local-user"));
   expect(await screen.findByText("Selected job review-job is validating.")).toBeInTheDocument();
@@ -400,6 +403,8 @@ test("keeps a review failure visible without presenting a successful state", asy
   );
 
   await screen.findByAltText("Candidate candidate/package/portrait.png");
+
+  await user.type(screen.getByLabelText("Reviewer name"), "local-user");
   await user.click(screen.getByRole("button", { name: /approve candidate\/package\/portrait\.png/i }));
 
   expect(await screen.findByRole("alert")).toHaveTextContent("approval unavailable");
@@ -448,6 +453,8 @@ test("persists a non-empty rejection reason for the selected review job", async 
   );
 
   await screen.findByAltText("Candidate candidate/package/portrait.png");
+
+  await user.type(screen.getByLabelText("Reviewer name"), "local-user");
   await user.type(
     screen.getByLabelText("Rejection reason for candidate/package/portrait.png"),
     "bad eyes",
@@ -501,6 +508,8 @@ test("surfaces a non-throwing finalization rejection without refreshing the job"
   );
 
   await screen.findByAltText("Candidate candidate/package/portrait.png");
+
+  await user.type(screen.getByLabelText("Reviewer name"), "local-user");
   await user.click(screen.getByRole("button", { name: "Finalize review" }));
 
   expect(await screen.findByRole("alert")).toHaveTextContent("candidate is not approved");
@@ -608,6 +617,7 @@ test("keeps review controls disabled through the post-action refresh and ignores
   );
 
   const approve = await screen.findByRole("button", { name: /approve candidate/i });
+  await user.type(screen.getByLabelText("Reviewer name"), "local-user");
   await user.click(approve);
   await user.click(approve);
   expect(approveReview).toHaveBeenCalledTimes(1);
@@ -654,6 +664,7 @@ test("retries a rejected candidate and follows the retry job", async () => {
   );
 
   await screen.findByRole("button", { name: /approve candidate/i });
+  await user.type(screen.getByLabelText("Reviewer name"), "local-user");
   await user.click(screen.getByRole("button", { name: "Retry job" }));
 
   await waitFor(() => expect(retryJob).toHaveBeenCalledWith("review-job", "local-user"));
@@ -680,6 +691,7 @@ test("does not follow a retry result when a newer job is already selected", asyn
 
   await user.click(await screen.findByRole("button", { name: /review-job.*waiting_for_review/i }));
   await screen.findByText("Selected job review-job is waiting_for_review.");
+  await user.type(screen.getByLabelText("Reviewer name"), "local-user");
   await user.click(screen.getByRole("button", { name: "Retry job" }));
   await waitFor(() => expect(retryJob).toHaveBeenCalledWith("review-job", "local-user"));
 

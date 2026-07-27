@@ -58,6 +58,10 @@ test("approves, finalizes, validates, and inspects a local portrait job", async 
   await expect(page.getByText("No review decisions recorded.")).toBeVisible();
 
   await approve.click();
+  await expect(page.getByRole("alert")).toHaveText("A reviewer name is required.");
+
+  await page.getByLabel("Reviewer name", { exact: true }).fill(`  ${reviewer}  `);
+  await approve.click();
   await expect(page.getByText(`Latest review: approved by ${reviewer}.`)).toBeVisible();
 
   await page.getByRole("button", { name: "Finalize review", exact: true }).click();
@@ -96,6 +100,7 @@ test("rejects a candidate and retries it into a new job", async ({ page }) => {
   buildCandidate(rejectedId);
   await openJob(page, rejectedId, "waiting_for_review");
 
+  await page.getByLabel("Reviewer name", { exact: true }).fill(reviewer);
   await page
     .getByLabel("Rejection reason for candidate/package/hero.png", { exact: true })
     .fill("silhouette drifts from the reference");
