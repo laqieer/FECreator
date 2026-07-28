@@ -14,8 +14,14 @@ CLI validation, opt-in local ROM checks) are documented in
 
 ## Getting started
 
-Supported runtimes are Python 3.11-3.13 and Node.js 20.19-24. Run everything from
-the repository root.
+Supported runtimes are Python 3.11-3.13 and Node.js 20.19-24. Install the
+published Python package from [PyPI](https://pypi.org/project/fecreator/):
+
+```powershell
+python -m pip install fecreator==0.1.0
+```
+
+For development, run everything from the repository root.
 
 ```powershell
 python -m pip install -e ".[dev]"
@@ -73,8 +79,9 @@ is set; no gate ever requires a ROM.
 
 ## Releasing
 
-Releases go to PyPI through Trusted Publishing (OIDC); no PyPI API token exists
-in this repository. Pushing a `v*.*.*` tag builds the distributions in an
+Releases go to [PyPI](https://pypi.org/project/fecreator/) through Trusted
+Publishing (OIDC); no PyPI API token exists in this repository. Pushing a
+`v*.*.*` tag builds the distributions in an
 unprivileged job that checks out `refs/tags/<tag>`, then publishes them from a
 separate `pypi` environment job that a required reviewer must approve and that
 only `v*.*.*` tags may deploy to. A manual re-run is dispatched on the tag
