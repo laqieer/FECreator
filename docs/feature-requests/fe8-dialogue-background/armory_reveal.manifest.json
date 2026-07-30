@@ -40,10 +40,6 @@
     "png": {
       "file": "armory_reveal.png",
       "sha256": "337d9a6e17bb40644aa6a4d9c15727e3a03b7e207d064b84b4dc767de99eb4de"
-    },
-    "palette": {
-      "file": "armory_reveal.pal",
-      "sha256": "af76cfbc91848501371bdb018dfb28ae1c534cfd9fc7cb9c255355782cfd43b0"
     }
   },
   "source_contract": {
@@ -86,6 +82,12 @@
       "unique_after_normal_h_v_hv_dedup": 128,
       "limit_exclusive": 1024
     },
-    "compatibility_profile": "fireemblem8-expansion/scripts/gfxtools/tsa_generator.py -> feimg2/fetsa2"
+    "compatibility_profile": "fireemblem8-expansion/scripts/gfxtools/tsa_generator.py -> feimg2/fetsa2",
+    "artifacts": {
+      "palette": {
+        "file": "armory_reveal.pal",
+        "sha256": "af76cfbc91848501371bdb018dfb28ae1c534cfd9fc7cb9c255355782cfd43b0"
+      }
+    }
   }
 }

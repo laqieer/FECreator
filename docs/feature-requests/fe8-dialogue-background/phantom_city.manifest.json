@@ -40,10 +40,6 @@
     "png": {
       "file": "phantom_city.png",
       "sha256": "bb1a3587aaa4a9e97d8cfa327688ab4c3e61e4073f01d24c6f183d039af21037"
-    },
-    "palette": {
-      "file": "phantom_city.pal",
-      "sha256": "af76cfbc91848501371bdb018dfb28ae1c534cfd9fc7cb9c255355782cfd43b0"
     }
   },
   "source_contract": {
@@ -86,6 +82,12 @@
       "unique_after_normal_h_v_hv_dedup": 152,
       "limit_exclusive": 1024
     },
-    "compatibility_profile": "fireemblem8-expansion/scripts/gfxtools/tsa_generator.py -> feimg2/fetsa2"
+    "compatibility_profile": "fireemblem8-expansion/scripts/gfxtools/tsa_generator.py -> feimg2/fetsa2",
+    "artifacts": {
+      "palette": {
+        "file": "phantom_city.pal",
+        "sha256": "af76cfbc91848501371bdb018dfb28ae1c534cfd9fc7cb9c255355782cfd43b0"
+      }
+    }
   }
 }
