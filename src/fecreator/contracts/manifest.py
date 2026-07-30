@@ -2,20 +2,69 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from fecreator.contracts._immutable import freeze_mapping
 from fecreator.contracts.lineage import Params, Region
 from fecreator.core.hashing import content_hash
+from fecreator.core.paths import ensure_portable_filename, normalize_storage_id
 
+PORTRAIT_WORKFLOWS = frozenset(
+    {"text_to_portrait", "concept_to_portrait", "expression_refine", "masked_variant"}
+)
+DIALOGUE_BACKGROUND_WORKFLOWS = frozenset(
+    {"text_to_dialogue_background", "concept_to_dialogue_background", "masked_variant"}
+)
 APPROVED_BASE_WORKFLOWS = frozenset({"expression_refine", "masked_variant"})
 """Workflows that consume an already-approved portrait as their starting point."""
+
+
+def _non_empty(value: str, *, field_name: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return normalized
+
+
+class SourceIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: str
+    id: str
+    revision: str
+
+    @field_validator("kind", "id", "revision", mode="after")
+    @classmethod
+    def _validate_text(cls, value: str, info: ValidationInfo) -> str:
+        return _non_empty(value, field_name=info.field_name or "source identity")
+
+
+class AssetMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    purpose: str
+    source: SourceIdentity
+    license_note: str
+    source_note: str
+    requested_downstream_profile: Literal["fe8-dialogue-background-feimg2"] | None = None
+
+    @field_validator("name", mode="after")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        normalized = normalize_storage_id(value, field_name="name")
+        return ensure_portable_filename(normalized, field_name="name")
+
+    @field_validator("purpose", "license_note", "source_note", mode="after")
+    @classmethod
+    def _validate_text(cls, value: str, info: ValidationInfo) -> str:
+        return _non_empty(value, field_name=info.field_name or "metadata")
 
 
 class SourceSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    kind: Literal["text", "concept_art", "approved_portrait"]
+    kind: Literal["text", "concept_art", "approved_portrait", "approved_dialogue_background"]
     ref: str
 
 
@@ -30,13 +79,15 @@ class Manifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     version: Literal["1.0"] = "1.0"
-    asset_type: Literal["portrait"]
-    target_spec: Literal["fe-gba-portrait-standard"]
+    asset_type: Literal["portrait", "dialogue_background"]
+    target_spec: Literal["fe-gba-portrait-standard", "fe8-dialogue-background-source-240x160"]
     workflow: Literal[
         "text_to_portrait",
         "concept_to_portrait",
         "expression_refine",
         "masked_variant",
+        "text_to_dialogue_background",
+        "concept_to_dialogue_background",
     ]
     provider: str
     character_ref_pack: str | None = None
@@ -44,6 +95,7 @@ class Manifest(BaseModel):
     parent_asset_id: str | None = None
     sources: tuple[SourceSpec, ...] = ()
     edit: EditSpec | None = None
+    metadata: AssetMetadata | None = None
     params: Params = Field(default_factory=freeze_mapping)
 
     @field_validator("params", mode="after")
@@ -98,6 +150,27 @@ class Manifest(BaseModel):
                 f"got workflow={self.workflow!r}"
             )
             raise ValueError(message)
+        return self
+
+    @model_validator(mode="after")
+    def _asset_contract_matches(self) -> Manifest:
+        if self.asset_type == "portrait":
+            if self.target_spec != "fe-gba-portrait-standard":
+                raise ValueError("portrait requires target_spec='fe-gba-portrait-standard'")
+            if self.workflow not in PORTRAIT_WORKFLOWS:
+                raise ValueError(f"portrait does not support workflow={self.workflow!r}")
+            if self.metadata is not None:
+                raise ValueError("metadata is only supported for dialogue_background")
+            return self
+
+        if self.target_spec != "fe8-dialogue-background-source-240x160":
+            raise ValueError(
+                "dialogue_background requires target_spec='fe8-dialogue-background-source-240x160'"
+            )
+        if self.workflow not in DIALOGUE_BACKGROUND_WORKFLOWS:
+            raise ValueError(f"dialogue_background does not support workflow={self.workflow!r}")
+        if self.metadata is None:
+            raise ValueError("metadata is required for dialogue_background")
         return self
 
     def content_hash(self) -> str:

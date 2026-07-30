@@ -1,5 +1,51 @@
 {
   "$defs": {
+    "AssetMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "license_note": {
+          "title": "License Note",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "purpose": {
+          "title": "Purpose",
+          "type": "string"
+        },
+        "requested_downstream_profile": {
+          "anyOf": [
+            {
+              "const": "fe8-dialogue-background-feimg2",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested Downstream Profile"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceIdentity"
+        },
+        "source_note": {
+          "title": "Source Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "purpose",
+        "source",
+        "license_note",
+        "source_note"
+      ],
+      "title": "AssetMetadata",
+      "type": "object"
+    },
     "EditSpec": {
       "additionalProperties": false,
       "properties": {
@@ -60,6 +106,30 @@
       "title": "Region",
       "type": "object"
     },
+    "SourceIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "revision"
+      ],
+      "title": "SourceIdentity",
+      "type": "object"
+    },
     "SourceSpec": {
       "additionalProperties": false,
       "properties": {
@@ -67,7 +137,8 @@
           "enum": [
             "text",
             "concept_art",
-            "approved_portrait"
+            "approved_portrait",
+            "approved_dialogue_background"
           ],
           "title": "Kind",
           "type": "string"
@@ -88,7 +159,10 @@
   "additionalProperties": false,
   "properties": {
     "asset_type": {
-      "const": "portrait",
+      "enum": [
+        "portrait",
+        "dialogue_background"
+      ],
       "title": "Asset Type",
       "type": "string"
     },
@@ -121,6 +195,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/EditSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "metadata": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AssetMetadata"
         },
         {
           "type": "null"
@@ -173,7 +258,10 @@
       "type": "array"
     },
     "target_spec": {
-      "const": "fe-gba-portrait-standard",
+      "enum": [
+        "fe-gba-portrait-standard",
+        "fe8-dialogue-background-source-240x160"
+      ],
       "title": "Target Spec",
       "type": "string"
     },
@@ -188,7 +276,9 @@
         "text_to_portrait",
         "concept_to_portrait",
         "expression_refine",
-        "masked_variant"
+        "masked_variant",
+        "text_to_dialogue_background",
+        "concept_to_dialogue_background"
       ],
       "title": "Workflow",
       "type": "string"

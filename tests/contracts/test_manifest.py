@@ -4,7 +4,13 @@ import pytest
 from pydantic import ValidationError
 
 from fecreator.contracts.lineage import Region
-from fecreator.contracts.manifest import EditSpec, Manifest, SourceSpec
+from fecreator.contracts.manifest import (
+    AssetMetadata,
+    EditSpec,
+    Manifest,
+    SourceIdentity,
+    SourceSpec,
+)
 
 
 def _manifest() -> Manifest:
@@ -14,6 +20,21 @@ def _manifest() -> Manifest:
         workflow="text_to_portrait",
         provider="fake",
         sources=(SourceSpec(kind="text", ref="a brave knight"),),
+    )
+
+
+def _background_metadata() -> AssetMetadata:
+    return AssetMetadata(
+        name="phantom_city",
+        purpose="Original phantom-city dialogue background",
+        source=SourceIdentity(
+            kind="prompt",
+            id="dialogue-background/phantom-city",
+            revision="1",
+        ),
+        license_note="Original repository fixture.",
+        source_note="Generated from an original prompt.",
+        requested_downstream_profile="fe8-dialogue-background-feimg2",
     )
 
 
@@ -57,6 +78,60 @@ def test_edit_spec_regions() -> None:
 def test_invalid_source_kind_rejected() -> None:
     with pytest.raises(ValidationError):
         SourceSpec(kind="video", ref="x")
+
+
+def test_dialogue_background_manifest_accepts_normative_identifiers() -> None:
+    manifest = Manifest(
+        asset_type="dialogue_background",
+        target_spec="fe8-dialogue-background-source-240x160",
+        workflow="text_to_dialogue_background",
+        provider="fake",
+        metadata=_background_metadata(),
+        sources=(SourceSpec(kind="text", ref="phantom city"),),
+    )
+
+    assert manifest.metadata == _background_metadata()
+
+
+@pytest.mark.parametrize(
+    ("asset_type", "target_spec", "workflow"),
+    [
+        ("dialogue_background", "fe-gba-portrait-standard", "text_to_dialogue_background"),
+        ("portrait", "fe8-dialogue-background-source-240x160", "text_to_portrait"),
+        ("dialogue_background", "fe8-dialogue-background-source-240x160", "text_to_portrait"),
+    ],
+)
+def test_manifest_rejects_cross_asset_contracts(
+    asset_type: str,
+    target_spec: str,
+    workflow: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        Manifest(
+            asset_type=asset_type,
+            target_spec=target_spec,
+            workflow=workflow,
+            provider="fake",
+            metadata=_background_metadata() if asset_type == "dialogue_background" else None,
+        )
+
+
+def test_dialogue_background_requires_metadata() -> None:
+    with pytest.raises(ValidationError, match="metadata"):
+        Manifest(
+            asset_type="dialogue_background",
+            target_spec="fe8-dialogue-background-source-240x160",
+            workflow="text_to_dialogue_background",
+            provider="fake",
+        )
+
+
+def test_portrait_rejects_dialogue_background_metadata() -> None:
+    payload = _manifest().model_dump(mode="python")
+    payload["metadata"] = _background_metadata().model_dump(mode="python")
+
+    with pytest.raises(ValidationError, match="metadata"):
+        Manifest.model_validate(payload)
 
 
 def test_edit_only_valid_for_masked_variant() -> None:

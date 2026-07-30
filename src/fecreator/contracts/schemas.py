@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from fecreator.contracts.capabilities import CapabilitySet
 from fecreator.contracts.diagnostics import Diagnostic
+from fecreator.contracts.dialogue_background import DialogueBackgroundPackageManifest
 from fecreator.contracts.lineage import LineageNode
 from fecreator.contracts.manifest import Manifest
 from fecreator.contracts.result import JobResult
@@ -19,6 +20,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "diagnostics": Diagnostic,
     "lineage": LineageNode,
     "capabilities": CapabilitySet,
+    "dialogue_background_package": DialogueBackgroundPackageManifest,
 }
 
 
