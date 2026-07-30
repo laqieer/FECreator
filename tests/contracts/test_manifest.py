@@ -99,6 +99,7 @@ def test_dialogue_background_manifest_accepts_normative_identifiers() -> None:
         ("dialogue_background", "fe-gba-portrait-standard", "text_to_dialogue_background"),
         ("portrait", "fe8-dialogue-background-source-240x160", "text_to_portrait"),
         ("dialogue_background", "fe8-dialogue-background-source-240x160", "text_to_portrait"),
+        ("portrait", "fe-gba-portrait-standard", "text_to_dialogue_background"),
     ],
 )
 def test_manifest_rejects_cross_asset_contracts(
