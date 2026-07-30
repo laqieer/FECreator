@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from fecreator.contracts.dialogue_background import (
@@ -254,6 +255,24 @@ def test_target_rejects_unsafe_directory_entry(tmp_path: Path) -> None:
 
     codes = {item.code for item in _spec().validate(package)}
     assert "UNSAFE_BACKGROUND_PACKAGE_ENTRY" in codes
+    assert "UNEXPECTED_BACKGROUND_PACKAGE_ENTRY" not in codes
+
+
+def test_target_rejects_canonical_name_symlink_without_unexpected_entry(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "package"
+    _write_package(package)
+    target = package / "phantom_city.manifest.json"
+    target.unlink()
+    try:
+        target.symlink_to(package / "nested", target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks not supported here: {exc}")
+
+    codes = {item.code for item in _spec().validate(package)}
+    assert "UNSAFE_BACKGROUND_PACKAGE_ENTRY" in codes
+    assert "UNEXPECTED_BACKGROUND_PACKAGE_ENTRY" not in codes
 
 
 def test_target_rejects_missing_package_directory(tmp_path: Path) -> None:

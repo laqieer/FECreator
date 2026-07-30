@@ -63,7 +63,7 @@ def validate_package(package_dir: Path) -> list[Diagnostic]:
     pngs = [entry for entry in safe_entries if entry.suffix.casefold() == ".png"]
     manifests = [entry for entry in safe_entries if entry.name.endswith(".manifest.json")]
     expected = {path.name for path in (*pngs, *manifests)}
-    for entry in entries:
+    for entry in safe_entries:
         if entry.name not in expected:
             diagnostics.append(
                 error(
