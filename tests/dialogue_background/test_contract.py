@@ -38,6 +38,25 @@ def test_package_manifest_pins_normative_contract() -> None:
     assert (manifest.width, manifest.height, manifest.opaque) == (240, 160, True)
 
 
+def test_package_manifest_rejects_reference_revision_without_pack() -> None:
+    payload = _package_manifest().model_dump(mode="python")
+    payload["reference_pack"] = None
+    payload["reference_pack_rev"] = 1
+
+    with pytest.raises(ValidationError, match="reference_pack and reference_pack_rev"):
+        DialogueBackgroundPackageManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize("revision", [0, -1])
+def test_package_manifest_rejects_non_positive_reference_revisions(revision: int) -> None:
+    payload = _package_manifest().model_dump(mode="python")
+    payload["reference_pack"] = "reference-pack"
+    payload["reference_pack_rev"] = revision
+
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        DialogueBackgroundPackageManifest.model_validate(payload)
+
+
 @pytest.mark.parametrize("field", ["input_sha256", "png_sha256"])
 def test_package_manifest_rejects_invalid_hashes(field: str) -> None:
     payload = _package_manifest().model_dump(mode="python")

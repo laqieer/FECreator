@@ -3,7 +3,14 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from fecreator.core.paths import ensure_portable_filename, normalize_storage_id
 
@@ -58,7 +65,7 @@ class DialogueBackgroundPackageManifest(BaseModel):
     model: str | None = None
     prompt: str | None = None
     reference_pack: str | None = None
-    reference_pack_rev: int | None = None
+    reference_pack_rev: int | None = Field(default=None, ge=1)
     source: DialogueBackgroundSourceRecord
     png_sha256: str
     license_note: str
