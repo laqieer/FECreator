@@ -1,7 +1,7 @@
 {
   "manifest_version": "1.0-example",
   "contract_version": "1.0-proposal",
-  "asset_type": "event_background",
+  "asset_type": "dialogue_background",
   "asset_type_version": "1.0-proposal",
   "target_spec": "fe8-dialogue-background-240x160",
   "target_spec_version": "1.0-proposal",
