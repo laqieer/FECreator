@@ -10,9 +10,11 @@ from fecreator.imaging.io import (
     has_trns,
     is_indexed_png,
     load_indexed,
+    load_opaque_png_rgb,
     load_rgb,
     png_dimensions,
     read_png_palette,
+    save_canonical_rgb_png,
     save_indexed_png,
     save_png,
 )
@@ -34,6 +36,14 @@ def test_budget_enforced(tmp_path):
     save_png(p, rgb)
     with pytest.raises(ImageBudgetError):
         load_rgb(p, ResourceBudget(max_pixels=100))
+
+
+def test_load_opaque_png_respects_file_byte_budget(tmp_path):
+    rgb = np.zeros((4, 4, 3), dtype=np.uint8)
+    p = tmp_path / "opaque.png"
+    save_canonical_rgb_png(p, rgb)
+    with pytest.raises(ImageBudgetError):
+        load_opaque_png_rgb(p, ResourceBudget(max_file_bytes=50))
 
 
 def test_indexed_roundtrip_and_facts(tmp_path):
