@@ -106,6 +106,7 @@ made.
 - `GET /api/jobs/{job_id}/approvals` → `FeCreatorApp.list_approval_decisions()`
 - `POST /api/jobs/{job_id}/plan-sources` → `FeCreatorApp.plan_job_sources()`
 - `POST /api/jobs/{job_id}/sources` → `FeCreatorApp.submit_sources()`
+- `POST /api/jobs/{job_id}/build` → `FeCreatorApp.build()`
 - `POST /api/jobs/{job_id}/validate` → `FeCreatorApp.validate_job()`
 - `GET /api/jobs/{job_id}/artifacts/{path}` → `FeCreatorApp.read_job_artifact()`
 - `GET /api/jobs/{job_id}/report` → `FeCreatorApp.get_job_report()`

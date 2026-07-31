@@ -25,6 +25,7 @@ const manifest: Manifest = {
   parent_asset_id: null,
   sources: [{ kind: "text", ref: "hero" }],
   edit: null,
+  metadata: null,
   params: {},
 };
 
@@ -447,4 +448,31 @@ test("http client surfaces structured diagnostics for non-ok responses", async (
       }),
     ],
   });
+
+});
+
+test("buildJob posts to the encoded job build route and preserves API errors", async () => {
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce(jsonResponse(finalizationFixture))
+    .mockResolvedValueOnce(
+      jsonResponse(
+        [{ code: "BUILD_FAILED", severity: "error", message: "provider refused", where: jobFixture.id }],
+        { status: 409 },
+      ),
+    );
+  vi.stubGlobal("fetch", fetchMock);
+
+  const client = httpClient("http://127.0.0.1:8000");
+  await expect(client.buildJob(jobFixture.id)).resolves.toEqual(finalizationFixture);
+  await expect(client.buildJob(jobFixture.id)).rejects.toMatchObject({
+    message: "POST http://127.0.0.1:8000/api/jobs/job%2Fwith%20spaces/build -> 409",
+    status: 409,
+    diagnostics: [expect.objectContaining({ code: "BUILD_FAILED", where: jobFixture.id })],
+  });
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    1,
+    "http://127.0.0.1:8000/api/jobs/job%2Fwith%20spaces/build",
+    { method: "POST" },
+  );
 });

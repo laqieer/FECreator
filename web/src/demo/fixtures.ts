@@ -32,6 +32,7 @@ export const demoManifest: Manifest = {
   parent_asset_id: null,
   sources: [{ kind: "text", ref: "hero" }],
   edit: null,
+  metadata: null,
   params: {},
 };
 

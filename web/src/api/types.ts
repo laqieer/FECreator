@@ -1,10 +1,18 @@
 export type Severity = "error" | "warning" | "info";
-export type SourceKind = "text" | "concept_art" | "approved_portrait";
+export type AssetType = "portrait" | "dialogue_background";
+export type TargetSpec = "fe-gba-portrait-standard" | "fe8-dialogue-background-source-240x160";
+export type SourceKind =
+  | "text"
+  | "concept_art"
+  | "approved_portrait"
+  | "approved_dialogue_background";
 export type Workflow =
   | "text_to_portrait"
   | "concept_to_portrait"
   | "expression_refine"
-  | "masked_variant";
+  | "masked_variant"
+  | "text_to_dialogue_background"
+  | "concept_to_dialogue_background";
 export type JobState =
   | "created"
   | "planning"
@@ -19,6 +27,8 @@ export type JobState =
 export type Operation =
   | "import_concept"
   | "create_neutral"
+  | "create_dialogue_background"
+  | "import_dialogue_background_concept"
   | "refine_expression"
   | "variant_masked_edit"
   | "export_spec";
@@ -52,10 +62,25 @@ export interface EditSpec {
   protected_regions: Region[];
 }
 
+export interface SourceIdentity {
+  kind: string;
+  id: string;
+  revision: string;
+}
+
+export interface AssetMetadata {
+  name: string;
+  purpose: string;
+  source: SourceIdentity;
+  license_note: string;
+  source_note: string;
+  requested_downstream_profile: "fe8-dialogue-background-feimg2" | null;
+}
+
 export interface Manifest {
   version: "1.0";
-  asset_type: "portrait";
-  target_spec: "fe-gba-portrait-standard";
+  asset_type: AssetType;
+  target_spec: TargetSpec;
   workflow: Workflow;
   provider: string;
   character_ref_pack: string | null;
@@ -63,7 +88,39 @@ export interface Manifest {
   parent_asset_id: string | null;
   sources: SourceSpec[];
   edit: EditSpec | null;
+  metadata: AssetMetadata | null;
   params: JsonObject;
+}
+
+export interface DialogueBackgroundSourceRecord {
+  kind: string;
+  id: string;
+  revision: string;
+  input_sha256: string;
+}
+
+export interface DialogueBackgroundPackageManifest {
+  version: "1.0";
+  contract_version: "1.0";
+  asset_type: "dialogue_background";
+  asset_type_version: "1.0";
+  target_spec: "fe8-dialogue-background-source-240x160";
+  target_spec_version: "1.0";
+  name: string;
+  purpose: string;
+  width: 240;
+  height: 160;
+  opaque: true;
+  provider: string;
+  model: string | null;
+  prompt: string | null;
+  reference_pack: string | null;
+  reference_pack_rev: number | null;
+  source: DialogueBackgroundSourceRecord;
+  png_sha256: string;
+  license_note: string;
+  source_note: string;
+  requested_downstream_profile: "fe8-dialogue-background-feimg2" | null;
 }
 
 export interface Job {

@@ -16,6 +16,7 @@ const manifest: Manifest = {
   parent_asset_id: null,
   sources: [],
   edit: null,
+  metadata: null,
   params: {},
 };
 

@@ -6,8 +6,9 @@ introspects the real models, routers, parsers, registries, and tool inventory, s
 this page can never quietly drift away from the shipped code.
 
 - Contract version: **`1.0`**
-- Target spec: **`fe-gba-portrait-standard`**
-- Asset type: **`portrait`**
+- Target specs: **`fe-gba-portrait-standard`**,
+  **`fe8-dialogue-background-source-240x160`**
+- Asset types: **`portrait`**, **`dialogue_background`**
 
 Scope stays inside `docs/product-statement.md`: local-first portrait creation,
 never a ROM editor and never a hosted generation service.
@@ -22,6 +23,7 @@ never a ROM editor and never a hosted generation service.
 | `LineageNode` | `fecreator.contracts.lineage` | `1.0` (v1 surface) | `schemas/lineage.schema.json` |
 | `Diagnostic` | `fecreator.contracts.diagnostics` | `1.0` (v1 surface) | `schemas/diagnostics.schema.json` |
 | `CapabilitySet` | `fecreator.contracts.capabilities` | `1.0` (v1 surface) | `schemas/capabilities.schema.json` |
+| `DialogueBackgroundPackageManifest` | `fecreator.contracts.dialogue_background` | `1.0` (inline literals) | `schemas/dialogue_background_package.schema.json` |
 
 `Manifest` and `CandidateSnapshot` carry `version: Literal["1.0"]` on the wire.
 The remaining contracts have no inline discriminator; they are versioned by this
@@ -38,20 +40,26 @@ Sequences are tuples and mappings are frozen through `freeze_mapping()`.
 | Field | Type | Default |
 | --- | --- | --- |
 | `version` | `Literal["1.0"]` | `"1.0"` |
-| `asset_type` | `Literal["portrait"]` | required |
-| `target_spec` | `Literal["fe-gba-portrait-standard"]` | required |
-| `workflow` | `Literal["text_to_portrait", "concept_to_portrait", "expression_refine", "masked_variant"]` | required |
+| `asset_type` | `Literal["portrait", "dialogue_background"]` | required |
+| `target_spec` | `Literal["fe-gba-portrait-standard", "fe8-dialogue-background-source-240x160"]` | required |
+| `workflow` | `Literal["text_to_portrait", "concept_to_portrait", "expression_refine", "masked_variant", "text_to_dialogue_background", "concept_to_dialogue_background"]` | required |
 | `provider` | `str` | required |
 | `character_ref_pack` | `str \| None` | `None` |
 | `character_ref_pack_rev` | `int \| None` (`>= 1`) | `None` |
 | `parent_asset_id` | `str \| None` | `None` |
 | `sources` | `tuple[SourceSpec, ...]` | `()` |
 | `edit` | `EditSpec \| None` | `None` |
+| `metadata` | `AssetMetadata \| None` | `None` |
 | `params` | `Mapping[str, str \| int \| float \| bool]` | `{}` (frozen) |
 
-- `SourceSpec`: `kind: Literal["text", "concept_art", "approved_portrait"]`, `ref: str`.
+- `SourceSpec`: `kind: Literal["text", "concept_art", "approved_portrait",
+  "approved_dialogue_background"]`, `ref: str`.
 - `EditSpec`: `mask_path: str`, `protected_regions: tuple[Region, ...]`.
 - `Region`: `x >= 0`, `y >= 0`, `w > 0`, `h > 0`, `label: str`.
+- `SourceIdentity`: non-empty `kind`, `id`, and `revision`.
+- `AssetMetadata`: portable `name`, non-empty `purpose`, `source:
+  SourceIdentity`, non-empty `license_note` and `source_note`, plus
+  `requested_downstream_profile: Literal["fe8-dialogue-background-feimg2"] | None`.
 - `Manifest.content_hash()` is the canonical manifest identity used by reports and bundles.
 
 Cross-field rules (all fail loudly, never silently normalize):
@@ -60,10 +68,28 @@ Cross-field rules (all fail loudly, never silently normalize):
 2. `edit` is only accepted when `workflow == "masked_variant"`.
 3. `parent_asset_id` is **required** for `expression_refine` and `masked_variant`,
    and **rejected** for `text_to_portrait` and `concept_to_portrait`. It names the
-   approved portrait a derived candidate is built from, and the build promotes it
-   into `LineageNode.parents`, so `list_lineage_ancestors()` returns the approved
-   base. A blank or whitespace-only value is rejected; surrounding whitespace on a
-   real value is stripped.
+   approved portrait or dialogue background a derived candidate is built from, and
+   the build promotes it into `LineageNode.parents`, so
+   `list_lineage_ancestors()` returns the approved base. A blank or whitespace-only
+   value is rejected; surrounding whitespace on a real value is stripped.
+4. `portrait` requires `fe-gba-portrait-standard`, one of its four established
+   portrait workflows, and `metadata = null`; its package contract is unchanged.
+5. `dialogue_background` requires
+   `fe8-dialogue-background-source-240x160`, one of
+   `text_to_dialogue_background`, `concept_to_dialogue_background`, or
+   `masked_variant`, and non-null `metadata`.
+
+### `DialogueBackgroundPackageManifest`
+
+The published source-package manifest has these exact fields: `version`,
+`contract_version`, `asset_type`, `asset_type_version`, `target_spec`,
+`target_spec_version`, `name`, `purpose`, `width`, `height`, `opaque`,
+`provider`, `model`, `prompt`, `reference_pack`, `reference_pack_rev`, `source`,
+`png_sha256`, `license_note`, `source_note`, and
+`requested_downstream_profile`. Its literals are `"1.0"` for all version fields,
+`"dialogue_background"`, `"fe8-dialogue-background-source-240x160"`, `240`,
+`160`, and `true`. `source` is `DialogueBackgroundSourceRecord` with `kind`,
+`id`, `revision`, and lowercase SHA-256 `input_sha256`.
 
 ### `CandidateSnapshot`
 
@@ -93,7 +119,7 @@ Required: `asset_id`, `operation`, `created_at`.
 
 | Enumeration | Values |
 | --- | --- |
-| `Operation` | `import_concept`, `create_neutral`, `refine_expression`, `variant_masked_edit`, `export_spec` |
+| `Operation` | `import_concept`, `create_neutral`, `create_dialogue_background`, `import_dialogue_background_concept`, `refine_expression`, `variant_masked_edit`, `export_spec` |
 | `Severity` | `error`, `warning`, `info` |
 | `JobState` | `created`, `planning`, `waiting_for_provider`, `waiting_for_sources`, `processing`, `waiting_for_review`, `validating`, `completed`, `failed`, `cancelled` |
 | `Capability` | `text_to_image`, `image_to_image`, `multi_reference`, `masked_edit`, `session_refinement`, `pose_control`, `lineart_control`, `identity_embedding`, `style_reference`, `seed_control`, `size_control`, `background_control`, `asynchronous_jobs` |
@@ -105,8 +131,8 @@ Required: `asset_id`, `operation`, `created_at`.
 
 | Registry | Frozen v1 identifiers |
 | --- | --- |
-| Assets | `portrait` |
-| Target specs | `fe-gba-portrait-standard` |
+| Assets | `dialogue_background`, `portrait` |
+| Target specs | `fe-gba-portrait-standard`, `fe8-dialogue-background-source-240x160` |
 | Providers | `command`, `fake`, `manual`, `mcp-client` |
 
 Registration is idempotent and guarded at import time; registries reject
@@ -126,6 +152,23 @@ Validation is fail-closed: any contract violation is an `error` diagnostic, and
 in [`docs/febuilder-interop.md`](febuilder-interop.md); level 1 (deterministic,
 ROM-free roundtrip) is mandatory and always runs in CI.
 
+## 5a. Target spec: `fe8-dialogue-background-source-240x160`
+
+Canonical output is one same-basename opaque **240 x 160** PNG plus
+`<name>.manifest.json`. RGB, RGBA with every alpha value 255, and indexed `P`
+PNG are accepted. The source contract intentionally has **no** color-count,
+palette-index, palette-bank, tile, TSA, JASC-palette, compression, or ROM limit.
+It fails closed for invalid geometry, non-opaque/corrupt PNGs, malformed or
+hash-mismatched package metadata, unsafe paths, and missing required
+source/license lineage. Lower-48-pixel composition guidance is warning-level.
+
+`fe8-dialogue-background-feimg2` is an optional requested downstream profile,
+not a source-validator rule. Optional downstream evidence may record an
+FEBuilder command/result and reduced-image hash, palette/bank report, and
+two-run TSA hashes; an explicitly configured external adapter failing prevents
+that compatibility bundle from publishing. No built-in external FEBuilder or
+expansion adapter exists, and an unconfigured optional adapter is `not_run`.
+
 ## 6. Workflow and provider capability semantics
 
 | Workflow | Required capabilities | Preferred capabilities |
@@ -134,6 +177,9 @@ ROM-free roundtrip) is mandatory and always runs in CI.
 | `concept_to_portrait` | `image_to_image` | `multi_reference`, `style_reference` |
 | `expression_refine` | `image_to_image` | `session_refinement` |
 | `masked_variant` | `masked_edit` | `background_control` |
+| `text_to_dialogue_background` | `text_to_image` | `seed_control`, `size_control` |
+| `concept_to_dialogue_background` | `image_to_image` | `multi_reference`, `style_reference`, `size_control` |
+| dialogue-background `masked_variant` | `masked_edit` | `background_control`, `size_control` |
 
 Required expressions for a canonical portrait sheet: `neutral`,
 `half_closed_eyes`, `closed_eyes`, `mouth1`, `mouth2`, `mouth3`.
@@ -173,6 +219,7 @@ and `redoc_url` are `None`). `fecreator serve` binds loopback addresses only.
 | GET | `/api/jobs/{job_id}/approvals` |
 | POST | `/api/jobs/{job_id}/plan-sources` |
 | POST | `/api/jobs/{job_id}/sources` |
+| POST | `/api/jobs/{job_id}/build` |
 | POST | `/api/jobs/{job_id}/validate` |
 | GET | `/api/jobs/{job_id}/artifacts/{relative_path:path}` |
 | GET | `/api/jobs/{job_id}/report` |
@@ -191,8 +238,8 @@ and `redoc_url` are `None`). `fecreator serve` binds loopback addresses only.
 | GET | `/api/lineage/{asset_id}/children` |
 | WEBSOCKET | `/ws/jobs/{job_id}` |
 
-Generation is deliberately **not** exposed over HTTP; it runs through the CLI or
-the MCP tool. Expected failures return a diagnostic list, never a bare string.
+The additive build route calls the same `FeCreatorApp.build()` used by the CLI
+and MCP tool. Expected failures return a diagnostic list, never a bare string.
 The built web bundle is mounted at `/`; when it is missing the root route
 answers `503` with the exact build command instead of a blank page.
 
@@ -360,6 +407,9 @@ Because every public contract sets `extra="forbid"`, a client that sends an
 unknown field is rejected. A `version` value other than `"1.0"` is rejected by
 `Manifest` and `CandidateSnapshot`, so a future contract revision cannot be
 mistaken for this one.
+
+This additive dialogue-background extension leaves the existing portrait
+identifiers, portrait validation, and portrait package bytes unchanged.
 
 When a Python public contract changes:
 

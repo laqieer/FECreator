@@ -26,6 +26,7 @@ const validManifest: Manifest = {
   parent_asset_id: null,
   sources: [{ kind: "text", ref: "hero" }],
   edit: null,
+  metadata: null,
   params: {},
 };
 
@@ -241,6 +242,37 @@ test("createJob and validate fail closed on malformed demo inputs", async () => 
     "Demo manifest target_spec must be fe-gba-portrait-standard.",
   );
   await expect(client.validate("wrong", "pkg")).rejects.toThrow("Demo spec wrong is not registered.");
+});
+
+test("demo stays portrait-only while satisfying the build client contract offline", async () => {
+  const fetchSpy = vi.fn();
+  const webSocketSpy = vi.fn();
+  vi.stubGlobal("fetch", fetchSpy);
+  vi.stubGlobal("WebSocket", webSocketSpy);
+  const client = demoClient();
+  const dialogueManifest = {
+    ...validManifest,
+    asset_type: "dialogue_background",
+    target_spec: "fe8-dialogue-background-source-240x160",
+    workflow: "text_to_dialogue_background",
+    metadata: {
+      name: "armory",
+      purpose: "dialogue scene",
+      source: { kind: "text", id: "brief", revision: "1" },
+      license_note: "original",
+      source_note: "created for testing",
+      requested_downstream_profile: null,
+    },
+  } as unknown as Manifest;
+
+  await expect(client.createJob(dialogueManifest)).rejects.toThrow(
+    "Demo manifest asset_type must be portrait.",
+  );
+  await expect(client.buildJob("demo-portrait-neutral")).resolves.toEqual(
+    expect.objectContaining({ job_id: "demo-portrait-neutral", ok: true }),
+  );
+  expect(fetchSpy).not.toHaveBeenCalled();
+  expect(webSocketSpy).not.toHaveBeenCalled();
 });
 
 test("createJob fails closed on parent_asset_id that contradicts the workflow", async () => {

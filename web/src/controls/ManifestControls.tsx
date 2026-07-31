@@ -195,6 +195,7 @@ export function ManifestControls({
       parent_asset_id: usesApprovedBase ? normalizedParent : null,
       sources,
       edit,
+      metadata: null,
       params: parsedParams,
     });
   };

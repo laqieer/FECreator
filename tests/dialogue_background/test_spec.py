@@ -165,9 +165,7 @@ def test_target_rejects_wrong_dimensions(tmp_path: Path) -> None:
     package = tmp_path / "package"
     _write_package(package, rgb=np.zeros((159, 240, 3), dtype=np.uint8))
 
-    assert "INVALID_BACKGROUND_DIMENSIONS" in {
-        item.code for item in _spec().validate(package)
-    }
+    assert "INVALID_BACKGROUND_DIMENSIONS" in {item.code for item in _spec().validate(package)}
 
 
 def test_target_rejects_nonopaque_rgba(tmp_path: Path) -> None:
@@ -202,9 +200,7 @@ def test_target_rejects_missing_manifest(tmp_path: Path) -> None:
     package.mkdir()
     _save_canonical_rgb_png(package / "phantom_city.png", _rgb_many_colors())
 
-    assert "MISSING_BACKGROUND_MANIFEST" in {
-        item.code for item in _spec().validate(package)
-    }
+    assert "MISSING_BACKGROUND_MANIFEST" in {item.code for item in _spec().validate(package)}
 
 
 def test_target_rejects_malformed_manifest(tmp_path: Path) -> None:
@@ -214,9 +210,7 @@ def test_target_rejects_malformed_manifest(tmp_path: Path) -> None:
     _save_canonical_rgb_png(png, _rgb_many_colors())
     (package / "phantom_city.manifest.json").write_text("{", encoding="utf-8")
 
-    assert "INVALID_BACKGROUND_MANIFEST" in {
-        item.code for item in _spec().validate(package)
-    }
+    assert "INVALID_BACKGROUND_MANIFEST" in {item.code for item in _spec().validate(package)}
 
 
 def test_target_rejects_name_mismatch(tmp_path: Path) -> None:
@@ -231,9 +225,7 @@ def test_target_rejects_name_mismatch(tmp_path: Path) -> None:
         manifest_filename="phantom_city.manifest.json",
     )
 
-    assert "BACKGROUND_NAME_MISMATCH" in {
-        item.code for item in _spec().validate(package)
-    }
+    assert "BACKGROUND_NAME_MISMATCH" in {item.code for item in _spec().validate(package)}
 
 
 def test_target_rejects_hash_mismatch_and_extra_files(tmp_path: Path) -> None:

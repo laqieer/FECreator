@@ -4,6 +4,8 @@
       "enum": [
         "import_concept",
         "create_neutral",
+        "create_dialogue_background",
+        "import_dialogue_background_concept",
         "refine_expression",
         "variant_masked_edit",
         "export_spec"

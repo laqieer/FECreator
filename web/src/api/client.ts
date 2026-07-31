@@ -31,6 +31,7 @@ export interface ApiClient {
   getBundleFile(jobId: string, path: string): Promise<Blob>;
   approveReview(jobId: string, actor: string): Promise<ApprovalRecord>;
   rejectReview(jobId: string, actor: string, reason: string): Promise<ApprovalRecord>;
+  buildJob(jobId: string): Promise<JobResult>;
   finalizeJob(jobId: string): Promise<JobResult>;
   retryJob(jobId: string, actor: string): Promise<Job>;
   cancelJob(jobId: string): Promise<Job>;
@@ -226,6 +227,8 @@ export function createHttpApiClient(options: HttpApiClientOptions = {}): ApiClie
         jobRoute(jobId, "/reject"),
         jsonRequest({ actor, reason }),
       ),
+    buildJob: (jobId) =>
+      requestJson<JobResult>(fetchImpl, jobRoute(jobId, "/build"), { method: "POST" }),
     finalizeJob: (jobId) =>
       requestJson<JobResult>(fetchImpl, jobRoute(jobId, "/finalize"), { method: "POST" }),
     retryJob: (jobId, actor) =>
