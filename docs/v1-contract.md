@@ -10,8 +10,9 @@ this page can never quietly drift away from the shipped code.
   **`fe8-dialogue-background-source-240x160`**
 - Asset types: **`portrait`**, **`dialogue_background`**
 
-Scope stays inside `docs/product-statement.md`: local-first portrait creation,
-never a ROM editor and never a hosted generation service.
+Scope stays inside `docs/product-statement.md`: local-first portrait creation
+plus the narrow dialogue-background source workflow, never a ROM editor and
+never a hosted generation service.
 
 ## 1. Frozen contract inventory
 
@@ -325,9 +326,10 @@ persisted job therefore records exactly which immutable reference revision it
 used.
 
 Reading a **persisted** manifest that names a pack but has no revision is a
-fail-closed error: `UnpinnedReferencePackError` is raised by both
-`FeCreatorApp._reference_pack()` and `PortraitPlugin`. This is intentional and
-applies to jobs written before pinning existed:
+fail-closed error: `UnpinnedReferencePackError` is raised by the shared
+reviewed-asset lifecycle when persisted manifests resolve reference packs,
+including `FeCreatorApp._reference_pack()`. This is intentional and applies to
+jobs written before pinning existed:
 
 - such a job cannot be planned, built, or published,
 - the failure is loud and never degrades into "use whatever revision is latest",
