@@ -13,10 +13,12 @@ from typing import Any
 
 import pytest
 
+from fecreator.app import FeCreatorApp
 from fecreator.contracts.lineage import LineageNode, Operation
-from fecreator.contracts.manifest import Manifest, SourceSpec
+from fecreator.contracts.manifest import AssetMetadata, Manifest, SourceIdentity, SourceSpec
 from fecreator.contracts.result import Artifact, StageResult
 from fecreator.core.atomicio import LockTimeoutError, write_json_atomic
+from fecreator.core.config import Settings
 from fecreator.core.hashing import sha256_file
 from fecreator.interop.febuilder_cli import FeBuilderCliResult
 from fecreator.interop.febuilder_roundtrip import decode_roundtrip
@@ -101,6 +103,43 @@ def _workspace(tmp_path: Path, *, job: Job | None = None) -> tuple[Job, Path]:
         [node.model_dump(mode="json") for node in _lineage(output_hashes)],
     )
     return active_job, workspace
+
+
+def _background_manifest() -> Manifest:
+    return Manifest(
+        asset_type="dialogue_background",
+        target_spec="fe8-dialogue-background-source-240x160",
+        workflow="text_to_dialogue_background",
+        provider="fake",
+        metadata=AssetMetadata(
+            name="phantom_city",
+            purpose="Original phantom city",
+            source=SourceIdentity(kind="prompt", id="bg/phantom-city", revision="1"),
+            license_note="Original repository fixture.",
+            source_note="Generated from an original prompt.",
+            requested_downstream_profile="fe8-dialogue-background-feimg2",
+        ),
+        sources=(SourceSpec(kind="text", ref="phantom city"),),
+        params={"width": 240, "height": 160},
+    )
+
+
+@pytest.fixture
+def completed_background_workspace(
+    data_root: Path,
+) -> tuple[Job, Path]:
+    app = FeCreatorApp(Settings(data_root=data_root))
+    job = app.create_job(_background_manifest())
+    assert app.build(job.id).ok is True
+    app.approve_review(job.id, "reviewer")
+    assert app.finalize_job(job.id).ok is True
+    return app.get_job(job.id), data_root / "jobs" / job.id
+
+
+def _refresh_declared_hash(bundle: Path, relative_path: str) -> None:
+    hashes = json.loads((bundle / "hashes.json").read_text(encoding="utf-8"))
+    hashes["files"][relative_path] = sha256_file(bundle / relative_path)
+    (bundle / "hashes.json").write_text(json.dumps(hashes), encoding="utf-8")
 
 
 def _bundle_worker_script(tmp_path: Path) -> Path:
@@ -900,3 +939,165 @@ def test_febuilder_compat_report_separates_mandatory_and_external_evidence(
         "exit_code": 0,
     }
     assert "fake cli output" not in json.dumps(report)
+
+
+def test_portrait_bundle_keeps_its_roundtrip_compat_payload(tmp_path: Path) -> None:
+    job, workspace = _workspace(tmp_path)
+
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+    compat = json.loads((bundle / "compat.json").read_text(encoding="utf-8"))
+
+    assert compat["source"] == "deterministic_febuilder_compatible_roundtrip"
+    assert set(compat) == {
+        "source",
+        "validated_by_cli",
+        "external_cli",
+        "roundtrip",
+        "errors",
+        "warnings",
+        "infos",
+        "codes",
+        "diagnostics",
+    }
+    assert "package_files" not in compat
+    assert "external_adapter" not in compat
+    assert verify_bundle(bundle) == []
+
+
+def test_dialogue_background_bundle_records_source_hash_evidence(
+    completed_background_workspace: tuple[Job, Path],
+    tmp_path: Path,
+) -> None:
+    job, workspace = completed_background_workspace
+
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+    compat = json.loads((bundle / "compat.json").read_text("utf-8"))
+
+    assert compat == {
+        "algorithm": "sha256",
+        "external_adapter": {
+            "profile": "fe8-dialogue-background-feimg2",
+            "status": "not_run",
+        },
+        "package_files": {
+            "phantom_city.manifest.json": sha256_file(
+                workspace / "package" / "phantom_city.manifest.json"
+            ),
+            "phantom_city.png": sha256_file(workspace / "package" / "phantom_city.png"),
+        },
+        "source": "deterministic_dialogue_background_source_package",
+        "status": "passed",
+    }
+    assert verify_bundle(bundle) == []
+
+
+def test_dialogue_background_bundle_rejects_compat_hash_tampering(
+    completed_background_workspace: tuple[Job, Path],
+    tmp_path: Path,
+) -> None:
+    job, workspace = completed_background_workspace
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+    compat = json.loads((bundle / "compat.json").read_text("utf-8"))
+    compat["package_files"]["phantom_city.png"] = "0" * 64
+    (bundle / "compat.json").write_text(json.dumps(compat), encoding="utf-8")
+    _refresh_declared_hash(bundle, "compat.json")
+
+    assert "BUNDLE_COMPAT_EVIDENCE_MISMATCH" in {item.code for item in verify_bundle(bundle)}
+
+
+def test_dialogue_background_bundle_refuses_the_portrait_external_cli(
+    completed_background_workspace: tuple[Job, Path],
+    tmp_path: Path,
+) -> None:
+    job, workspace = completed_background_workspace
+    out_dir = tmp_path / "bundle"
+
+    with pytest.raises(BundleError, match="portrait|febuilder"):
+        build_bundle(job, workspace, out_dir, febuilder_cli=_fake_febuilder(tmp_path, 0))
+
+    assert not out_dir.exists()
+    assert not list(tmp_path.glob(".bundle-stage-*"))
+
+
+def test_verify_bundle_reports_a_failed_dialogue_background_adapter(
+    completed_background_workspace: tuple[Job, Path],
+    tmp_path: Path,
+) -> None:
+    job, workspace = completed_background_workspace
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+    _rewrite_compat(
+        bundle,
+        lambda payload: payload["external_adapter"].update({"status": "failed"}),
+    )
+    _refresh_declared_hash(bundle, "compat.json")
+
+    codes = {diagnostic.code for diagnostic in verify_bundle(bundle)}
+
+    assert "BUNDLE_EXTERNAL_ADAPTER_FAILURE" in codes
+    assert "BUNDLE_COMPAT_EVIDENCE_MISMATCH" not in codes
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda payload: payload.__setitem__("source", "deterministic_febuilder_roundtrip"),
+            id="wrong-source",
+        ),
+        pytest.param(
+            lambda payload: payload.__setitem__("algorithm", "sha1"),
+            id="wrong-algorithm",
+        ),
+        pytest.param(
+            lambda payload: payload["package_files"].__setitem__("../evil.png", "0" * 64),
+            id="unsafe-package-path",
+        ),
+        pytest.param(
+            lambda payload: payload["package_files"].__setitem__("phantom_city.png", "nope"),
+            id="malformed-digest",
+        ),
+        pytest.param(
+            lambda payload: payload["external_adapter"].update(
+                {"status": "passed", "profile": None}
+            ),
+            id="passed-without-a-configured-profile",
+        ),
+        pytest.param(
+            lambda payload: payload.__setitem__("validated_by_cli", True),
+            id="unexpected-key",
+        ),
+    ],
+)
+def test_verify_bundle_rejects_untrustworthy_dialogue_background_evidence(
+    completed_background_workspace: tuple[Job, Path],
+    tmp_path: Path,
+    mutate: Callable[[dict[str, Any]], None],
+) -> None:
+    job, workspace = completed_background_workspace
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+    _rewrite_compat(bundle, mutate)
+    _refresh_declared_hash(bundle, "compat.json")
+
+    invalid = [
+        diagnostic
+        for diagnostic in verify_bundle(bundle)
+        if diagnostic.code == "BUNDLE_INVALID_COMPAT"
+    ]
+
+    assert len(invalid) == 1
+    assert invalid[0].where == "compat.json"
+
+
+def test_verify_bundle_rejects_background_evidence_from_another_package(
+    completed_background_workspace: tuple[Job, Path],
+    tmp_path: Path,
+) -> None:
+    job, workspace = completed_background_workspace
+    bundle = build_bundle(job, workspace, tmp_path / "bundle")
+    png = bundle / "package" / "phantom_city.png"
+    png.write_bytes(png.read_bytes() + b"\n")
+    _refresh_declared_hash(bundle, "package/phantom_city.png")
+
+    codes = {diagnostic.code for diagnostic in verify_bundle(bundle)}
+
+    assert "BUNDLE_COMPAT_EVIDENCE_MISMATCH" in codes

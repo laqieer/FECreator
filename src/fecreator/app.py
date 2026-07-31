@@ -304,9 +304,8 @@ class FeCreatorApp:
                 diagnostics=(error("APPROVAL_MISSING", "candidate is not approved"),),
             )
 
-        from fecreator.assets.portrait.publication import finalize_candidate
-
-        return finalize_candidate(
+        plugin = cast(AssetPlugin, ASSET_REGISTRY.get(job.manifest.asset_type))
+        return plugin.finalize(
             data_root=self._settings.data_root,
             job=job,
             candidate=candidate,

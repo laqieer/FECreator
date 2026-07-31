@@ -283,6 +283,7 @@ def test_a_contended_job_lock_at_publish_is_reported_as_lock_contention(
     failure, and every adapter maps it to ``STORE_LOCK_TIMEOUT``.
     """
     import fecreator.assets.portrait.plugin as plugin_module
+    import fecreator.assets.reviewed as reviewed_module
     from fecreator.assets.portrait.plugin import PortraitPlugin
     from fecreator.core.atomicio import LockTimeoutError
 
@@ -306,7 +307,7 @@ def test_a_contended_job_lock_at_publish_is_reported_as_lock_contention(
     ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
     release = threading.Event()
     release.set()
-    monkeypatch.setattr(plugin_module, "JobStore", _ContendedStore)
+    monkeypatch.setattr(reviewed_module, "JobStore", _ContendedStore)
     monkeypatch.setattr(
         plugin_module.PROVIDER_REGISTRY,
         "get",
@@ -326,6 +327,7 @@ def test_a_contended_job_lock_at_claim_is_reported_as_lock_contention(
 ) -> None:
     """Contention before the provider runs is contention, not a duplicate build."""
     import fecreator.assets.portrait.plugin as plugin_module
+    import fecreator.assets.reviewed as reviewed_module
     from fecreator.assets.portrait.plugin import PortraitPlugin
     from fecreator.core.atomicio import LockTimeoutError
 
@@ -339,7 +341,7 @@ def test_a_contended_job_lock_at_claim_is_reported_as_lock_contention(
     ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
     provider = _GateProvider(threading.Event(), threading.Event())
     provider._release.set()
-    monkeypatch.setattr(plugin_module, "JobStore", _ContendedStore)
+    monkeypatch.setattr(reviewed_module, "JobStore", _ContendedStore)
     monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: provider)
 
     with pytest.raises(LockTimeoutError):

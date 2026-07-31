@@ -41,6 +41,8 @@ class ManualProvider:
         for file_path in sorted(submitted.iterdir()):
             if not file_path.is_file():
                 continue
+            if file_path.name.endswith((".manifest.json", ".pal")):
+                continue
             media_type = _detect_media_type(file_path)
             if media_type is None:
                 return GenResponse(

@@ -21,6 +21,7 @@ const createdJob: Job = {
     parent_asset_id: null,
     sources: [],
     edit: null,
+    metadata: null,
     params: {},
   },
   parent_candidate_id: null,

@@ -30,6 +30,7 @@ const stubManifest: Manifest = {
   parent_asset_id: null,
   sources: [],
   edit: null,
+  metadata: null,
   params: {},
 };
 
@@ -154,6 +155,7 @@ export function createStubApiClient(overrides?: Partial<ApiClient>): ApiClient {
     getBundleFile: async () => new Blob(["{}"]),
     approveReview: async () => stubApproval,
     rejectReview: async () => ({ ...stubApproval, decision: "rejected", reason: "reason" }),
+    buildJob: async () => stubJobResult,
     finalizeJob: async () => stubJobResult,
     retryJob: async () => ({ ...stubJob, id: "retry-job", parent_candidate_id: `${stubJob.id}-candidate` }),
     cancelJob: async () => ({ ...stubJob, state: "cancelled" }),

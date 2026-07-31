@@ -103,6 +103,7 @@ function manifestWithDefaults(manifest: Manifest): Manifest {
     parent_asset_id: manifest.parent_asset_id,
     sources: clone(manifest.sources),
     edit: manifest.edit === null ? null : clone(manifest.edit),
+    metadata: manifest.metadata === null ? null : clone(manifest.metadata),
     params: clone(manifest.params),
   };
 }
@@ -580,6 +581,20 @@ export function demoClient(): ApiClient {
         updated_at: DEMO_REVIEWED_AT,
       };
       return clone(approval);
+    },
+    buildJob: async (jobId) => {
+      const state = ensureState(jobId, "waiting_for_review");
+      const candidate = state.candidate;
+      if (!candidate) {
+        throw new Error(`Demo job ${jobId} has no candidate.`);
+      }
+      return {
+        job_id: jobId,
+        ok: true,
+        artifacts: clone(candidate.artifacts),
+        diagnostics: clone(candidate.diagnostics),
+        lineage_id: candidate.lineage_id,
+      };
     },
     finalizeJob: async (jobId) => {
       const state = ensureState(jobId, "waiting_for_review");

@@ -1,0 +1,190 @@
+{
+  "$defs": {
+    "DialogueBackgroundSourceRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "input_sha256": {
+          "title": "Input Sha256",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "revision",
+        "input_sha256"
+      ],
+      "title": "DialogueBackgroundSourceRecord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "asset_type": {
+      "const": "dialogue_background",
+      "default": "dialogue_background",
+      "title": "Asset Type",
+      "type": "string"
+    },
+    "asset_type_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Asset Type Version",
+      "type": "string"
+    },
+    "contract_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "height": {
+      "const": 160,
+      "default": 160,
+      "title": "Height",
+      "type": "integer"
+    },
+    "license_note": {
+      "title": "License Note",
+      "type": "string"
+    },
+    "model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "opaque": {
+      "const": true,
+      "default": true,
+      "title": "Opaque",
+      "type": "boolean"
+    },
+    "png_sha256": {
+      "title": "Png Sha256",
+      "type": "string"
+    },
+    "prompt": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Prompt"
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    },
+    "purpose": {
+      "title": "Purpose",
+      "type": "string"
+    },
+    "reference_pack": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reference Pack"
+    },
+    "reference_pack_rev": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reference Pack Rev"
+    },
+    "requested_downstream_profile": {
+      "anyOf": [
+        {
+          "const": "fe8-dialogue-background-feimg2",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Requested Downstream Profile"
+    },
+    "source": {
+      "$ref": "#/$defs/DialogueBackgroundSourceRecord"
+    },
+    "source_note": {
+      "title": "Source Note",
+      "type": "string"
+    },
+    "target_spec": {
+      "const": "fe8-dialogue-background-source-240x160",
+      "default": "fe8-dialogue-background-source-240x160",
+      "title": "Target Spec",
+      "type": "string"
+    },
+    "target_spec_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Target Spec Version",
+      "type": "string"
+    },
+    "version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Version",
+      "type": "string"
+    },
+    "width": {
+      "const": 240,
+      "default": 240,
+      "title": "Width",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "name",
+    "purpose",
+    "provider",
+    "source",
+    "png_sha256",
+    "license_note",
+    "source_note"
+  ],
+  "title": "DialogueBackgroundPackageManifest",
+  "type": "object"
+}

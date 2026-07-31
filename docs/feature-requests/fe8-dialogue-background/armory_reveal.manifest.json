@@ -1,0 +1,93 @@
+{
+  "manifest_version": "1.0-example",
+  "contract_version": "1.0-proposal",
+  "asset_type": "dialogue_background",
+  "asset_type_version": "1.0-proposal",
+  "target_spec": "fe8-dialogue-background-source-240x160",
+  "target_spec_version": "1.0-proposal",
+  "name": "armory_reveal",
+  "purpose": "Original sealed-armory dialogue background example",
+  "source_status": "original specification example; not final game art",
+  "geometry": {
+    "width": 240,
+    "height": 160,
+    "tile_width": 8,
+    "tile_height": 8,
+    "tiles_x": 30,
+    "tiles_y": 20
+  },
+  "image": {
+    "mode": "P",
+    "alpha": false
+  },
+  "lineage": {
+    "operation": "procedural_pixel_art_example",
+    "provider": "local_deterministic_procedural",
+    "model": null,
+    "prompt": "Underground stone armory doors opening onto golden light; no people or text; low-detail lower dialogue area.",
+    "reference_pack": null,
+    "reference_pack_revision": null,
+    "seed": 2,
+    "license_note": "Original specification fixture created for this repository.",
+    "source": {
+      "kind": "procedural_geometry_fixture",
+      "id": "rog-fec-event-background/armory_reveal",
+      "revision": "1",
+      "input_sha256": "19b0a689f82457b001e63b6dc45a3a62e61cde3cb0905a0f202078bdbec35bea"
+    }
+  },
+  "artifacts": {
+    "png": {
+      "file": "armory_reveal.png",
+      "sha256": "337d9a6e17bb40644aa6a4d9c15727e3a03b7e207d064b84b4dc767de99eb4de"
+    }
+  },
+  "source_contract": {
+    "width": 240,
+    "height": 160,
+    "opaque": true,
+    "accepted_png_modes": [
+      "RGB",
+      "RGBA (all alpha=255)",
+      "P"
+    ],
+    "color_count_limit": null,
+    "palette_or_tile_constraints": "none at FECreator source stage"
+  },
+  "derived_fe8_compatibility": {
+    "profile": "fe8-dialogue-background-feimg2",
+    "status": "example is already postprocessed and compatible",
+    "palette": {
+      "entry_count": 128,
+      "bank_count": 8,
+      "entries_per_bank": 16,
+      "used_banks": [
+        0
+      ],
+      "used_color_counts_by_bank": [
+        11,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "gba_snap_formula": "(channel >> 3) << 3",
+      "unused_banks": "zero-padded",
+      "unused_slots_in_used_banks": "deterministic reserved entries allowed; pixel-used counts reported separately"
+    },
+    "tile_metrics": {
+      "unique_after_normal_h_v_hv_dedup": 128,
+      "limit_exclusive": 1024
+    },
+    "compatibility_profile": "fireemblem8-expansion/scripts/gfxtools/tsa_generator.py -> feimg2/fetsa2",
+    "artifacts": {
+      "palette": {
+        "file": "armory_reveal.pal",
+        "sha256": "af76cfbc91848501371bdb018dfb28ae1c534cfd9fc7cb9c255355782cfd43b0"
+      }
+    }
+  }
+}

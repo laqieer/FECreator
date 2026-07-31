@@ -20,6 +20,13 @@ class FrozenDict(dict[str, T]):
     setdefault = _immutable
     update = _immutable
 
+    def __copy__(self) -> FrozenDict[T]:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, object]) -> FrozenDict[T]:
+        memo[id(self)] = self
+        return self
+
 
 def freeze_mapping(value: Mapping[str, T] | None = None) -> Mapping[str, T]:
     return FrozenDict(value or {})

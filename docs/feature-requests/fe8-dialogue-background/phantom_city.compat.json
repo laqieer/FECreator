@@ -1,0 +1,26 @@
+{
+  "version": "1.0-example",
+  "source_artifact_sha256": "bb1a3587aaa4a9e97d8cfa327688ab4c3e61e4073f01d24c6f183d039af21037",
+  "internal_roundtrip": {
+    "status": "passed",
+    "source_index_sha256": "7431193f9af56f70853a656817fb4086040186f1d906502db78d6dc53caa204c",
+    "reconstructed_index_sha256": "7431193f9af56f70853a656817fb4086040186f1d906502db78d6dc53caa204c",
+    "unique_tiles": 152
+  },
+  "external_tsa_generator": {
+    "status": "passed",
+    "tool": "fireemblem8-expansion/scripts/gfxtools/tsa_generator.py",
+    "profile": "feimg2/fetsa2",
+    "runs_compared": 2,
+    "outputs": {
+      "feimg2": {
+        "bytes": 4864,
+        "sha256": "ac115701512d064b9a748e42c2e4ca6b975f9b5836164016749bd03aaede3c41"
+      },
+      "fetsa2": {
+        "bytes": 1202,
+        "sha256": "12bf2f36041c59617e6248a5f67e8806bc0595fd206046510fedc92e59268c06"
+      }
+    }
+  }
+}

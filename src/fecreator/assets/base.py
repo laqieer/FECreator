@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -9,7 +10,10 @@ from fecreator.contracts._immutable import freeze_mapping
 from fecreator.contracts.capabilities import Capability
 from fecreator.contracts.manifest import Manifest
 from fecreator.contracts.result import JobResult
+from fecreator.contracts.review import CandidateSnapshot
 from fecreator.core.pipeline import PipelineContext
+from fecreator.jobs.approvals import ApprovalRecord
+from fecreator.jobs.model import Job
 from fecreator.references.model import ReferencePack
 
 
@@ -74,3 +78,11 @@ class AssetPlugin(Protocol):
     def preferred_capabilities(self, workflow: str) -> set[Capability]: ...
     def plan_sources(self, manifest: Manifest, pack: ReferencePack | None) -> SourcePlan: ...
     def build(self, ctx: PipelineContext, manifest: Manifest) -> JobResult: ...
+    def finalize(
+        self,
+        *,
+        data_root: Path,
+        job: Job,
+        candidate: CandidateSnapshot,
+        approval: ApprovalRecord,
+    ) -> JobResult: ...

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import numpy as np
 from PIL import Image
 
 from fecreator.contracts.capabilities import Capability
+from fecreator.imaging.io import save_png
 from fecreator.providers.base import GenRequest
 from fecreator.providers.manual import ManualProvider
 
@@ -51,3 +55,16 @@ def test_generate_rejects_non_image_submission(tmp_path) -> None:
     assert response.ok is False
     assert response.artifacts == ()
     assert response.diagnostics[0].code == "MANUAL_UNSUPPORTED_SUBMISSION"
+
+
+def test_manual_provider_ignores_supported_package_sidecars(tmp_path: Path) -> None:
+    submitted = tmp_path / "submitted"
+    submitted.mkdir()
+    save_png(submitted / "background.png", np.zeros((160, 240, 3), dtype=np.uint8))
+    (submitted / "background.manifest.json").write_text("{}", encoding="utf-8")
+    (submitted / "background.pal").write_text("JASC-PAL\n0100\n0\n", encoding="ascii")
+
+    response = ManualProvider().generate(GenRequest(workflow="masked_variant"), tmp_path)
+
+    assert response.ok is True
+    assert [artifact.path for artifact in response.artifacts] == ["submitted/background.png"]

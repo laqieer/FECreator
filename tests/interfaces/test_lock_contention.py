@@ -192,14 +192,13 @@ def test_http_reports_lock_contention_even_where_oserror_is_handled_broadly(
     data_root: Path, operation: str
 ) -> None:
     """``LockTimeoutError`` is an ``OSError``; broad handlers must not absorb it."""
-    if operation == "build":
-        pytest.skip("generation is deliberately not exposed over HTTP")
     app, job, root = _app_raising_lock_timeout(data_root, operation)
     client = TestClient(create_api(app))
     routes = {
         "validate_job": ("post", f"/api/jobs/{job.id}/validate"),
         "finalize_job": ("post", f"/api/jobs/{job.id}/finalize"),
         "plan_job_sources": ("post", f"/api/jobs/{job.id}/plan-sources"),
+        "build": ("post", f"/api/jobs/{job.id}/build"),
         "list_bundle_entries": ("get", f"/api/jobs/{job.id}/bundle"),
     }
     method, path = routes[operation]
@@ -266,7 +265,7 @@ def _build_with_contended_job_lock(
     wave the lease relabelled it as ``InvalidTransitionError`` and the adapters
     reported ``BUILD_ASSET_FAILED``.
     """
-    import fecreator.assets.portrait.plugin as plugin_module
+    import fecreator.assets.reviewed as reviewed_module
     from fecreator.jobs.store import JobStore
 
     app = FeCreatorApp(Settings(data_root=data_root))
@@ -278,7 +277,7 @@ def _build_with_contended_job_lock(
         def locked(self, job_id: str):  # type: ignore[no-untyped-def]
             raise LockTimeoutError(message)
 
-    monkeypatch.setattr(plugin_module, "JobStore", _ContendedStore)
+    monkeypatch.setattr(reviewed_module, "JobStore", _ContendedStore)
     return app, job, str(data_root)
 
 

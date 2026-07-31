@@ -1,0 +1,93 @@
+{
+  "manifest_version": "1.0-example",
+  "contract_version": "1.0-proposal",
+  "asset_type": "dialogue_background",
+  "asset_type_version": "1.0-proposal",
+  "target_spec": "fe8-dialogue-background-source-240x160",
+  "target_spec_version": "1.0-proposal",
+  "name": "phantom_city",
+  "purpose": "Original phantom-city dialogue background example",
+  "source_status": "original specification example; not final game art",
+  "geometry": {
+    "width": 240,
+    "height": 160,
+    "tile_width": 8,
+    "tile_height": 8,
+    "tiles_x": 30,
+    "tiles_y": 20
+  },
+  "image": {
+    "mode": "P",
+    "alpha": false
+  },
+  "lineage": {
+    "operation": "procedural_pixel_art_example",
+    "provider": "local_deterministic_procedural",
+    "model": null,
+    "prompt": "Ghostly imperial city silhouette above a cracked canyon at twilight; no people or text; low-detail lower dialogue area.",
+    "reference_pack": null,
+    "reference_pack_revision": null,
+    "seed": 1,
+    "license_note": "Original specification fixture created for this repository.",
+    "source": {
+      "kind": "procedural_geometry_fixture",
+      "id": "rog-fec-event-background/phantom_city",
+      "revision": "1",
+      "input_sha256": "e02b35afd4c09732b12d6b0f99fafe8bd011e1a4b06dd5e208045bcbe826331f"
+    }
+  },
+  "artifacts": {
+    "png": {
+      "file": "phantom_city.png",
+      "sha256": "bb1a3587aaa4a9e97d8cfa327688ab4c3e61e4073f01d24c6f183d039af21037"
+    }
+  },
+  "source_contract": {
+    "width": 240,
+    "height": 160,
+    "opaque": true,
+    "accepted_png_modes": [
+      "RGB",
+      "RGBA (all alpha=255)",
+      "P"
+    ],
+    "color_count_limit": null,
+    "palette_or_tile_constraints": "none at FECreator source stage"
+  },
+  "derived_fe8_compatibility": {
+    "profile": "fe8-dialogue-background-feimg2",
+    "status": "example is already postprocessed and compatible",
+    "palette": {
+      "entry_count": 128,
+      "bank_count": 8,
+      "entries_per_bank": 16,
+      "used_banks": [
+        0
+      ],
+      "used_color_counts_by_bank": [
+        12,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "gba_snap_formula": "(channel >> 3) << 3",
+      "unused_banks": "zero-padded",
+      "unused_slots_in_used_banks": "deterministic reserved entries allowed; pixel-used counts reported separately"
+    },
+    "tile_metrics": {
+      "unique_after_normal_h_v_hv_dedup": 152,
+      "limit_exclusive": 1024
+    },
+    "compatibility_profile": "fireemblem8-expansion/scripts/gfxtools/tsa_generator.py -> feimg2/fetsa2",
+    "artifacts": {
+      "palette": {
+        "file": "phantom_city.pal",
+        "sha256": "af76cfbc91848501371bdb018dfb28ae1c534cfd9fc7cb9c255355782cfd43b0"
+      }
+    }
+  }
+}

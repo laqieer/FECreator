@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import cast
 
 from fecreator.contracts.diagnostics import Diagnostic, error, has_errors
 from fecreator.contracts.lineage import LineageNode, Operation
@@ -15,6 +16,7 @@ from fecreator.core.atomicio import _fsync_directory, write_json_atomic
 from fecreator.core.clock import utc_now_iso
 from fecreator.core.hashing import sha256_file
 from fecreator.core.paths import safe_join
+from fecreator.core.registry import SPEC_REGISTRY
 from fecreator.jobs.approvals import ApprovalRecord
 from fecreator.jobs.events import EventLog
 from fecreator.jobs.model import Job, JobState
@@ -23,7 +25,7 @@ from fecreator.jobs.store import JobStore
 from fecreator.lineage.store import LineageStore
 from fecreator.reporting.bundle import build_bundle
 from fecreator.reporting.json_report import build_report, write_report
-from fecreator.specs.fire_emblem.gba.portrait_standard.spec import FeGbaPortraitStandard
+from fecreator.specs.base import TargetSpec
 
 _PUBLICATION_STAGE_PREFIX = ".publication-stage-"
 
@@ -208,7 +210,8 @@ def finalize_candidate(
         )
 
     candidate_package = safe_join(data_root, "jobs", job.id, "candidate", "package")
-    diagnostics = tuple(FeGbaPortraitStandard().validate(candidate_package))
+    spec = cast(TargetSpec, SPEC_REGISTRY.get(job.manifest.target_spec))
+    diagnostics = tuple(spec.validate(candidate_package))
     if has_errors(diagnostics):
         return JobResult(job_id=job.id, ok=False, diagnostics=diagnostics)
 

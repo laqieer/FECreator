@@ -7,12 +7,13 @@ from pathlib import Path
 from typing import cast
 
 import httpx
+import pytest
 from mcp.types import CallToolResult
 from PIL import Image
 
 from fecreator.app import FeCreatorApp
 from fecreator.contracts.diagnostics import Diagnostic
-from fecreator.contracts.manifest import Manifest, SourceSpec
+from fecreator.contracts.manifest import AssetMetadata, Manifest, SourceIdentity, SourceSpec
 from fecreator.core.config import Settings
 from fecreator.interfaces import cli_json
 from fecreator.interfaces import static as static_module
@@ -20,6 +21,7 @@ from fecreator.interfaces.http_api import create_api
 from fecreator.interfaces.mcp_server import make_handlers
 from fecreator.jobs.model import JobState
 from fecreator.reporting.sanitize import as_object, sanitize_json
+from tests.fixtures.dialogue_background import assert_delivered_truecolor_background_png
 
 
 def _app(data_root: Path) -> FeCreatorApp:
@@ -76,7 +78,7 @@ def _diagnostics_payload(diagnostics: list[Diagnostic]) -> list[dict[str, object
     ]
 
 
-def _client(app: FeCreatorApp, monkeypatch) -> httpx.AsyncClient:
+def _client(app: FeCreatorApp, monkeypatch: pytest.MonkeyPatch) -> httpx.AsyncClient:
     monkeypatch.setattr(static_module, "web_dir", lambda: None)
     transport = httpx.ASGITransport(app=create_api(app))
     return httpx.AsyncClient(transport=transport, base_url="http://testserver")
@@ -84,7 +86,7 @@ def _client(app: FeCreatorApp, monkeypatch) -> httpx.AsyncClient:
 
 async def test_cli_mcp_http_and_app_agree_on_list_specs(
     data_root: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _app(data_root)
     out = io.StringIO()
@@ -105,7 +107,7 @@ async def test_cli_mcp_http_and_app_agree_on_list_specs(
 
 async def test_cli_mcp_http_and_app_agree_on_job_snapshot(
     data_root: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _app(data_root)
     job = app.create_job(_manifest())
@@ -128,7 +130,7 @@ async def test_cli_mcp_http_and_app_agree_on_job_snapshot(
 async def test_cli_mcp_http_and_app_agree_on_validation_diagnostics(
     data_root: Path,
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _app(data_root)
     package_dir = tmp_path / "package"
@@ -166,6 +168,95 @@ def _manual_manifest() -> Manifest:
         workflow="text_to_portrait",
         provider="manual",
         sources=(SourceSpec(kind="text", ref="hero"),),
+    )
+
+
+def _manual_dialogue_background_manifest() -> Manifest:
+    return Manifest(
+        asset_type="dialogue_background",
+        target_spec="fe8-dialogue-background-source-240x160",
+        workflow="text_to_dialogue_background",
+        provider="manual",
+        metadata=AssetMetadata(
+            name="phantom_city",
+            purpose="Original phantom city",
+            source=SourceIdentity(kind="prompt", id="bg/phantom-city", revision="1"),
+            license_note="Original repository fixture.",
+            source_note="Generated from an original prompt.",
+        ),
+        sources=(SourceSpec(kind="text", ref="phantom city"),),
+        params={"width": 240, "height": 160},
+    )
+
+
+async def test_cli_mcp_and_http_preserve_truecolor_dialogue_background_candidates(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    truecolor_background_sources: Path,
+) -> None:
+    source = truecolor_background_sources / "phantom_city.png"
+    assert_delivered_truecolor_background_png(source.read_bytes())
+
+    cli_app = _app(data_root / "cli")
+    mcp_app = _app(data_root / "mcp")
+    http_app = _app(data_root / "http")
+    cli_job = cli_app.create_job(_manual_dialogue_background_manifest())
+    mcp_job = mcp_app.create_job(_manual_dialogue_background_manifest())
+    cli_plan = cli_json.run(
+        cli_app,
+        ["plan-sources", "--job", cli_job.id, "--out", str(tmp_path / "cli-plan")],
+        io.StringIO(),
+    )
+    cli_submit = cli_json.run(
+        cli_app,
+        ["submit-sources", "--job", cli_job.id, "--sources", str(truecolor_background_sources)],
+        io.StringIO(),
+    )
+    cli_build = cli_json.run(cli_app, ["build", "--job", cli_job.id], io.StringIO())
+    mcp_plan = cast(
+        CallToolResult,
+        make_handlers(mcp_app)["plan_sources"](mcp_job.id, str(tmp_path / "mcp-plan")),
+    )
+    mcp_submit = cast(
+        CallToolResult,
+        make_handlers(mcp_app)["submit_sources"](mcp_job.id, str(truecolor_background_sources)),
+    )
+    mcp_build = cast(CallToolResult, make_handlers(mcp_app)["build_asset"](mcp_job.id))
+
+    async with _client(http_app, monkeypatch) as client:
+        created = await client.post(
+            "/api/jobs",
+            json=_manual_dialogue_background_manifest().model_dump(mode="json"),
+        )
+        http_job_id = created.json()["id"]
+        http_plan = await client.post(f"/api/jobs/{http_job_id}/plan-sources")
+        http_submit = await client.post(
+            f"/api/jobs/{http_job_id}/sources",
+            files=[("files", ("phantom_city.png", source.read_bytes(), "image/png"))],
+        )
+        http_build = await client.post(f"/api/jobs/{http_job_id}/build")
+
+    assert cli_plan == cli_submit == cli_build == 0
+    assert mcp_plan.isError is False
+    assert mcp_submit.isError is False
+    assert mcp_build.isError is False
+    assert created.status_code == 201
+    assert http_plan.status_code == http_submit.status_code == 200
+    assert http_build.status_code == 200
+    assert http_build.json()["ok"] is True
+    assert all(
+        app.get_job(job_id).state is JobState.WAITING_FOR_REVIEW
+        for app, job_id in (
+            (cli_app, cli_job.id),
+            (mcp_app, mcp_job.id),
+            (http_app, http_job_id),
+        )
+    )
+    _assert_matching_files(
+        data_root / "cli" / "jobs" / cli_job.id / "candidate" / "package",
+        data_root / "mcp" / "jobs" / mcp_job.id / "candidate" / "package",
+        data_root / "http" / "jobs" / http_job_id / "candidate" / "package",
     )
 
 
@@ -445,7 +536,7 @@ def test_cli_and_mcp_plan_sources_reject_invalid_job_ids_consistently(
 
 async def test_candidate_approval_and_finalization_are_equivalent_across_surfaces(
     data_root: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     direct_app = _app(data_root / "direct")
     cli_app = _app(data_root / "cli")
@@ -458,7 +549,6 @@ async def test_candidate_approval_and_finalization_are_equivalent_across_surface
     assert direct_app.build(direct_job.id).ok
     assert cli_app.build(cli_job.id).ok
     assert mcp_app.build(mcp_job.id).ok
-    assert http_app.build(http_job.id).ok
 
     direct_approval = direct_app.approve_review(direct_job.id, "reviewer")
     direct_result = direct_app.finalize_job(direct_job.id)
@@ -480,6 +570,7 @@ async def test_candidate_approval_and_finalization_are_equivalent_across_surface
     )
 
     async with _client(http_app, monkeypatch) as client:
+        http_build = await client.post(f"/api/jobs/{http_job.id}/build")
         http_approval = await client.post(
             f"/api/jobs/{http_job.id}/approve",
             json={"actor": "reviewer"},
@@ -495,6 +586,8 @@ async def test_candidate_approval_and_finalization_are_equivalent_across_surface
     assert _mcp_payload(mcp_approval)["approval"]["decision"] == "approved"
     assert mcp_finalization.isError is False
     assert _mcp_payload(mcp_finalization)["job_result"]["lineage_id"].endswith("-export")
+    assert http_build.status_code == 200
+    assert http_build.json()["ok"] is True
     assert http_approval.status_code == 200
     assert http_approval.json()["decision"] == "approved"
     assert http_finalization.status_code == 200
@@ -518,7 +611,7 @@ def _high_entropy_bytes() -> bytes:
 
 async def test_cli_mcp_and_http_decode_binary_artifacts_byte_for_byte(
     data_root: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _app(data_root)
     job = app.create_job(_manifest())

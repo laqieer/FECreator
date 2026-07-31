@@ -74,15 +74,38 @@ def test_committed_manifest_schema_pins_the_frozen_v1_literals() -> None:
 
     assert properties["version"]["const"] == "1.0"
     assert properties["version"]["default"] == "1.0"
-    assert properties["asset_type"]["const"] == "portrait"
-    assert properties["target_spec"]["const"] == "fe-gba-portrait-standard"
+    assert properties["asset_type"]["enum"] == ["portrait", "dialogue_background"]
+    assert properties["target_spec"]["enum"] == [
+        "fe-gba-portrait-standard",
+        "fe8-dialogue-background-source-240x160",
+    ]
     assert properties["workflow"]["enum"] == [
         "text_to_portrait",
         "concept_to_portrait",
         "expression_refine",
         "masked_variant",
+        "text_to_dialogue_background",
+        "concept_to_dialogue_background",
     ]
     assert manifest_schema["additionalProperties"] is False
+
+
+def test_committed_dialogue_background_package_schema_pins_the_frozen_v1_literals() -> None:
+    schema = json.loads(
+        (REPO_SCHEMAS / "dialogue_background_package.schema.json").read_text("utf-8")
+    )
+    properties = schema["properties"]
+
+    assert properties["version"]["const"] == "1.0"
+    assert properties["contract_version"]["const"] == "1.0"
+    assert properties["asset_type"]["const"] == "dialogue_background"
+    assert properties["asset_type_version"]["const"] == "1.0"
+    assert properties["target_spec"]["const"] == "fe8-dialogue-background-source-240x160"
+    assert properties["target_spec_version"]["const"] == "1.0"
+    assert properties["width"]["const"] == 240
+    assert properties["height"]["const"] == 160
+    assert properties["opaque"]["const"] is True
+    assert schema["additionalProperties"] is False
 
 
 def test_committed_candidate_schema_pins_the_frozen_v1_version() -> None:

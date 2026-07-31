@@ -2,9 +2,11 @@ import { expectTypeOf, test } from "vitest";
 import type { ApiClient } from "./client";
 import type {
   ApprovalRecord,
+  AssetMetadata,
   BundleEntry,
   CandidateSnapshot,
   Diagnostic,
+  DialogueBackgroundPackageManifest,
   Job,
   JobResult,
   JobState,
@@ -13,6 +15,7 @@ import type {
   Operation,
   ReferencePack,
   Report,
+  SourceIdentity,
   SourceKind,
   SourcePlan,
   Workflow,
@@ -21,18 +24,29 @@ import type {
 test("the v1 wire version literal is frozen on both versioned contracts", () => {
   expectTypeOf<Manifest["version"]>().toEqualTypeOf<"1.0">();
   expectTypeOf<CandidateSnapshot["version"]>().toEqualTypeOf<"1.0">();
-  expectTypeOf<Manifest["asset_type"]>().toEqualTypeOf<"portrait">();
-  expectTypeOf<Manifest["target_spec"]>().toEqualTypeOf<"fe-gba-portrait-standard">();
+  expectTypeOf<Manifest["asset_type"]>().toEqualTypeOf<"portrait" | "dialogue_background">();
+  expectTypeOf<Manifest["target_spec"]>().toEqualTypeOf<
+    "fe-gba-portrait-standard" | "fe8-dialogue-background-source-240x160"
+  >();
 });
 
 test("the frozen unions mirror the Python enumerations exactly", () => {
   expectTypeOf<Workflow>().toEqualTypeOf<
-    "text_to_portrait" | "concept_to_portrait" | "expression_refine" | "masked_variant"
+    | "text_to_portrait"
+    | "concept_to_portrait"
+    | "expression_refine"
+    | "masked_variant"
+    | "text_to_dialogue_background"
+    | "concept_to_dialogue_background"
   >();
-  expectTypeOf<SourceKind>().toEqualTypeOf<"text" | "concept_art" | "approved_portrait">();
+  expectTypeOf<SourceKind>().toEqualTypeOf<
+    "text" | "concept_art" | "approved_portrait" | "approved_dialogue_background"
+  >();
   expectTypeOf<Operation>().toEqualTypeOf<
     | "import_concept"
     | "create_neutral"
+    | "create_dialogue_background"
+    | "import_dialogue_background_concept"
     | "refine_expression"
     | "variant_masked_edit"
     | "export_spec"
@@ -64,6 +78,7 @@ test("the frozen contract key sets never gain or lose a field", () => {
     | "parent_asset_id"
     | "sources"
     | "edit"
+    | "metadata"
     | "params"
   >();
   expectTypeOf<keyof CandidateSnapshot>().toEqualTypeOf<
@@ -95,19 +110,21 @@ test("the frozen contract key sets never gain or lose a field", () => {
 test("Manifest mirrors the canonical manifest contract", () => {
   expectTypeOf<Manifest>().toEqualTypeOf<{
     version: "1.0";
-    asset_type: "portrait";
-    target_spec: "fe-gba-portrait-standard";
+    asset_type: "portrait" | "dialogue_background";
+    target_spec: "fe-gba-portrait-standard" | "fe8-dialogue-background-source-240x160";
     workflow:
       | "text_to_portrait"
       | "concept_to_portrait"
       | "expression_refine"
-      | "masked_variant";
+      | "masked_variant"
+      | "text_to_dialogue_background"
+      | "concept_to_dialogue_background";
     provider: string;
     character_ref_pack: string | null;
     character_ref_pack_rev: number | null;
     parent_asset_id: string | null;
     sources: {
-      kind: "text" | "concept_art" | "approved_portrait";
+      kind: "text" | "concept_art" | "approved_portrait" | "approved_dialogue_background";
       ref: string;
     }[];
     edit: {
@@ -120,7 +137,47 @@ test("Manifest mirrors the canonical manifest contract", () => {
         label: string;
       }[];
     } | null;
+    metadata: AssetMetadata | null;
     params: Record<string, string | number | boolean>;
+  }>();
+});
+
+test("dialogue background metadata and source package contracts mirror Python exactly", () => {
+  expectTypeOf<SourceIdentity>().toEqualTypeOf<{
+    kind: string;
+    id: string;
+    revision: string;
+  }>();
+  expectTypeOf<AssetMetadata>().toEqualTypeOf<{
+    name: string;
+    purpose: string;
+    source: SourceIdentity;
+    license_note: string;
+    source_note: string;
+    requested_downstream_profile: "fe8-dialogue-background-feimg2" | null;
+  }>();
+  expectTypeOf<DialogueBackgroundPackageManifest>().toEqualTypeOf<{
+    version: "1.0";
+    contract_version: "1.0";
+    asset_type: "dialogue_background";
+    asset_type_version: "1.0";
+    target_spec: "fe8-dialogue-background-source-240x160";
+    target_spec_version: "1.0";
+    name: string;
+    purpose: string;
+    width: 240;
+    height: 160;
+    opaque: true;
+    provider: string;
+    model: string | null;
+    prompt: string | null;
+    reference_pack: string | null;
+    reference_pack_rev: number | null;
+    source: { kind: string; id: string; revision: string; input_sha256: string };
+    png_sha256: string;
+    license_note: string;
+    source_note: string;
+    requested_downstream_profile: "fe8-dialogue-background-feimg2" | null;
   }>();
 });
 
@@ -203,7 +260,14 @@ test("ReferencePack and LineageNode retain their canonical fields", () => {
 
   expectTypeOf<LineageNode>().toEqualTypeOf<{
     asset_id: string;
-    operation: "import_concept" | "create_neutral" | "refine_expression" | "variant_masked_edit" | "export_spec";
+    operation:
+      | "import_concept"
+      | "create_neutral"
+      | "create_dialogue_background"
+      | "import_dialogue_background_concept"
+      | "refine_expression"
+      | "variant_masked_edit"
+      | "export_spec";
     parents: string[];
     provider: string | null;
     model: string | null;
@@ -295,6 +359,7 @@ test("ApiClient exposes the complete local and demo lifecycle", () => {
   expectTypeOf<ApiClient["finalizeJob"]>().toEqualTypeOf<
     (jobId: string) => Promise<JobResult>
   >();
+  expectTypeOf<ApiClient["buildJob"]>().toEqualTypeOf<(jobId: string) => Promise<JobResult>>();
   expectTypeOf<ApiClient["retryJob"]>().toEqualTypeOf<
     (jobId: string, actor: string) => Promise<Job>
   >();

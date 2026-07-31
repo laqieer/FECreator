@@ -13,6 +13,7 @@ from fecreator.assets.portrait.manifest import GREEN_BG
 from fecreator.assets.portrait.prompt_plan import build_prompt_plan
 from fecreator.assets.portrait.references import concept_art_artifacts
 from fecreator.assets.portrait.variants import build_variant
+from fecreator.assets.reviewed import AssetWorkflowFailure
 from fecreator.contracts.capabilities import Capability
 from fecreator.contracts.diagnostics import Diagnostic, error, has_errors
 from fecreator.contracts.lineage import Operation, Region
@@ -47,14 +48,8 @@ _EXPRESSION_ROLES = ("half_closed_eyes", "closed_eyes", "mouth1", "mouth2", "mou
 _SLOTS_BY_NAME = {slot.name: slot for slot in SLOTS}
 
 
-class WorkflowFailure(Exception):
+class WorkflowFailure(AssetWorkflowFailure):
     """A workflow could not prepare a valid provider result."""
-
-    def __init__(self, diagnostics: tuple[Diagnostic, ...]) -> None:
-        super().__init__(
-            ", ".join(f"{diagnostic.code}: {diagnostic.message}" for diagnostic in diagnostics)
-        )
-        self.diagnostics = diagnostics
 
 
 class WorkflowInputError(WorkflowFailure):

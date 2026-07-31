@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-import os
-import shutil
 import uuid
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
+from fecreator.assets.candidate import CandidatePublication, _remove_tree
 from fecreator.assets.portrait.manifest import GREEN_BG
 from fecreator.assets.portrait.workflows import PreparedPortrait
-from fecreator.contracts.diagnostics import Diagnostic, has_errors
+from fecreator.assets.reviewed import CandidateValidationError
+from fecreator.contracts.diagnostics import has_errors
 from fecreator.contracts.lineage import LineageNode
 from fecreator.contracts.manifest import Manifest
 from fecreator.contracts.result import Artifact
 from fecreator.contracts.review import CandidateSnapshot
-from fecreator.core.atomicio import _fsync_directory
 from fecreator.core.clock import utc_now_iso
 from fecreator.core.hashing import sha256_file
 from fecreator.core.paths import safe_join
@@ -23,8 +21,6 @@ from fecreator.core.pipeline import PipelineContext
 from fecreator.imaging.io import save_indexed_png
 from fecreator.imaging.quantize import map_to_palette, quantize_median_cut
 from fecreator.imaging.resize import ResizeMode, resize
-from fecreator.jobs.candidates import CandidateStore
-from fecreator.lineage.store import LineageStore
 from fecreator.references.model import ReferencePack
 from fecreator.specs.fire_emblem.gba.portrait_standard.layout import (
     BACKGROUND_ZONES,
@@ -42,37 +38,6 @@ _UPPER_CONTENT, _LOWER_CONTENT = SAFE_ZONES
 _EYE_SLOTS = ("half_closed_eyes", "closed_eyes")
 _MOUTH_SLOTS = ("mouth1", "mouth2", "mouth3", "mouth4_status", "mouth5", "mouth6", "mouth7")
 _CANDIDATE_STAGE_PREFIX = ".candidate-stage-"
-
-
-class CandidateValidationError(Exception):
-    """The assembled candidate does not satisfy the target specification."""
-
-    def __init__(self, diagnostics: tuple[Diagnostic, ...]) -> None:
-        super().__init__("candidate package validation failed")
-        self.diagnostics = diagnostics
-
-
-@dataclass
-class CandidatePublication:
-    snapshot: CandidateSnapshot
-    lineage: LineageNode
-    staged_root: Path
-    candidate_published: bool = field(init=False, default=False)
-    lineage_published: bool = field(init=False, default=False)
-
-    def publish(self, workspace: Path) -> None:
-        publish_candidate_atomically(workspace, self.snapshot, self.lineage, self.staged_root)
-        self.candidate_published = True
-        self.lineage_published = True
-
-    def rollback(self, workspace: Path) -> None:
-        rollback_candidate_publication(
-            workspace,
-            self.lineage.asset_id,
-            self.staged_root,
-            candidate_published=self.candidate_published,
-            lineage_published=self.lineage_published,
-        )
 
 
 def prepare_candidate(
@@ -263,61 +228,6 @@ def candidate_lineage(
         output_hashes=tuple(sorted(artifact.sha256 for artifact in artifacts)),
         created_at=utc_now_iso(),
     )
-
-
-def publish_candidate_atomically(
-    workspace: Path,
-    snapshot: CandidateSnapshot,
-    lineage: LineageNode,
-    staged_root: Path,
-) -> None:
-    candidate_root = safe_join(workspace, "candidate")
-    if candidate_root.exists():
-        raise FileExistsError(f"candidate already exists for job {snapshot.job_id}")
-    data_root = workspace.parents[1]
-    moved = False
-    lineage_created = False
-    try:
-        os.replace(staged_root, candidate_root)
-        moved = True
-        _fsync_directory(workspace)
-        CandidateStore(data_root).create_while_job_locked(snapshot)
-        LineageStore(data_root).add(lineage)
-        lineage_created = True
-    except Exception as exc:
-        try:
-            rollback_candidate_publication(
-                workspace,
-                lineage.asset_id,
-                staged_root,
-                candidate_published=moved,
-                lineage_published=lineage_created,
-            )
-        except Exception as cleanup_exc:
-            raise cleanup_exc from exc
-        raise
-
-
-def rollback_candidate_publication(
-    workspace: Path,
-    lineage_id: str,
-    staged_root: Path,
-    *,
-    candidate_published: bool,
-    lineage_published: bool,
-) -> None:
-    if candidate_published:
-        _remove_tree(safe_join(workspace, "candidate"))
-    if lineage_published:
-        LineageStore(workspace.parents[1]).discard_pending(lineage_id)
-    _remove_tree(staged_root)
-
-
-def _remove_tree(path: Path) -> None:
-    try:
-        shutil.rmtree(path)
-    except FileNotFoundError:
-        return
 
 
 def _slot_slice(name: str) -> tuple[slice, slice]:

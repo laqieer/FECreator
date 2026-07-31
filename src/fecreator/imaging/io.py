@@ -30,6 +30,10 @@ class ImageBudgetError(Exception):
     """Raised when an image exceeds a configured resource budget."""
 
 
+class _NonOpaquePngError(ValueError):
+    """Raised when a PNG contains non-opaque pixels."""
+
+
 def _check_pixel_budget(width: int, height: int, budget: ResourceBudget) -> None:
     if width * height > budget.max_pixels:
         raise ImageBudgetError(f"{width * height} px exceeds {budget.max_pixels}")
@@ -49,6 +53,32 @@ def save_png(path: Path, rgb: np.ndarray) -> None:
         raise ValueError(f"expected (H, W, 3) RGB array, got shape {rgb.shape}")
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_png(path, lambda tmp: Image.fromarray(rgb).save(tmp, format="PNG"))
+
+
+def load_opaque_png_rgb(
+    path: Path,
+    budget: ResourceBudget | None = None,
+) -> tuple[np.ndarray, str]:
+    actual_budget = budget or ResourceBudget()
+    try:
+        width, height = png_dimensions(path, actual_budget)
+        _check_pixel_budget(width, height, actual_budget)
+        for _ctype, _body in _chunks(path, actual_budget.max_file_bytes):
+            pass
+        with Image.open(path) as image:
+            if image.format != "PNG":
+                raise ValueError("image must be a PNG")
+            if image.mode not in {"RGB", "RGBA", "P"}:
+                raise ValueError(f"unsupported PNG mode: {image.mode}")
+            image.load()
+            rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
+            if bool(np.any(rgba[:, :, 3] != 255)):
+                raise _NonOpaquePngError("PNG contains non-opaque pixels")
+            return np.asarray(image.convert("RGB"), dtype=np.uint8).copy(), image.mode
+    except ImageBudgetError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"invalid opaque PNG: {path.name}") from exc
 
 
 def save_indexed_png(path: Path, indices: np.ndarray, palette: np.ndarray) -> None:
@@ -89,6 +119,39 @@ def save_indexed_png(path: Path, indices: np.ndarray, palette: np.ndarray) -> No
         Path(tmp).write_bytes(png)
 
     _atomic_write_png(path, _write)
+
+
+def _stored_zlib(payload: bytes) -> bytes:
+    encoded = bytearray(b"\x78\x01")
+    offset = 0
+    while offset < len(payload):
+        chunk = payload[offset : offset + 65535]
+        offset += len(chunk)
+        encoded.append(1 if offset == len(payload) else 0)
+        encoded.extend(struct.pack("<H", len(chunk)))
+        encoded.extend(struct.pack("<H", len(chunk) ^ 0xFFFF))
+        encoded.extend(chunk)
+    encoded.extend(struct.pack(">I", zlib.adler32(payload) & 0xFFFFFFFF))
+    return bytes(encoded)
+
+
+def save_canonical_rgb_png(path: Path, rgb: np.ndarray) -> None:
+    if rgb.ndim != 3 or rgb.shape[2] != 3 or rgb.dtype != np.dtype(np.uint8):
+        raise ValueError("rgb must be a uint8 (H, W, 3) array")
+    height, width = rgb.shape[:2]
+    raw = bytearray()
+    for row in rgb:
+        raw.append(0)
+        raw.extend(row.tobytes())
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    png = (
+        _PNG_SIG
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", _stored_zlib(bytes(raw)))
+        + _png_chunk(b"IEND", b"")
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_png(path, lambda tmp: Path(tmp).write_bytes(png))
 
 
 def _atomic_write_png(path: Path, write_fn: object) -> None:

@@ -19,6 +19,7 @@ const derivedManifest: Manifest = {
   parent_asset_id: APPROVED_BASE,
   sources: [{ kind: "approved_portrait", ref: "hero.png" }],
   edit: null,
+  metadata: null,
   params: {},
 };
 

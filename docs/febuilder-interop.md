@@ -1,8 +1,10 @@
 # FEBuilderGBA interoperability
 
 FECreator exports `fe-gba-portrait-standard` packages that FEBuilderGBA can import.
-This document describes how that compatibility is *evidenced*, and the three levels
-of proof are deliberately kept apart:
+This document describes how that portrait compatibility is *evidenced*, and the
+three levels of proof are deliberately kept apart. The optional external CLI adapter
+below validates portrait packages only; the dialogue-background source workflow is
+scoped separately:
 
 | Level | What it proves | Runs in CI | Needs FEBuilderGBA | Needs a ROM |
 | --- | --- | --- | --- | --- |
@@ -12,6 +14,40 @@ of proof are deliberately kept apart:
 
 Level 1 is the only mandatory evidence. Levels 2 and 3 are supplementary and can
 never replace, weaken, or substitute for it.
+
+## FE8 dialogue-background downstream profile
+
+`fe8-dialogue-background-source-240x160` is an opaque 240×160 **source**
+contract, not a FE8 engine package. It accepts RGB, fully opaque RGBA, or indexed
+PNG without color-count, palette-index, palette-bank, tile, TSA, or JASC-palette
+limits. FECreator neither runs nor validates dialogue downstream conversion at this
+stage, and it ships no adapter for this dialogue decreasecolor/TSA profile. That
+absence does not change the existing portrait external CLI validation described
+below.
+
+The optional `fe8-dialogue-background-feimg2` downstream profile begins outside
+FECreator with the Issue #2 command:
+
+```text
+FEBuilderGBA.CLI --decreasecolor \
+  --in=<source.png> \
+  --out=<reduced.png> \
+  --paletteno=128 \
+  --noReserve1stColor \
+  --json
+```
+
+The downstream build then owns deterministic indexed-palette assignment and
+eight 16-color-bank validation, GBA snapping, per-8×8-tile bank assignment,
+fewer-than-`0x400` normal/H/V/HV-deduplicated tiles, a matching 128-entry JASC
+palette, and
+`fireemblem8-expansion/scripts/gfxtools/tsa_generator.py` conversion to
+`.feimg2.bin` and `.fetsa2.bin`. The expansion Makefile remains authoritative
+for conversion, compression, linkage, and ROM integration. FECreator does not
+duplicate `DecreaseColorCore`, reject valid truecolor sources, or validate
+palette banks/TSA constraints. Fixture compatibility evidence is public under
+`docs/feature-requests/fe8-dialogue-background/`; it demonstrates this optional
+profile rather than imposing its limits on source packages.
 
 ## Level 1: mandatory deterministic evidence
 
@@ -193,4 +229,3 @@ The `febuilder-interop` CI job runs on every push and pull request:
   Locally the same test skips itself unless `FEBUILDER_CLI` is set.
 
 Level 3 never runs in CI. No job requires, downloads, or references a ROM.
-

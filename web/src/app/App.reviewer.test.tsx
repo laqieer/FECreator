@@ -26,6 +26,7 @@ const reviewJob: Job = {
     parent_asset_id: "approved-base",
     sources: [],
     edit: { mask_path: "masks/base.png", protected_regions: [] },
+    metadata: null,
     params: {},
   },
   parent_candidate_id: null,

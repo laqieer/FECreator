@@ -8,7 +8,8 @@ away from the shipped surface without this module failing.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, cast, get_args, get_origin
+from types import UnionType
+from typing import Literal, Union, cast, get_args, get_origin
 
 import pytest
 from fastapi import FastAPI
@@ -27,8 +28,19 @@ from fecreator.assets.portrait.manifest import (
 from fecreator.cli import main as cli_main
 from fecreator.contracts.capabilities import Capability, CapabilitySet
 from fecreator.contracts.diagnostics import Diagnostic, Severity
+from fecreator.contracts.dialogue_background import (
+    DialogueBackgroundPackageManifest,
+    DialogueBackgroundSourceRecord,
+)
 from fecreator.contracts.lineage import LineageNode, Operation, Region
-from fecreator.contracts.manifest import EditSpec, Manifest, SourceSpec
+from fecreator.contracts.manifest import (
+    PORTRAIT_WORKFLOWS,
+    AssetMetadata,
+    EditSpec,
+    Manifest,
+    SourceIdentity,
+    SourceSpec,
+)
 from fecreator.contracts.result import Artifact, JobResult, StageResult
 from fecreator.contracts.review import CandidateSnapshot
 from fecreator.contracts.schemas import SCHEMA_MODELS
@@ -63,9 +75,13 @@ FROZEN_MODELS: dict[str, type[BaseModel]] = {
 def _literal_values(model: type[BaseModel], field_name: str) -> tuple[object, ...]:
     field = model.model_fields[field_name]
     annotation = field.annotation
-    if get_origin(annotation) is not Literal:
-        raise AssertionError(f"{model.__name__}.{field_name} is not a Literal")
-    return get_args(annotation)
+    if get_origin(annotation) is Literal:
+        return get_args(annotation)
+    if get_origin(annotation) in (Union, UnionType):
+        members = tuple(arg for arg in get_args(annotation) if arg is not type(None))
+        if len(members) == 1 and get_origin(members[0]) is Literal:
+            return get_args(members[0])
+    raise AssertionError(f"{model.__name__}.{field_name} is not a Literal")
 
 
 def _declared_version(model: type[BaseModel]) -> str:
@@ -114,7 +130,11 @@ def test_v1_public_contract_inventory_is_frozen() -> None:
     [
         Manifest,
         SourceSpec,
+        SourceIdentity,
+        AssetMetadata,
         EditSpec,
+        DialogueBackgroundSourceRecord,
+        DialogueBackgroundPackageManifest,
         CandidateSnapshot,
         JobResult,
         StageResult,
@@ -138,6 +158,7 @@ def test_exported_schema_inventory_is_frozen() -> None:
         "diagnostics",
         "lineage",
         "capabilities",
+        "dialogue_background_package",
     }
     assert SCHEMA_MODELS["manifest"] is Manifest
     assert SCHEMA_MODELS["result"] is JobResult
@@ -145,6 +166,7 @@ def test_exported_schema_inventory_is_frozen() -> None:
     assert SCHEMA_MODELS["diagnostics"] is Diagnostic
     assert SCHEMA_MODELS["lineage"] is LineageNode
     assert SCHEMA_MODELS["capabilities"] is CapabilitySet
+    assert SCHEMA_MODELS["dialogue_background_package"] is DialogueBackgroundPackageManifest
 
 
 # --------------------------------------------------------------------------
@@ -164,6 +186,7 @@ def test_manifest_fields_and_defaults_are_frozen() -> None:
         "parent_asset_id",
         "sources",
         "edit",
+        "metadata",
         "params",
     )
     assert _required_fields(Manifest) == {"asset_type", "target_spec", "workflow", "provider"}
@@ -173,19 +196,112 @@ def test_manifest_fields_and_defaults_are_frozen() -> None:
     assert Manifest.model_fields["parent_asset_id"].default is None
     assert Manifest.model_fields["sources"].default == ()
     assert Manifest.model_fields["edit"].default is None
+    assert Manifest.model_fields["metadata"].default is None
 
 
 def test_manifest_literals_are_frozen() -> None:
     assert _literal_values(Manifest, "version") == (V1_CONTRACT_VERSION,)
-    assert _literal_values(Manifest, "asset_type") == (ASSET_TYPE_ID,)
-    assert _literal_values(Manifest, "target_spec") == (TARGET_SPEC_ID,)
+    assert _literal_values(Manifest, "asset_type") == ("portrait", "dialogue_background")
+    assert _literal_values(Manifest, "target_spec") == (
+        "fe-gba-portrait-standard",
+        "fe8-dialogue-background-source-240x160",
+    )
     assert _literal_values(Manifest, "workflow") == (
         "text_to_portrait",
         "concept_to_portrait",
         "expression_refine",
         "masked_variant",
+        "text_to_dialogue_background",
+        "concept_to_dialogue_background",
     )
-    assert _literal_values(SourceSpec, "kind") == ("text", "concept_art", "approved_portrait")
+    assert _literal_values(SourceSpec, "kind") == (
+        "text",
+        "concept_art",
+        "approved_portrait",
+        "approved_dialogue_background",
+    )
+
+
+def test_dialogue_background_metadata_fields_and_literals_are_frozen() -> None:
+    assert _fields(SourceIdentity) == ("kind", "id", "revision")
+    assert _required_fields(SourceIdentity) == {"kind", "id", "revision"}
+    assert _fields(AssetMetadata) == (
+        "name",
+        "purpose",
+        "source",
+        "license_note",
+        "source_note",
+        "requested_downstream_profile",
+    )
+    assert _required_fields(AssetMetadata) == {
+        "name",
+        "purpose",
+        "source",
+        "license_note",
+        "source_note",
+    }
+    assert AssetMetadata.model_fields["requested_downstream_profile"].default is None
+    assert _literal_values(AssetMetadata, "requested_downstream_profile") == (
+        "fe8-dialogue-background-feimg2",
+    )
+
+
+def test_dialogue_background_package_fields_and_literals_are_frozen() -> None:
+    assert _fields(DialogueBackgroundSourceRecord) == ("kind", "id", "revision", "input_sha256")
+    assert _required_fields(DialogueBackgroundSourceRecord) == {
+        "kind",
+        "id",
+        "revision",
+        "input_sha256",
+    }
+    assert _fields(DialogueBackgroundPackageManifest) == (
+        "version",
+        "contract_version",
+        "asset_type",
+        "asset_type_version",
+        "target_spec",
+        "target_spec_version",
+        "name",
+        "purpose",
+        "width",
+        "height",
+        "opaque",
+        "provider",
+        "model",
+        "prompt",
+        "reference_pack",
+        "reference_pack_rev",
+        "source",
+        "png_sha256",
+        "license_note",
+        "source_note",
+        "requested_downstream_profile",
+    )
+    assert _required_fields(DialogueBackgroundPackageManifest) == {
+        "name",
+        "purpose",
+        "provider",
+        "source",
+        "png_sha256",
+        "license_note",
+        "source_note",
+    }
+    assert _literal_values(DialogueBackgroundPackageManifest, "version") == ("1.0",)
+    assert _literal_values(DialogueBackgroundPackageManifest, "contract_version") == ("1.0",)
+    assert _literal_values(DialogueBackgroundPackageManifest, "asset_type") == (
+        "dialogue_background",
+    )
+    assert _literal_values(DialogueBackgroundPackageManifest, "asset_type_version") == ("1.0",)
+    assert _literal_values(DialogueBackgroundPackageManifest, "target_spec") == (
+        "fe8-dialogue-background-source-240x160",
+    )
+    assert _literal_values(DialogueBackgroundPackageManifest, "target_spec_version") == ("1.0",)
+    assert _literal_values(DialogueBackgroundPackageManifest, "width") == (240,)
+    assert _literal_values(DialogueBackgroundPackageManifest, "height") == (160,)
+    assert _literal_values(DialogueBackgroundPackageManifest, "opaque") == (True,)
+    assert _literal_values(DialogueBackgroundPackageManifest, "requested_downstream_profile") == (
+        "fe8-dialogue-background-feimg2",
+    )
 
 
 def test_candidate_snapshot_fields_are_frozen() -> None:
@@ -254,6 +370,8 @@ def test_operation_enumeration_is_frozen() -> None:
     assert tuple(member.value for member in Operation) == (
         "import_concept",
         "create_neutral",
+        "create_dialogue_background",
+        "import_dialogue_background_concept",
         "refine_expression",
         "variant_masked_edit",
         "export_spec",
@@ -296,8 +414,11 @@ def test_job_state_enumeration_is_frozen() -> None:
 def test_registered_assets_specs_and_providers_are_frozen(data_root: Path) -> None:
     app = FeCreatorApp(Settings(data_root=data_root))
 
-    assert app.list_assets() == [ASSET_TYPE_ID]
-    assert app.list_specs() == [TARGET_SPEC_ID]
+    assert app.list_assets() == ["dialogue_background", "portrait"]
+    assert app.list_specs() == [
+        "fe-gba-portrait-standard",
+        "fe8-dialogue-background-source-240x160",
+    ]
     assert app.list_providers() == ["command", "fake", "manual", "mcp-client"]
 
 
@@ -338,7 +459,7 @@ def test_a_provider_missing_a_required_capability_is_refused() -> None:
 
 
 def test_portrait_workflow_capability_semantics_are_frozen() -> None:
-    assert frozenset(_literal_values(Manifest, "workflow")) == WORKFLOWS
+    assert PORTRAIT_WORKFLOWS == WORKFLOWS
     assert {
         "text_to_portrait": {Capability.TEXT_TO_IMAGE},
         "concept_to_portrait": {Capability.IMAGE_TO_IMAGE},
@@ -399,6 +520,7 @@ def test_http_route_inventory_is_frozen(data_root: Path) -> None:
         ("GET", "/api/jobs/{job_id}/approvals"),
         ("POST", "/api/jobs/{job_id}/plan-sources"),
         ("POST", "/api/jobs/{job_id}/sources"),
+        ("POST", "/api/jobs/{job_id}/build"),
         ("POST", "/api/jobs/{job_id}/validate"),
         ("GET", "/api/jobs/{job_id}/artifacts/{relative_path}"),
         ("GET", "/api/jobs/{job_id}/report"),

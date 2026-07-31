@@ -67,6 +67,7 @@ _HTTP_ACTIONS = (
     ("get", "/approvals", None),
     ("post", "/plan-sources", None),
     ("post", "/validate", None),
+    ("post", "/build", None),
     ("get", "/report", None),
     ("get", "/bundle", None),
     ("get", "/artifacts/package/portrait.png", None),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from typing import cast
@@ -11,10 +12,12 @@ from fecreator.app import FeCreatorApp
 from fecreator.contracts.manifest import Manifest
 from fecreator.contracts.result import Artifact
 from fecreator.core.config import Settings
+from fecreator.core.hashing import sha256_file
 from fecreator.interfaces.mcp_server import TOOL_NAMES, build_mcp, make_handlers
 from fecreator.jobs.model import Job
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
+from tests.fixtures.dialogue_background import assert_delivered_truecolor_background_png
 
 
 def _app(data_root: Path) -> FeCreatorApp:
@@ -62,6 +65,89 @@ def _manifest_payload(
         "character_ref_pack": character_ref_pack,
         "sources": [{"kind": "text", "ref": "hero"}],
     }
+
+
+def _dialogue_background_manifest_payload() -> dict[str, object]:
+    return {
+        "asset_type": "dialogue_background",
+        "target_spec": "fe8-dialogue-background-source-240x160",
+        "workflow": "text_to_dialogue_background",
+        "provider": "manual",
+        "metadata": {
+            "name": "phantom_city",
+            "purpose": "Original phantom city",
+            "source": {"kind": "prompt", "id": "bg/phantom-city", "revision": "1"},
+            "license_note": "Original repository fixture.",
+            "source_note": "Generated from an original prompt.",
+        },
+        "sources": [{"kind": "text", "ref": "phantom city"}],
+        "params": {"width": 240, "height": 160},
+    }
+
+
+def test_mcp_manual_dialogue_background_completes_from_truecolor_sources(
+    data_root: Path,
+    tmp_path: Path,
+    truecolor_background_sources: Path,
+) -> None:
+    source = truecolor_background_sources / "phantom_city.png"
+    assert_delivered_truecolor_background_png(source.read_bytes())
+
+    app = _app(data_root)
+    handlers = make_handlers(app)
+
+    def call(name: str, *args: object) -> dict[str, object]:
+        result = cast(CallToolResult, handlers[name](*args))
+        assert result.isError is False
+        return _structured_content(result)
+
+    created = call("create_job", _dialogue_background_manifest_payload())
+    job_id = cast(dict[str, str], created["job"])["id"]
+    plan = call("plan_sources", job_id, str(tmp_path / "source-plan"))
+    submitted = call("submit_sources", job_id, str(truecolor_background_sources))
+    built = call("build_asset", job_id)
+    waiting = call("get_job", job_id)
+    approval = call("approve_review", job_id, "reviewer")
+    finalized = call("finalize_job", job_id)
+    completed = call("get_job", job_id)
+    png_artifact = call("read_job_artifact", job_id, "package/phantom_city.png")
+    manifest_artifact = call("read_job_artifact", job_id, "package/phantom_city.manifest.json")
+    report = call("get_job_report", job_id)
+    bundle = call("list_bundle_entries", job_id)
+    compat = call("read_bundle_file", job_id, "compat.json")
+
+    assert plan["source_plan"]["expected_filenames"] == ["phantom_city.png"]
+    assert submitted["job"]["state"] == "waiting_for_sources"
+    assert built["job_result"]["ok"] is True
+    assert waiting["job"]["state"] == "waiting_for_review"
+    assert approval["approval"]["decision"] == "approved"
+    assert finalized["job_result"]["ok"] is True
+    assert completed["job"]["state"] == "completed"
+    workspace = data_root / "jobs" / job_id / "package"
+    png_hash = sha256_file(workspace / "phantom_city.png")
+    assert png_hash == sha256_file(
+        data_root / "jobs" / job_id / "candidate" / "package" / "phantom_city.png"
+    )
+    png_file = cast(dict[str, str], png_artifact["file"])
+    package_manifest_file = cast(dict[str, str], manifest_artifact["file"])
+    assert png_file["path"] == "package/phantom_city.png"
+    assert package_manifest_file["path"] == "package/phantom_city.manifest.json"
+    delivered_png = base64.b64decode(png_file["content_base64"])
+    assert delivered_png == (workspace / "phantom_city.png").read_bytes()
+    assert_delivered_truecolor_background_png(delivered_png)
+    assert (
+        json.loads(base64.b64decode(package_manifest_file["content_base64"]))["png_sha256"]
+        == png_hash
+    )
+    assert report["report"]["manifest"]["asset_type"] == "dialogue_background"
+    assert report["report"]["manifest"]["workflow"] == "text_to_dialogue_background"
+    assert report["report"]["lineage"][-1]["operation"] == "export_spec"
+    assert {
+        entry["path"] for entry in bundle["bundle_entries"] if entry["path"].startswith("package/")
+    } == {"package/phantom_city.png", "package/phantom_city.manifest.json"}
+    assert json.loads(base64.b64decode(cast(dict[str, str], compat["file"])["content_base64"]))[
+        "external_adapter"
+    ] == {"status": "not_run", "profile": None}
 
 
 async def _tools_by_name(data_root: Path) -> dict[str, Tool]:
@@ -165,7 +251,10 @@ def test_list_specs_handler_matches_app(data_root: Path) -> None:
     assert result.isError is False
     assert _structured_content(result) == {
         "ok": True,
-        "spec_ids": ["fe-gba-portrait-standard"],
+        "spec_ids": [
+            "fe-gba-portrait-standard",
+            "fe8-dialogue-background-source-240x160",
+        ],
     }
 
 
