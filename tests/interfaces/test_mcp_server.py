@@ -5,10 +5,8 @@ import json
 from pathlib import Path
 from typing import cast
 
-import numpy as np
 import pytest
 from mcp.types import CallToolResult, Tool
-from PIL import Image
 
 from fecreator.app import FeCreatorApp
 from fecreator.contracts.manifest import Manifest
@@ -19,6 +17,7 @@ from fecreator.interfaces.mcp_server import TOOL_NAMES, build_mcp, make_handlers
 from fecreator.jobs.model import Job
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
+from tests.dialogue_background.conftest import assert_delivered_truecolor_background_png
 
 pytest_plugins = ("tests.dialogue_background.conftest",)
 
@@ -94,10 +93,7 @@ def test_mcp_manual_dialogue_background_completes_from_truecolor_sources(
     truecolor_background_sources: Path,
 ) -> None:
     source = truecolor_background_sources / "phantom_city.png"
-    with Image.open(source) as image:
-        assert image.mode == "RGB"
-        assert image.size == (240, 160)
-        assert np.unique(np.asarray(image).reshape(-1, 3), axis=0).shape[0] > 128
+    assert_delivered_truecolor_background_png(source.read_bytes())
 
     app = _app(data_root)
     handlers = make_handlers(app)
@@ -138,10 +134,9 @@ def test_mcp_manual_dialogue_background_completes_from_truecolor_sources(
     package_manifest_file = cast(dict[str, str], manifest_artifact["file"])
     assert png_file["path"] == "package/phantom_city.png"
     assert package_manifest_file["path"] == "package/phantom_city.manifest.json"
-    assert (
-        base64.b64decode(png_file["content_base64"])
-        == (workspace / "phantom_city.png").read_bytes()
-    )
+    delivered_png = base64.b64decode(png_file["content_base64"])
+    assert delivered_png == (workspace / "phantom_city.png").read_bytes()
+    assert_delivered_truecolor_background_png(delivered_png)
     assert (
         json.loads(base64.b64decode(package_manifest_file["content_base64"]))["png_sha256"]
         == png_hash

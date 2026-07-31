@@ -483,6 +483,43 @@ def create_api(app: FeCreatorApp) -> FastAPI:
                 ],
             ) from exc
 
+    @router.post("/jobs/{job_id}/build")
+    def build_job(job_id: str) -> JobResult:
+        job = _known_job(app, job_id)
+        try:
+            return app.build(job.id)
+        except ReferencePackCorruptionError as exc:
+            raise ExpectedHttpError(
+                status.HTTP_409_CONFLICT,
+                [
+                    error(
+                        "CORRUPT_REFERENCE_PACK",
+                        "reference pack is corrupt",
+                        where=job.manifest.character_ref_pack,
+                    )
+                ],
+            ) from exc
+        except LockTimeoutError:
+            raise
+        except (
+            InvalidTransitionError,
+            OSError,
+            PathEscapeError,
+            UnknownIdError,
+            ValueError,
+        ) as exc:
+            raise ExpectedHttpError(
+                status.HTTP_409_CONFLICT,
+                [
+                    error(
+                        "BUILD_ASSET_FAILED",
+                        "could not build asset",
+                        where=job.id,
+                        data=_detail_data(exc),
+                    )
+                ],
+            ) from exc
+
     @router.post("/jobs/{job_id}/validate", response_model=list[Diagnostic])
     def validate_job(job_id: str) -> list[JsonObject]:
         job = _known_job(app, job_id)

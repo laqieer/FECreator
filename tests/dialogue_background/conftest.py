@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
 import pytest
 from PIL import Image
+
+
+def assert_delivered_truecolor_background_png(content: bytes) -> None:
+    with Image.open(BytesIO(content)) as image:
+        assert image.mode == "RGB"
+        assert image.size == (240, 160)
+        assert np.unique(np.asarray(image).reshape(-1, 3), axis=0).shape[0] > 128
 
 
 @pytest.fixture

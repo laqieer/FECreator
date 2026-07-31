@@ -9,9 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
-from PIL import Image
 
 import fecreator.cli as cli_module
 from fecreator import __version__
@@ -24,6 +22,7 @@ from fecreator.interfaces.cli_json import build_parser, run
 from fecreator.jobs.model import Job
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
+from tests.dialogue_background.conftest import assert_delivered_truecolor_background_png
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TASK9_PLAN = (
@@ -113,10 +112,7 @@ def test_cli_manual_dialogue_background_completes_from_truecolor_sources(
     truecolor_background_sources: Path,
 ) -> None:
     source = truecolor_background_sources / "phantom_city.png"
-    with Image.open(source) as image:
-        assert image.mode == "RGB"
-        assert image.size == (240, 160)
-        assert np.unique(np.asarray(image).reshape(-1, 3), axis=0).shape[0] > 128
+    assert_delivered_truecolor_background_png(source.read_bytes())
 
     manifest = tmp_path / "dialogue-background-manifest.json"
     manifest.write_text(json.dumps(_dialogue_background_manifest_payload()), encoding="utf-8")
@@ -174,6 +170,10 @@ def test_cli_manual_dialogue_background_completes_from_truecolor_sources(
         png_artifact["path"],
         manifest_artifact["path"],
     } == {"package/phantom_city.png", "package/phantom_city.manifest.json"}
+    workspace = data_root / "jobs" / job_id / "package"
+    delivered_png = base64.b64decode(png_artifact["content_base64"])
+    assert delivered_png == (workspace / "phantom_city.png").read_bytes()
+    assert_delivered_truecolor_background_png(delivered_png)
     assert report["manifest"]["asset_type"] == "dialogue_background"
     assert report["manifest"]["workflow"] == "text_to_dialogue_background"
     assert report["manifest"]["target_spec"] == "fe8-dialogue-background-source-240x160"

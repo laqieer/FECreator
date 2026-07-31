@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import cast
 
 import httpx
-import numpy as np
 from mcp.types import CallToolResult
 from PIL import Image
 
@@ -21,6 +20,7 @@ from fecreator.interfaces.http_api import create_api
 from fecreator.interfaces.mcp_server import make_handlers
 from fecreator.jobs.model import JobState
 from fecreator.reporting.sanitize import as_object, sanitize_json
+from tests.dialogue_background.conftest import assert_delivered_truecolor_background_png
 
 pytest_plugins = ("tests.dialogue_background.conftest",)
 
@@ -197,10 +197,7 @@ async def test_cli_mcp_and_http_preserve_truecolor_dialogue_background_candidate
     truecolor_background_sources: Path,
 ) -> None:
     source = truecolor_background_sources / "phantom_city.png"
-    with Image.open(source) as image:
-        assert image.mode == "RGB"
-        assert image.size == (240, 160)
-        assert np.unique(np.asarray(image).reshape(-1, 3), axis=0).shape[0] > 128
+    assert_delivered_truecolor_background_png(source.read_bytes())
 
     cli_app = _app(data_root / "cli")
     mcp_app = _app(data_root / "mcp")
@@ -239,8 +236,7 @@ async def test_cli_mcp_and_http_preserve_truecolor_dialogue_background_candidate
             f"/api/jobs/{http_job_id}/sources",
             files=[("files", ("phantom_city.png", source.read_bytes(), "image/png"))],
         )
-
-    http_build = http_app.build(http_job_id)
+        http_build = await client.post(f"/api/jobs/{http_job_id}/build")
 
     assert cli_submit == cli_build == 0
     assert mcp_plan.isError is False
@@ -248,7 +244,8 @@ async def test_cli_mcp_and_http_preserve_truecolor_dialogue_background_candidate
     assert mcp_build.isError is False
     assert created.status_code == 201
     assert http_plan.status_code == http_submit.status_code == 200
-    assert http_build.ok is True
+    assert http_build.status_code == 200
+    assert http_build.json()["ok"] is True
     assert all(
         app.get_job(job_id).state is JobState.WAITING_FOR_REVIEW
         for app, job_id in (
@@ -553,7 +550,6 @@ async def test_candidate_approval_and_finalization_are_equivalent_across_surface
     assert direct_app.build(direct_job.id).ok
     assert cli_app.build(cli_job.id).ok
     assert mcp_app.build(mcp_job.id).ok
-    assert http_app.build(http_job.id).ok
 
     direct_approval = direct_app.approve_review(direct_job.id, "reviewer")
     direct_result = direct_app.finalize_job(direct_job.id)
@@ -575,6 +571,7 @@ async def test_candidate_approval_and_finalization_are_equivalent_across_surface
     )
 
     async with _client(http_app, monkeypatch) as client:
+        http_build = await client.post(f"/api/jobs/{http_job.id}/build")
         http_approval = await client.post(
             f"/api/jobs/{http_job.id}/approve",
             json={"actor": "reviewer"},
@@ -590,6 +587,8 @@ async def test_candidate_approval_and_finalization_are_equivalent_across_surface
     assert _mcp_payload(mcp_approval)["approval"]["decision"] == "approved"
     assert mcp_finalization.isError is False
     assert _mcp_payload(mcp_finalization)["job_result"]["lineage_id"].endswith("-export")
+    assert http_build.status_code == 200
+    assert http_build.json()["ok"] is True
     assert http_approval.status_code == 200
     assert http_approval.json()["decision"] == "approved"
     assert http_finalization.status_code == 200

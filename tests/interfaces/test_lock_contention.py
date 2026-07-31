@@ -192,14 +192,13 @@ def test_http_reports_lock_contention_even_where_oserror_is_handled_broadly(
     data_root: Path, operation: str
 ) -> None:
     """``LockTimeoutError`` is an ``OSError``; broad handlers must not absorb it."""
-    if operation == "build":
-        pytest.skip("generation is deliberately not exposed over HTTP")
     app, job, root = _app_raising_lock_timeout(data_root, operation)
     client = TestClient(create_api(app))
     routes = {
         "validate_job": ("post", f"/api/jobs/{job.id}/validate"),
         "finalize_job": ("post", f"/api/jobs/{job.id}/finalize"),
         "plan_job_sources": ("post", f"/api/jobs/{job.id}/plan-sources"),
+        "build": ("post", f"/api/jobs/{job.id}/build"),
         "list_bundle_entries": ("get", f"/api/jobs/{job.id}/bundle"),
     }
     method, path = routes[operation]

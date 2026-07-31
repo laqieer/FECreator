@@ -520,6 +520,7 @@ def test_http_route_inventory_is_frozen(data_root: Path) -> None:
         ("GET", "/api/jobs/{job_id}/approvals"),
         ("POST", "/api/jobs/{job_id}/plan-sources"),
         ("POST", "/api/jobs/{job_id}/sources"),
+        ("POST", "/api/jobs/{job_id}/build"),
         ("POST", "/api/jobs/{job_id}/validate"),
         ("GET", "/api/jobs/{job_id}/artifacts/{relative_path}"),
         ("GET", "/api/jobs/{job_id}/report"),

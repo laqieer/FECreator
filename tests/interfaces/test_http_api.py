@@ -4,15 +4,15 @@ import json
 from pathlib import Path
 
 import httpx
-import numpy as np
 import pytest
 from fastapi.testclient import TestClient
-from PIL import Image
 
 import fecreator.interfaces.http_api as http_api
 from fecreator.app import FeCreatorApp
+from fecreator.contracts.diagnostics import error
 from fecreator.contracts.lineage import LineageNode, Operation
 from fecreator.contracts.manifest import Manifest
+from fecreator.contracts.result import JobResult
 from fecreator.core.config import Settings
 from fecreator.core.hashing import sha256_file
 from fecreator.interfaces import static as static_module
@@ -20,6 +20,7 @@ from fecreator.interfaces.http_api import create_api
 from fecreator.lineage.store import LineageStore
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
+from tests.dialogue_background.conftest import assert_delivered_truecolor_background_png
 
 pytest_plugins = ("tests.dialogue_background.conftest",)
 
@@ -73,10 +74,7 @@ def test_http_manual_dialogue_background_completes_from_truecolor_upload(
     truecolor_background_sources: Path,
 ) -> None:
     source = truecolor_background_sources / "phantom_city.png"
-    with Image.open(source) as image:
-        assert image.mode == "RGB"
-        assert image.size == (240, 160)
-        assert np.unique(np.asarray(image).reshape(-1, 3), axis=0).shape[0] > 128
+    assert_delivered_truecolor_background_png(source.read_bytes())
 
     app = _app(data_root)
     monkeypatch.setattr(static_module, "web_dir", lambda: None)
@@ -88,7 +86,7 @@ def test_http_manual_dialogue_background_completes_from_truecolor_upload(
             f"/api/jobs/{job_id}/sources",
             files=[("files", ("phantom_city.png", source.read_bytes(), "image/png"))],
         )
-        built = app.build(job_id)
+        built = client.post(f"/api/jobs/{job_id}/build")
         waiting = client.get(f"/api/jobs/{job_id}")
         approval = client.post(f"/api/jobs/{job_id}/approve", json={"actor": "reviewer"})
         finalized = client.post(f"/api/jobs/{job_id}/finalize")
@@ -106,7 +104,8 @@ def test_http_manual_dialogue_background_completes_from_truecolor_upload(
     assert plan.json()["expected_filenames"] == ["phantom_city.png"]
     assert submitted.status_code == 200
     assert submitted.json()["state"] == "waiting_for_sources"
-    assert built.ok is True
+    assert built.status_code == 200
+    assert built.json()["ok"] is True
     assert waiting.json()["state"] == "waiting_for_review"
     assert approval.status_code == 200
     assert approval.json()["decision"] == "approved"
@@ -118,12 +117,15 @@ def test_http_manual_dialogue_background_completes_from_truecolor_upload(
     package_manifest = json.loads(manifest_artifact.content)
     assert package_manifest["png_sha256"] == sha256_file(workspace / "phantom_city.png")
     assert png_artifact.content == (workspace / "phantom_city.png").read_bytes()
+    assert_delivered_truecolor_background_png(png_artifact.content)
     assert report.status_code == 200
     assert report.json()["manifest"]["asset_type"] == "dialogue_background"
     assert {node["operation"] for node in report.json()["lineage"]} == {
         "create_dialogue_background",
         "export_spec",
     }
+    assert bundle.status_code == 200
+    assert compat.status_code == 200
     assert {entry["path"] for entry in bundle.json() if entry["path"].startswith("package/")} == {
         "package/phantom_city.png",
         "package/phantom_city.manifest.json",
@@ -304,6 +306,49 @@ async def test_review_routes_report_unknown_jobs_and_invalid_states_as_diagnosti
     assert unknown.json()[0]["code"] == "UNKNOWN_JOB"
     assert invalid_state.status_code == 409
     assert invalid_state.json()[0]["code"] == "APPROVE_REVIEW_FAILED"
+
+
+async def test_build_route_reports_unknown_jobs_and_invalid_states_as_diagnostics(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _app(data_root)
+    job = app.create_job(Manifest.model_validate(_manifest_payload()))
+    monkeypatch.setattr(static_module, "web_dir", lambda: None)
+    transport = httpx.ASGITransport(app=create_api(app))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        unknown = await client.post("/api/jobs/missing/build")
+        built = await client.post(f"/api/jobs/{job.id}/build")
+        invalid_state = await client.post(f"/api/jobs/{job.id}/build")
+
+    assert unknown.status_code == 404
+    assert unknown.json()[0]["code"] == "UNKNOWN_JOB"
+    assert built.status_code == 200
+    assert invalid_state.status_code == 409
+    assert invalid_state.json()[0]["code"] == "BUILD_ASSET_FAILED"
+
+
+async def test_build_route_returns_expected_build_failure_result(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _app(data_root)
+    job = app.create_job(Manifest.model_validate(_manifest_payload()))
+    expected = JobResult(
+        job_id=job.id,
+        ok=False,
+        diagnostics=(error("BUILD_REJECTED", "provider rejected the build", where=job.id),),
+    )
+    monkeypatch.setattr(app, "build", lambda _job_id: expected)
+    monkeypatch.setattr(static_module, "web_dir", lambda: None)
+    transport = httpx.ASGITransport(app=create_api(app))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(f"/api/jobs/{job.id}/build")
+
+    assert response.status_code == 200
+    assert response.json() == expected.model_dump(mode="json")
 
 
 async def test_get_missing_job_returns_deterministic_404_diagnostic(
