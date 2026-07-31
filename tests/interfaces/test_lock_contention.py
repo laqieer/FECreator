@@ -266,7 +266,7 @@ def _build_with_contended_job_lock(
     wave the lease relabelled it as ``InvalidTransitionError`` and the adapters
     reported ``BUILD_ASSET_FAILED``.
     """
-    import fecreator.assets.portrait.plugin as plugin_module
+    import fecreator.assets.reviewed as reviewed_module
     from fecreator.jobs.store import JobStore
 
     app = FeCreatorApp(Settings(data_root=data_root))
@@ -278,7 +278,7 @@ def _build_with_contended_job_lock(
         def locked(self, job_id: str):  # type: ignore[no-untyped-def]
             raise LockTimeoutError(message)
 
-    monkeypatch.setattr(plugin_module, "JobStore", _ContendedStore)
+    monkeypatch.setattr(reviewed_module, "JobStore", _ContendedStore)
     return app, job, str(data_root)
 
 

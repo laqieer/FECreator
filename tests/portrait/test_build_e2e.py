@@ -267,7 +267,7 @@ def test_masked_variant_build_preserves_approved_indices_and_palette_outside_mas
     )
 
 
-def test_build_produces_valid_candidate_package_and_lineage(data_root: Path) -> None:
+def test_build_produces_valid_candidate_package_hash_and_lineage(data_root: Path) -> None:
     import fecreator.providers  # noqa: F401
     from fecreator.assets.portrait.plugin import PortraitPlugin
 
@@ -279,6 +279,12 @@ def test_build_produces_valid_candidate_package_and_lineage(data_root: Path) -> 
     assert result.ok is True
     assert result.lineage_id == f"{job.id}-candidate"
     package = ctx.workspace / "candidate" / "package"
+    assert sha256_file(package / "hero.png") == (
+        "7f90e17b62494767ad47a7cf4ab0d5cb8ae4e3b859c9ac09b775d4e989d4b163"
+    )
+    assert sha256_file(package / "hero.pal") == (
+        "e81a04260b01b1293d81b34c148c771a5215c54ebb74be1377c944d434a5fbc1"
+    )
     assert not has_errors(FeGbaPortraitStandard().validate(package))
     assert LineageStore(data_root).get(f"{job.id}-candidate").operation.value == "create_neutral"
     assert JobStore(data_root).load(job.id).state.value == "waiting_for_review"
@@ -613,7 +619,7 @@ def test_build_rolls_back_publication_when_lineage_store_add_fails(
     job = JobStore(data_root).create(_manifest())
     ctx = PipelineContext(job_id=job.id, workspace=data_root / "jobs" / job.id)
     monkeypatch.setattr(plugin_module.PROVIDER_REGISTRY, "get", lambda provider_id: _Provider())
-    import fecreator.assets.portrait.candidate as candidate_module
+    import fecreator.assets.candidate as candidate_module
 
     monkeypatch.setattr(candidate_module.LineageStore, "add", fail_lineage_add)
 
@@ -954,7 +960,7 @@ def test_concurrent_build_cannot_process_while_first_build_is_failing(
 def test_build_surfaces_candidate_rollback_cleanup_failure(
     data_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import fecreator.assets.portrait.candidate as candidate_module
+    import fecreator.assets.candidate as candidate_module
     import fecreator.assets.portrait.plugin as plugin_module
     from fecreator.assets.portrait.plugin import PortraitPlugin
 
@@ -1156,7 +1162,7 @@ def test_finalize_attempts_every_cleanup_after_cleanup_errors(
     from fecreator.app import FeCreatorApp
     from fecreator.core.config import Settings
 
-    publication_module = importlib.import_module("fecreator.assets.portrait.publication")
+    publication_module = importlib.import_module("fecreator.assets.publication")
     app = FeCreatorApp(Settings(data_root=data_root))
     job = app.create_job(_manifest())
     assert app.build(job.id).ok is True

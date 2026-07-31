@@ -18,10 +18,10 @@ from fecreator.contracts.review import CandidateSnapshot
 from fecreator.core.config import Settings
 from fecreator.core.pipeline import PipelineContext
 from fecreator.core.registry import ASSET_REGISTRY
-from fecreator.jobs.approvals import ApprovalError
+from fecreator.jobs.approvals import ApprovalError, ApprovalRecord
 from fecreator.jobs.candidates import CandidateStore
 from fecreator.jobs.events import EventLog
-from fecreator.jobs.model import JobState
+from fecreator.jobs.model import Job, JobState
 from fecreator.jobs.service import InvalidTransitionError
 from fecreator.lineage.store import LineageStore
 from fecreator.references.model import ReferencePack
@@ -37,6 +37,7 @@ class _StubAssetPlugin:
     def reset(self) -> None:
         self.planned: list[tuple[Manifest, ReferencePack | None]] = []
         self.built: list[tuple[PipelineContext, Manifest]] = []
+        self.finalized: tuple[Path, str, str, str] | None = None
 
     def required_capabilities(self, workflow: str) -> set[Capability]:
         del workflow
@@ -64,6 +65,17 @@ class _StubAssetPlugin:
     def build(self, ctx: PipelineContext, manifest: Manifest) -> JobResult:
         self.built.append((ctx, manifest))
         return JobResult(job_id=ctx.job_id, ok=True)
+
+    def finalize(
+        self,
+        *,
+        data_root: Path,
+        job: Job,
+        candidate: CandidateSnapshot,
+        approval: ApprovalRecord,
+    ) -> JobResult:
+        self.finalized = (data_root, job.id, candidate.job_id, approval.actor)
+        return JobResult(job_id=job.id, ok=True)
 
 
 _PLUGIN = _StubAssetPlugin()
@@ -158,6 +170,17 @@ def _review_candidate(app: FeCreatorApp, data_root: Path):
         (JobState.PLANNING, JobState.PROCESSING, JobState.WAITING_FOR_REVIEW),
     )
     return job
+
+
+def test_finalize_job_dispatches_to_the_asset_plugin(data_root: Path) -> None:
+    app, plugin = _app(data_root)
+    job = _review_candidate(app, data_root)
+    approval = app.approve_review(job.id, "reviewer")
+
+    result = app.finalize_job(job.id)
+
+    assert result == JobResult(job_id=job.id, ok=True)
+    assert plugin.finalized == (data_root, job.id, job.id, approval.actor)
 
 
 def test_lists_registered_items_and_gets_created_jobs(data_root: Path) -> None:
