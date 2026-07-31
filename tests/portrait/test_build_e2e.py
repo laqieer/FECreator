@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 import threading
 import time
@@ -1087,6 +1088,11 @@ def test_finalize_requires_approval_then_publishes_the_approved_candidate(
     assert (workspace / "report.json").exists()
     assert (workspace / "lineage.json").exists()
     assert verify_bundle(workspace / "bundle") == []
+    compat = json.loads((workspace / "bundle" / "compat.json").read_text(encoding="utf-8"))
+    assert compat["source"] == "deterministic_febuilder_compatible_roundtrip"
+    assert compat["roundtrip"]["ok"] is True
+    assert compat["validated_by_cli"] is False
+    assert "package_files" not in compat
     assert export.parents == (f"{job.id}-candidate",)
     assert export.approved_by == approval.actor
     with pytest.raises(InvalidTransitionError, match="completed"):
