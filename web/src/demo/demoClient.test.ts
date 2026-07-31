@@ -81,6 +81,11 @@ function expectValidPng(bytes: Uint8Array): void {
   expect(offset).toBe(bytes.length);
 }
 
+async function sha256(blob: Blob): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 test("demo candidate artifacts are valid PNG bytes with matching chunk CRCs", async () => {
   const client = demoClient();
   const created = await client.createJob(validManifest);
@@ -97,8 +102,11 @@ test("demo candidate artifacts are valid PNG bytes with matching chunk CRCs", as
 
 test("registries are deterministic and match the frozen v1 surface", async () => {
   const client = demoClient();
-  expect(await client.listAssets()).toEqual(["portrait"]);
-  expect(await client.listSpecs()).toEqual(["fe-gba-portrait-standard"]);
+  expect(await client.listAssets()).toEqual(["portrait", "dialogue_background"]);
+  expect(await client.listSpecs()).toEqual([
+    "fe-gba-portrait-standard",
+    "fe8-dialogue-background-source-240x160",
+  ]);
   expect(await client.listProviders()).toEqual(["fake"]);
   expect(await client.listReferencePacks()).toEqual(["hero-pack"]);
 });
@@ -271,7 +279,7 @@ test("buildJob returns the candidate result and leaves an unreviewed job waiting
   expect(webSocketSpy).not.toHaveBeenCalled();
 });
 
-test("demo stays portrait-only and offline", async () => {
+test("demo supports dialogue backgrounds while staying offline", async () => {
   const fetchSpy = vi.fn();
   const webSocketSpy = vi.fn();
   vi.stubGlobal("fetch", fetchSpy);
@@ -282,6 +290,7 @@ test("demo stays portrait-only and offline", async () => {
     asset_type: "dialogue_background",
     target_spec: "fe8-dialogue-background-source-240x160",
     workflow: "text_to_dialogue_background",
+    sources: [{ kind: "text", ref: "moonlit armory" }],
     metadata: {
       name: "armory",
       purpose: "dialogue scene",
@@ -292,11 +301,167 @@ test("demo stays portrait-only and offline", async () => {
     },
   } as unknown as Manifest;
 
-  await expect(client.createJob(dialogueManifest)).rejects.toThrow(
-    "Demo manifest asset_type must be portrait.",
+  const created = await client.createJob(dialogueManifest);
+  const sourcePlan = await client.planSources(created.id);
+  expect(sourcePlan).toMatchObject({
+    prompts: [
+      "moonlit armory; Fire Emblem 8 dialogue background source; 240x160 composition; no text, logos, portrait frames, or characters; keep critical focal detail out of the lower 48 pixels",
+    ],
+    expected_filenames: ["armory.png"],
+    required_expressions: [],
+    background_contract: "one opaque 240x160 RGB or indexed PNG",
+    submission_schema: {
+      provenance: "created for testing",
+      rights: "original",
+      files: "one opaque 240x160 PNG named armory.png",
+    },
+  });
+  await client.submitSources(created.id, [
+    new File(["candidate-bytes"], "armory.png", { type: "image/png" }),
+  ]);
+  const candidate = await client.getJobCandidate(created.id);
+
+  expect(candidate.artifacts).toEqual([
+    expect.objectContaining({
+      role: "background",
+      path: "candidate/package/armory.png",
+      media_type: "image/png",
+    }),
+    expect.objectContaining({
+      role: "manifest",
+      path: "candidate/package/armory.manifest.json",
+      media_type: "application/json",
+    }),
+  ]);
+  const backgroundArtifact = candidate.artifacts[0]!;
+  const backgroundBlob = await client.getArtifact(created.id, backgroundArtifact.path);
+  const backgroundBytes = new Uint8Array(await backgroundBlob.arrayBuffer());
+  expect(readUint32BE(backgroundBytes, 16)).toBe(240);
+  expect(readUint32BE(backgroundBytes, 20)).toBe(160);
+  expect(await sha256(backgroundBlob)).toBe(backgroundArtifact.sha256);
+  const manifestArtifact = candidate.artifacts[1]!;
+  const manifestBlob = await client.getArtifact(created.id, manifestArtifact.path);
+  expect(await sha256(manifestBlob)).toBe(manifestArtifact.sha256);
+  const packageManifest = JSON.parse(
+    await manifestBlob.text(),
   );
+  expect(packageManifest).toMatchObject({
+    version: "1.0",
+    contract_version: "1.0",
+    asset_type: "dialogue_background",
+    asset_type_version: "1.0",
+    target_spec: "fe8-dialogue-background-source-240x160",
+    target_spec_version: "1.0",
+    name: "armory",
+    purpose: "dialogue scene",
+    width: 240,
+    height: 160,
+    opaque: true,
+    provider: "fake",
+    source: {
+      kind: "text",
+      id: "brief",
+      revision: "1",
+      input_sha256: "4".repeat(64),
+    },
+    png_sha256: backgroundArtifact.sha256,
+    license_note: "original",
+    source_note: "created for testing",
+    requested_downstream_profile: null,
+  });
   expect(fetchSpy).not.toHaveBeenCalled();
   expect(webSocketSpy).not.toHaveBeenCalled();
+});
+
+test("dialogue source planning falls back to purpose and preserves metadata", async () => {
+  const client = demoClient();
+  const conceptManifest = {
+    ...validManifest,
+    asset_type: "dialogue_background",
+    target_spec: "fe8-dialogue-background-source-240x160",
+    workflow: "concept_to_dialogue_background",
+    sources: [{ kind: "concept_art", ref: "ruins.png" }],
+    metadata: {
+      name: "foggy_ruins",
+      purpose: "foggy ruins at dusk",
+      source: { kind: "concept_art", id: "ruins", revision: "2" },
+      license_note: "original art",
+      source_note: "approved concept",
+      requested_downstream_profile: "fe8-dialogue-background-feimg2",
+    },
+  } as unknown as Manifest;
+
+  const created = await client.createJob(conceptManifest);
+  const plan = await client.planSources(created.id);
+
+  expect(plan.prompts).toEqual([
+    "foggy ruins at dusk; Fire Emblem 8 dialogue background source; 240x160 composition; no text, logos, portrait frames, or characters; keep critical focal detail out of the lower 48 pixels",
+  ]);
+  expect(plan.submission_schema).toMatchObject({
+    provenance: "approved concept",
+    rights: "original art",
+    files: "one opaque 240x160 PNG named foggy_ruins.png",
+  });
+});
+
+test("demo rejects a non-portable dialogue background asset name", async () => {
+  const client = demoClient();
+  const invalidManifest = {
+    ...validManifest,
+    asset_type: "dialogue_background",
+    target_spec: "fe8-dialogue-background-source-240x160",
+    workflow: "text_to_dialogue_background",
+    metadata: {
+      name: "CON",
+      purpose: "dialogue scene",
+      source: { kind: "text", id: "brief", revision: "1" },
+      license_note: "original",
+      source_note: "created for testing",
+      requested_downstream_profile: null,
+    },
+  } as unknown as Manifest;
+
+  await expect(client.createJob(invalidManifest)).rejects.toThrow(
+    "Demo dialogue_background asset name uses a reserved device name.",
+  );
+});
+
+test("demo rejects invalid dialogue metadata fields and profiles", async () => {
+  const baseMetadata = {
+    name: "armory",
+    purpose: "dialogue scene",
+    source: { kind: "text", id: "brief", revision: "1" },
+    license_note: "original",
+    source_note: "created for testing",
+    requested_downstream_profile: null,
+  };
+  const manifest = {
+    ...validManifest,
+    asset_type: "dialogue_background",
+    target_spec: "fe8-dialogue-background-source-240x160",
+    workflow: "text_to_dialogue_background",
+  };
+
+  await expect(
+    demoClient().createJob({
+      ...manifest,
+      metadata: { ...baseMetadata, purpose: " " },
+    } as unknown as Manifest),
+  ).rejects.toThrow("Demo dialogue_background purpose must be a non-empty string.");
+  await expect(
+    demoClient().createJob({
+      ...manifest,
+      metadata: { ...baseMetadata, source: { ...baseMetadata.source, kind: "" } },
+    } as unknown as Manifest),
+  ).rejects.toThrow("Demo dialogue_background source kind must be a non-empty string.");
+  await expect(
+    demoClient().createJob({
+      ...manifest,
+      metadata: { ...baseMetadata, requested_downstream_profile: "unsupported" },
+    } as unknown as Manifest),
+  ).rejects.toThrow(
+    "Demo dialogue_background requested_downstream_profile is not supported.",
+  );
 });
 
 test("createJob fails closed on parent_asset_id that contradicts the workflow", async () => {

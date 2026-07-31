@@ -7,7 +7,7 @@ on:
   push:
     tags:
       - "v*.*.*"
-  # A manual run selects an existing tag with `--ref v0.1.0`; there is no tag
+  # A manual run selects an existing tag with `--ref v0.2.0`; there is no tag
   # input, so `github.ref_name` is always a ref GitHub itself resolved.
   workflow_dispatch:
 

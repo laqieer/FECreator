@@ -16,7 +16,9 @@ The FECreator web workspace builds in two explicit modes.
 A static, deterministic preview composed at the entry point (`web/src/main.tsx` →
 `createComposition(appMode())`). A persistent, accessible banner states that the
 page uses sample data. Sample content is synthetic and repository-owned
-(`web/src/demo/fixtures.ts`).
+(`web/src/demo/fixtures.ts`). The in-memory registry and job controls expose both
+`portrait` and `dialogue_background`, including deterministic synthetic candidate
+and package artifacts for their supported workflows.
 
 ## Limitations
 

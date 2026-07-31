@@ -152,6 +152,10 @@ export function App() {
     maskDraft?.mask_path ?? workbench.selectedJob?.manifest.edit?.mask_path ?? "masks/draft.png";
   const displayedProtectedRegions =
     maskDraft?.protected_regions ?? workbench.selectedJob?.manifest.edit?.protected_regions ?? [];
+  const reviewDimensions =
+    workbench.selectedJob?.manifest.asset_type === "dialogue_background"
+      ? { width: 240, height: 160 }
+      : { width: 128, height: 112 };
 
   const selectTab = (index: number) => {
     setActiveTab(tabs[index]);
@@ -178,7 +182,7 @@ export function App() {
     <div>
       <header>
         <h1>FECreator</h1>
-        <p>Local-first portrait review and tuning workbench.</p>
+        <p>Local-first portrait and dialogue background review workbench.</p>
         <section aria-label="registry-status">
           <h2>Registry status</h2>
           <ul>
@@ -287,10 +291,10 @@ export function App() {
               candidates={reviewArtifacts.artifacts.map((artifact) => ({
                 id: artifact.path,
                 src: artifact.url,
-                imageWidth: 128,
-                imageHeight: 112,
-                cropRect: { x: 0, y: 0, w: 128, h: 112 },
-                specRect: { x: 0, y: 0, w: 128, h: 112 },
+                imageWidth: reviewDimensions.width,
+                imageHeight: reviewDimensions.height,
+                cropRect: { x: 0, y: 0, w: reviewDimensions.width, h: reviewDimensions.height },
+                specRect: { x: 0, y: 0, w: reviewDimensions.width, h: reviewDimensions.height },
               }))}
               onApprove={() => withReviewer((actor) => workbench.approveReview(actor))}
               onReject={(_candidateId, reason) =>
@@ -341,11 +345,18 @@ export function App() {
           </Suspense>
         ) : null}
         {activeTab === "Palette" ? (
-          <PalettePreview
-            artifacts={reviewArtifacts.artifacts}
-            palette={reviewArtifacts.palette}
-            scale={1}
-          />
+          workbench.selectedJob?.manifest.asset_type === "dialogue_background" ? (
+            <section aria-label="palette-preview">
+              <h2>Palette and native-size review</h2>
+              <p>Palette preview is only available for portrait jobs.</p>
+            </section>
+          ) : (
+            <PalettePreview
+              artifacts={reviewArtifacts.artifacts}
+              palette={reviewArtifacts.palette}
+              scale={1}
+            />
+          )
         ) : null}
         {activeTab === "Timeline" ? (
           <section aria-label="timeline-workbench">

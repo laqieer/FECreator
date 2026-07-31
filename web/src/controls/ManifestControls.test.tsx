@@ -201,3 +201,81 @@ test("uses a selected reference board revision in the manifest controls", async 
   expect(screen.getByLabelText("Reference pack for new job")).toHaveValue("hero-pack");
   expect(screen.getByLabelText("Reference revision for new job")).toHaveValue("2");
 });
+
+test("submits a dialogue background manifest with its required metadata", async () => {
+  const onSubmit = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <ManifestControls
+      assets={["portrait", "dialogue_background"]}
+      specs={["fe-gba-portrait-standard", "fe8-dialogue-background-source-240x160"]}
+      providers={["fake"]}
+      references={[]}
+      submitting={false}
+      onSubmit={onSubmit}
+    />,
+  );
+
+  await user.selectOptions(screen.getByLabelText("Asset type"), "dialogue_background");
+  await user.type(screen.getByLabelText("Text source"), "moonlit armory");
+  await user.type(screen.getByLabelText("Asset name"), "armory");
+  await user.type(screen.getByLabelText("Purpose"), "dialogue scene");
+  await user.type(screen.getByLabelText("Source kind"), "text");
+  await user.type(screen.getByLabelText("Source id"), "brief");
+  await user.type(screen.getByLabelText("Source revision"), "1");
+  await user.type(screen.getByLabelText("License note"), "original");
+  await user.type(screen.getByLabelText("Source note"), "created for the demo");
+  await user.click(screen.getByRole("button", { name: "Create job" }));
+
+  expect(onSubmit).toHaveBeenCalledWith<Parameters<(value: Manifest) => void>>({
+    version: "1.0",
+    asset_type: "dialogue_background",
+    target_spec: "fe8-dialogue-background-source-240x160",
+    workflow: "text_to_dialogue_background",
+    provider: "fake",
+    character_ref_pack: null,
+    character_ref_pack_rev: null,
+    parent_asset_id: null,
+    sources: [{ kind: "text", ref: "moonlit armory" }],
+    edit: null,
+    metadata: {
+      name: "armory",
+      purpose: "dialogue scene",
+      source: { kind: "text", id: "brief", revision: "1" },
+      license_note: "original",
+      source_note: "created for the demo",
+      requested_downstream_profile: null,
+    },
+    params: {},
+  });
+});
+
+test("rejects a non-portable dialogue background asset name", async () => {
+  const onSubmit = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <ManifestControls
+      assets={["portrait", "dialogue_background"]}
+      specs={["fe-gba-portrait-standard", "fe8-dialogue-background-source-240x160"]}
+      providers={["fake"]}
+      references={[]}
+      submitting={false}
+      onSubmit={onSubmit}
+    />,
+  );
+
+  await user.selectOptions(screen.getByLabelText("Asset type"), "dialogue_background");
+  await user.type(screen.getByLabelText("Asset name"), "foo/bar");
+  await user.type(screen.getByLabelText("Purpose"), "dialogue scene");
+  await user.type(screen.getByLabelText("Source kind"), "text");
+  await user.type(screen.getByLabelText("Source id"), "brief");
+  await user.type(screen.getByLabelText("Source revision"), "1");
+  await user.type(screen.getByLabelText("License note"), "original");
+  await user.type(screen.getByLabelText("Source note"), "created for the demo");
+  await user.click(screen.getByRole("button", { name: "Create job" }));
+
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Asset name must not contain path separators.",
+  );
+  expect(onSubmit).not.toHaveBeenCalled();
+});

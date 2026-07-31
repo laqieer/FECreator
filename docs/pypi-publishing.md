@@ -115,15 +115,10 @@ gh api repos/laqieer/FECreator/environments/pypi/deployment-branch-policies
 
 ## The `v0.1.0` tag
 
-The `v0.1.0` tag that exists today predates `publish.yml`,
-`scripts/validate_release_tag.py`, and this guide: it points at a commit where
-none of the release machinery exists, so a run of that tag would check out a
-tree without the workflow's own inputs.
-
-Because `0.1.0` has never been published to PyPI, nothing downstream depends on
-that tag object yet. Exactly once, before the first publication, the maintainer
-will delete the unpublished tag and recreate it on the final merge commit of
-this work:
+The original `v0.1.0` tag predated `publish.yml`,
+`scripts/validate_release_tag.py`, and this guide, so it pointed at a commit
+without the release machinery. Before the first publication, the maintainer
+deleted that unpublished tag and recreated it on the final release commit:
 
 ```powershell
 git push origin :refs/tags/v0.1.0
@@ -132,9 +127,10 @@ git tag v0.1.0 <final-merge-commit>
 git push origin v0.1.0
 ```
 
-After that single reset the tag is immutable: once a version exists on PyPI it
-is never re-uploaded, moved, or recreated. A wrong version is corrected by
-releasing a new version, never by moving a published tag.
+That one-time reset is complete. `v0.1.0` is published and immutable: once a
+version exists on PyPI it is never re-uploaded, moved, or recreated. A wrong
+version is corrected by releasing a new version, never by moving a published
+tag.
 
 ## Releasing
 
@@ -144,12 +140,12 @@ releasing a new version, never by moving a published tag.
 2. Tag the release commit and push the tag:
 
    ```powershell
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag v0.2.0
+   git push origin v0.2.0
    ```
 
    The tag push starts `publish.yml`, which checks out
-   `refs/tags/v0.1.0` exactly.
+   `refs/tags/v0.2.0` exactly.
 3. `python scripts/validate_release_tag.py --tag "$RELEASE_TAG"` runs before any
    artifact is built and fails when the tag, `pyproject.toml`, and
    `src/fecreator/__init__.py` do not agree exactly.
@@ -163,7 +159,7 @@ takes no tag input — the run is dispatched *on* the tag, and the qualified
 `refs/tags/` checkout builds the same immutable source a tag push would:
 
 ```powershell
-gh workflow run publish.yml --ref v0.1.0
+gh workflow run publish.yml --ref v0.2.0
 ```
 
 Use this when the tag push run failed after the tag was already correct (for

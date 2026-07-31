@@ -3,9 +3,11 @@ import { NotFoundError } from "../api/client";
 import type {
   ApprovalRecord,
   Artifact,
+  AssetMetadata,
   BundleEntry,
   CandidateSnapshot,
   Diagnostic,
+  DialogueBackgroundPackageManifest,
   Job,
   LineageNode,
   Manifest,
@@ -13,6 +15,7 @@ import type {
   Report,
   SourcePlan,
 } from "../api/types";
+import { portableStorageIdError } from "../validation/storageId";
 import {
   DEMO_CREATED_AT,
   DEMO_PUBLISHED_AT,
@@ -36,6 +39,8 @@ const demoWorkflows: readonly Manifest["workflow"][] = [
   "concept_to_portrait",
   "expression_refine",
   "masked_variant",
+  "text_to_dialogue_background",
+  "concept_to_dialogue_background",
 ];
 
 interface DemoJobState {
@@ -67,6 +72,10 @@ const DEMO_PNG_BYTES = Uint8Array.from([
   6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 144, 215, 52, 255,
   15, 0, 2, 105, 1, 127, 229, 103, 186, 4, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ]);
+const DEMO_DIALOGUE_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAPAAAACgCAIAAAC9uXYyAAABRUlEQVR42u3SQREAMAjAsDElSEAK/tWggg+XSOg1svrBFV8CDA2GBkODoTE0GBoMDYYGQ2NoMDQYGgwNhsbQYGgwNBgaDI2hwdBgaDA0GBpDg6HB0GBoMDSGBkODocHQYGgMDYYGQ4OhMTQYGgwNhgZDY2gwNBgaDA2GxtBgaDA0GBoMjaHB0GBoMDQYGkODocHQYGgwNIYGQ4OhwdBgaAwNhgZDg6HB0BgaDA2GBkNjaDA0GBoMDYbG0GBoMDQYGgyNocHQYGgwNBgaQ4OhwdBgaDA0hgZDg6HB0GBoDA2GBkODocHQGBoMDYYGQ2NoMDQYGgwNhsbQYGgwNBgaDI2hwdBgaDA0GBpDg6HB0GBoMDSGBkODocHQYGgMDYYGQ4OhwdAYGgwNhgZDg6ExNBgaDA2GxtBgaDA0GBoMjaHB0GBo2DEqSwHgG4gVDAAAAABJRU5ErkJggg==";
+const DEMO_DIALOGUE_PNG_SHA256 =
+  "c51e60b44140e13a75b27d12cebb14b3a88b11e640673b663e6d64dd68ad7aae";
 const DEMO_JASC_PALETTE = `JASC-PAL
 0100
 2
@@ -78,17 +87,144 @@ function newPngBlob(): Blob {
   return new Blob([DEMO_PNG_BYTES], { type: "image/png" });
 }
 
+function newDialoguePngBlob(): Blob {
+  const binary = atob(DEMO_DIALOGUE_PNG_BASE64);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return new Blob([bytes], { type: "image/png" });
+}
+
 function newPaletteBlob(): Blob {
   return newBlob(DEMO_JASC_PALETTE, "text/plain");
+}
+
+async function sha256Text(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function cloneDiagnostics(): Diagnostic[] {
   return demoDiagnostics.map((diagnostic) => clone(diagnostic));
 }
 
+function diagnosticsFor(manifest: Manifest): Diagnostic[] {
+  return manifest.asset_type === "portrait" ? cloneDiagnostics() : [];
+}
+
+function normalizedNonEmpty(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`Demo dialogue_background ${field} must be a non-empty string.`);
+  }
+  return value.trim();
+}
+
+function normalizeDialogueBackgroundMetadata(value: unknown): AssetMetadata {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Demo dialogue_background manifest requires metadata.");
+  }
+  const metadata = value as Record<string, unknown>;
+  if (typeof metadata.name !== "string" || metadata.name === "") {
+    throw new Error("Demo dialogue_background asset name must be a non-empty string.");
+  }
+  const name = metadata.name;
+  const assetNameError = portableStorageIdError(name);
+  if (assetNameError !== null) {
+    throw new Error(`Demo dialogue_background asset name ${assetNameError}`);
+  }
+  const sourceValue = metadata.source;
+  if (typeof sourceValue !== "object" || sourceValue === null || Array.isArray(sourceValue)) {
+    throw new Error("Demo dialogue_background source kind must be a non-empty string.");
+  }
+  const source = sourceValue as Record<string, unknown>;
+  const requestedDownstreamProfile =
+    metadata.requested_downstream_profile === undefined
+      ? null
+      : metadata.requested_downstream_profile;
+  if (
+    requestedDownstreamProfile !== null &&
+    requestedDownstreamProfile !== "fe8-dialogue-background-feimg2"
+  ) {
+    throw new Error(
+      "Demo dialogue_background requested_downstream_profile is not supported.",
+    );
+  }
+  return {
+    name,
+    purpose: normalizedNonEmpty(metadata.purpose, "purpose"),
+    source: {
+      kind: normalizedNonEmpty(source.kind, "source kind"),
+      id: normalizedNonEmpty(source.id, "source id"),
+      revision: normalizedNonEmpty(source.revision, "source revision"),
+    },
+    license_note: normalizedNonEmpty(metadata.license_note, "license note"),
+    source_note: normalizedNonEmpty(metadata.source_note, "source note"),
+    requested_downstream_profile: requestedDownstreamProfile,
+  };
+}
+
 function sanitizeTextSource(manifest: Manifest): string {
   const source = manifest.sources.find((item) => item.kind === "text")?.ref?.trim();
-  return source && source.length > 0 ? source : "a Fire Emblem GBA character portrait";
+  if (source && source.length > 0) {
+    return source;
+  }
+  return manifest.asset_type === "portrait"
+    ? "a Fire Emblem GBA character portrait"
+    : "a Fire Emblem GBA dialogue background";
+}
+
+function createDialogueBackgroundPrompt(
+  manifest: Manifest,
+  pack: ReferencePack | null,
+): string {
+  const metadata = normalizeDialogueBackgroundMetadata(manifest.metadata);
+  const text = manifest.sources
+    .filter((source) => source.kind === "text")
+    .map((source) => source.ref)
+    .join(" ");
+  const subject = text || metadata.purpose;
+  const forbidden =
+    pack && pack.forbidden_changes.length > 0
+      ? `; preserve: ${pack.forbidden_changes.join(", ")}`
+      : "";
+  return (
+    `${subject}${forbidden}; Fire Emblem 8 dialogue background source; ` +
+    "240x160 composition; no text, logos, portrait frames, or characters; " +
+    "keep critical focal detail out of the lower 48 pixels"
+  );
+}
+
+function createDialogueBackgroundPackageManifest(
+  manifest: Manifest,
+  pngSha256: string,
+): DialogueBackgroundPackageManifest {
+  const metadata = normalizeDialogueBackgroundMetadata(manifest.metadata);
+  return {
+    version: "1.0",
+    contract_version: "1.0",
+    asset_type: "dialogue_background",
+    asset_type_version: "1.0",
+    target_spec: "fe8-dialogue-background-source-240x160",
+    target_spec_version: "1.0",
+    name: metadata.name,
+    purpose: metadata.purpose,
+    width: 240,
+    height: 160,
+    opaque: true,
+    provider: manifest.provider,
+    model: null,
+    prompt: createDialogueBackgroundPrompt(manifest, maybeReferencePack(manifest)),
+    reference_pack: manifest.character_ref_pack,
+    reference_pack_rev: manifest.character_ref_pack_rev,
+    source: {
+      kind: metadata.source.kind,
+      id: metadata.source.id,
+      revision: metadata.source.revision,
+      input_sha256: "4".repeat(64),
+    },
+    png_sha256: pngSha256,
+    license_note: metadata.license_note,
+    source_note: metadata.source_note,
+    requested_downstream_profile: metadata.requested_downstream_profile,
+  };
 }
 
 function manifestWithDefaults(manifest: Manifest): Manifest {
@@ -103,7 +239,10 @@ function manifestWithDefaults(manifest: Manifest): Manifest {
     parent_asset_id: manifest.parent_asset_id,
     sources: clone(manifest.sources),
     edit: manifest.edit === null ? null : clone(manifest.edit),
-    metadata: manifest.metadata === null ? null : clone(manifest.metadata),
+    metadata:
+      manifest.asset_type === "dialogue_background"
+        ? normalizeDialogueBackgroundMetadata(manifest.metadata)
+        : null,
     params: clone(manifest.params),
   };
 }
@@ -125,6 +264,25 @@ function maybeReferencePack(manifest: Manifest): ReferencePack | null {
 function createSourcePlan(manifest: Manifest): SourcePlan {
   const pack = maybeReferencePack(manifest);
   const base = sanitizeTextSource(manifest);
+  if (manifest.asset_type === "dialogue_background") {
+    const metadata = normalizeDialogueBackgroundMetadata(manifest.metadata);
+    return {
+      prompts: [createDialogueBackgroundPrompt(manifest, pack)],
+      reference_roles: pack ? { concept_0: "refs/hero.png" } : {},
+      expected_filenames: [`${metadata.name}.png`],
+      required_expressions: [],
+      background_contract: "one opaque 240x160 RGB or indexed PNG",
+      forbidden_colors: [],
+      submission_schema: {
+        forbidden_changes: pack ? [...pack.forbidden_changes] : [],
+        canonical_swatches: pack ? [...pack.swatches] : [],
+        traits: pack ? { ...pack.traits } : {},
+        provenance: metadata.source_note,
+        rights: metadata.license_note,
+        files: `one opaque 240x160 PNG named ${metadata.name}.png`,
+      },
+    };
+  }
   return {
     prompts: [`${base}, neutral expression, front-facing bust`],
     reference_roles: pack ? { concept_0: "refs/hero.png" } : {},
@@ -143,12 +301,29 @@ function createSourcePlan(manifest: Manifest): SourcePlan {
   };
 }
 
-function createCandidate(job: Job): CandidateSnapshot {
-  return {
-    version: "1.0",
-    job_id: job.id,
-    lineage_id: `${job.id}-candidate`,
-    artifacts: [
+async function createCandidate(job: Job): Promise<CandidateSnapshot> {
+  let artifacts: Artifact[];
+  if (job.manifest.asset_type === "dialogue_background") {
+    const metadata = normalizeDialogueBackgroundMetadata(job.manifest.metadata);
+    const manifestJson = JSON.stringify(
+      createDialogueBackgroundPackageManifest(job.manifest, DEMO_DIALOGUE_PNG_SHA256),
+    );
+    artifacts = [
+      {
+        role: "background",
+        path: `candidate/package/${metadata.name}.png`,
+        sha256: DEMO_DIALOGUE_PNG_SHA256,
+        media_type: "image/png",
+      },
+      {
+        role: "manifest",
+        path: `candidate/package/${metadata.name}.manifest.json`,
+        sha256: await sha256Text(manifestJson),
+        media_type: "application/json",
+      },
+    ];
+  } else {
+    artifacts = [
       {
         role: "portrait",
         path: "candidate/package/portrait.png",
@@ -161,7 +336,13 @@ function createCandidate(job: Job): CandidateSnapshot {
         sha256: "8".repeat(64),
         media_type: "text/plain",
       },
-    ],
+    ];
+  }
+  return {
+    version: "1.0",
+    job_id: job.id,
+    lineage_id: `${job.id}-candidate`,
+    artifacts,
     diagnostics: [],
     metrics: { score: 0.95 },
     created_at: DEMO_REVIEWED_AT,
@@ -174,7 +355,14 @@ function createCandidateLineage(job: Job, candidate: CandidateSnapshot): Lineage
   );
   return {
     asset_id: candidate.lineage_id,
-    operation: "create_neutral",
+    operation:
+      job.manifest.asset_type === "dialogue_background"
+        ? job.manifest.workflow === "concept_to_dialogue_background"
+          ? "import_dialogue_background_concept"
+          : job.manifest.workflow === "masked_variant"
+            ? "variant_masked_edit"
+            : "create_dialogue_background"
+        : "create_neutral",
     parents,
     provider: job.manifest.provider,
     model: null,
@@ -234,7 +422,27 @@ function createApproval(
   };
 }
 
-function createFinalArtifacts(): Artifact[] {
+async function createFinalArtifacts(job: Job): Promise<Artifact[]> {
+  if (job.manifest.asset_type === "dialogue_background") {
+    const metadata = normalizeDialogueBackgroundMetadata(job.manifest.metadata);
+    const manifestJson = JSON.stringify(
+      createDialogueBackgroundPackageManifest(job.manifest, DEMO_DIALOGUE_PNG_SHA256),
+    );
+    return [
+      {
+        role: "background",
+        path: `package/${metadata.name}.png`,
+        sha256: DEMO_DIALOGUE_PNG_SHA256,
+        media_type: "image/png",
+      },
+      {
+        role: "manifest",
+        path: `package/${metadata.name}.manifest.json`,
+        sha256: await sha256Text(manifestJson),
+        media_type: "application/json",
+      },
+    ];
+  }
   return [
     {
       role: "portrait",
@@ -243,6 +451,23 @@ function createFinalArtifacts(): Artifact[] {
       media_type: "image/png",
     },
   ];
+}
+
+function artifactBlob(job: Job, artifact: Artifact, artifacts: Artifact[]): Blob {
+  if (artifact.media_type === "application/json") {
+    const background = artifacts.find((candidate) => candidate.role === "background");
+    if (background === undefined) {
+      throw new Error(`Demo package manifest ${artifact.path} has no background artifact.`);
+    }
+    return newBlob(
+      JSON.stringify(createDialogueBackgroundPackageManifest(job.manifest, background.sha256)),
+      "application/json",
+    );
+  }
+  if (job.manifest.asset_type === "dialogue_background") {
+    return newDialoguePngBlob();
+  }
+  return artifact.role === "palette" ? newPaletteBlob() : newPngBlob();
 }
 
 function createReport(
@@ -345,16 +570,43 @@ export function assertValidManifest(
     throw new Error("Demo manifest must use version 1.0.");
   }
   const assetType: unknown = manifest.asset_type;
-  if (assetType !== "portrait") {
-    throw new Error("Demo manifest asset_type must be portrait.");
-  }
-  const targetSpec: unknown = manifest.target_spec;
-  if (targetSpec !== "fe-gba-portrait-standard") {
-    throw new Error("Demo manifest target_spec must be fe-gba-portrait-standard.");
+  if (assetType !== "portrait" && assetType !== "dialogue_background") {
+    throw new Error("Demo manifest asset_type is not registered.");
   }
   const workflow: unknown = manifest.workflow;
   if (typeof workflow !== "string" || !demoWorkflows.includes(workflow as Manifest["workflow"])) {
     throw new Error("Demo manifest workflow is not recognized.");
+  }
+  const targetSpec: unknown = manifest.target_spec;
+  if (assetType === "portrait") {
+    if (targetSpec !== "fe-gba-portrait-standard") {
+      throw new Error("Demo manifest target_spec must be fe-gba-portrait-standard.");
+    }
+    if (
+      workflow !== "text_to_portrait" &&
+      workflow !== "concept_to_portrait" &&
+      workflow !== "expression_refine" &&
+      workflow !== "masked_variant"
+    ) {
+      throw new Error(`Demo portrait workflow ${workflow} is not supported.`);
+    }
+    if (manifest.metadata !== null) {
+      throw new Error("Demo portrait manifest must not set metadata.");
+    }
+  } else {
+    if (targetSpec !== "fe8-dialogue-background-source-240x160") {
+      throw new Error(
+        "Demo dialogue_background target_spec must be fe8-dialogue-background-source-240x160.",
+      );
+    }
+    if (
+      workflow !== "text_to_dialogue_background" &&
+      workflow !== "concept_to_dialogue_background" &&
+      workflow !== "masked_variant"
+    ) {
+      throw new Error(`Demo dialogue_background workflow ${workflow} is not supported.`);
+    }
+    normalizeDialogueBackgroundMetadata(manifest.metadata);
   }
   const provider: unknown = manifest.provider;
   if (typeof provider !== "string" || !demoProviders.includes(provider)) {
@@ -495,13 +747,13 @@ export function demoClient(): ApiClient {
     },
     submitSources: async (jobId, files) => {
       const state = ensureState(jobId, "waiting_for_sources");
-      const candidate = createCandidate(state.job);
+      const candidate = await createCandidate(state.job);
       const fileNames = files.map((file) => file.name).sort().join(", ");
       state.candidate = candidate;
       for (const artifact of candidate.artifacts) {
         state.artifactFiles.set(
           artifact.path,
-          artifact.role === "palette" ? newPaletteBlob() : newPngBlob(),
+          artifactBlob(state.job, artifact, candidate.artifacts),
         );
       }
       state.job = {
@@ -527,11 +779,10 @@ export function demoClient(): ApiClient {
       if (typeof path !== "string" || path.trim().length === 0) {
         throw new Error("Demo validation requires a package directory.");
       }
-      return cloneDiagnostics();
+      return spec === "fe-gba-portrait-standard" ? cloneDiagnostics() : [];
     },
     validateJob: async (jobId) => {
-      getState(jobId);
-      return cloneDiagnostics();
+      return diagnosticsFor(getState(jobId).job.manifest);
     },
     getArtifact: async (jobId, path) => {
       const content = getState(jobId).artifactFiles.get(path);
@@ -618,7 +869,7 @@ export function demoClient(): ApiClient {
         };
       }
 
-      const artifacts = createFinalArtifacts();
+      const artifacts = await createFinalArtifacts(state.job);
       const exportLineage = createExportLineage(state.job, state.candidate, approval.actor, artifacts);
       const lineage = [getLineage(state.candidate.lineage_id), exportLineage];
       storeLineage(exportLineage);
@@ -629,14 +880,17 @@ export function demoClient(): ApiClient {
         revision: state.job.revision + 1,
         updated_at: DEMO_PUBLISHED_AT,
       };
-      state.artifactFiles.set("package/portrait.png", newPngBlob());
+      for (const artifact of artifacts) {
+        state.artifactFiles.set(artifact.path, artifactBlob(state.job, artifact, artifacts));
+      }
+      const diagnostics = diagnosticsFor(state.job.manifest);
       state.report = createReport(
         state.job,
         state.candidate,
         approval,
         artifacts,
         lineage,
-        cloneDiagnostics(),
+        diagnostics,
       );
       state.bundleFiles = createBundleFiles(state.job, state.report, lineage);
       state.bundleEntries = createBundleEntries(state.bundleFiles);
@@ -645,7 +899,7 @@ export function demoClient(): ApiClient {
         job_id: jobId,
         ok: true,
         artifacts: clone(artifacts),
-        diagnostics: cloneDiagnostics(),
+        diagnostics: clone(diagnostics),
         lineage_id: exportLineage.asset_id,
       };
     },

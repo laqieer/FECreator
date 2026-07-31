@@ -19,7 +19,7 @@ Supported runtimes are Python 3.11-3.13 and Node.js 20.19-24. Install the
 published Python package from [PyPI](https://pypi.org/project/fecreator/):
 
 ```powershell
-python -m pip install fecreator==0.1.0
+python -m pip install fecreator==0.2.0
 ```
 
 For development, run everything from the repository root.
@@ -86,7 +86,7 @@ Publishing (OIDC); no PyPI API token exists in this repository. Pushing a
 unprivileged job that checks out `refs/tags/<tag>`, then publishes them from a
 separate `pypi` environment job that a required reviewer must approve and that
 only `v*.*.*` tags may deploy to. A manual re-run is dispatched on the tag
-itself (`gh workflow run publish.yml --ref v0.1.0`).
+itself (`gh workflow run publish.yml --ref v0.2.0`).
 See [`docs/pypi-publishing.md`](docs/pypi-publishing.md) for the trust boundary,
 the exact pending-publisher fields, and the required environment protection.
 
@@ -96,9 +96,9 @@ A static, sample-data demo is published to GitHub Pages:
 
 **<https://laqieer.github.io/FECreator/>**
 
-The demo runs entirely in the browser with built-in synthetic data. It **cannot**
-generate, validate, upload, or save real assets, makes no HTTP or WebSocket calls,
-and resets whenever the page is reloaded. See
+The demo runs entirely in the browser with built-in synthetic portrait and dialogue
+background data. It **cannot** generate, validate, upload, or save real assets, makes
+no HTTP or WebSocket calls, and resets whenever the page is reloaded. See
 [`docs/github-pages-demo.md`](docs/github-pages-demo.md) for build modes and
 limitations.
 

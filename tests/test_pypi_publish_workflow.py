@@ -318,7 +318,7 @@ def test_docs_list_the_exact_pending_publisher_fields() -> None:
 def test_docs_show_the_manual_dispatch_command_and_pin() -> None:
     text = DOCS.read_text(encoding="utf-8")
 
-    assert "gh workflow run publish.yml --ref v0.1.0" in text
+    assert "gh workflow run publish.yml --ref v0.2.0" in text
     assert "-f tag=" not in text
     assert PINNED_PUBLISH_ACTION in text
 
@@ -336,12 +336,12 @@ def test_docs_require_environment_protection_rules() -> None:
 
 
 def test_docs_record_the_one_time_v0_1_0_tag_recreation() -> None:
-    """The existing tag predates this workflow, so its single reset is documented."""
+    """The original tag predated this workflow, so its completed reset is documented."""
     text = DOCS.read_text(encoding="utf-8")
     lowered = text.lower()
 
     assert "v0.1.0" in text
-    assert "predates" in lowered
+    assert "predated" in lowered
     assert "delete" in lowered and "recreate" in lowered
     assert "immutable" in lowered
 

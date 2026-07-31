@@ -1,5 +1,15 @@
 import { useEffect, useState } from "react";
-import type { JsonObject, Manifest, ReferencePack, Region, SourceSpec, Workflow } from "../api/types";
+import type {
+  AssetMetadata,
+  AssetType,
+  JsonObject,
+  Manifest,
+  ReferencePack,
+  Region,
+  SourceSpec,
+  Workflow,
+} from "../api/types";
+import { portableStorageIdError } from "../validation/storageId";
 
 export interface ManifestControlsProps {
   assets: string[];
@@ -12,17 +22,45 @@ export interface ManifestControlsProps {
   onSubmit: (manifest: Manifest) => void;
 }
 
-const workflows: Workflow[] = [
-  "text_to_portrait",
-  "concept_to_portrait",
-  "expression_refine",
-  "masked_variant",
-];
+interface AssetControlConfig {
+  targetSpec: Manifest["target_spec"];
+  workflows: readonly Workflow[];
+  approvedSourceKind: SourceSpec["kind"];
+  approvedSourceLabel: string;
+}
 
-const approvedBaseWorkflows: Workflow[] = ["expression_refine", "masked_variant"];
+const assetConfigs = {
+  portrait: {
+    targetSpec: "fe-gba-portrait-standard",
+    workflows: [
+      "text_to_portrait",
+      "concept_to_portrait",
+      "expression_refine",
+      "masked_variant",
+    ],
+    approvedSourceKind: "approved_portrait",
+    approvedSourceLabel: "Approved portrait source",
+  },
+  dialogue_background: {
+    targetSpec: "fe8-dialogue-background-source-240x160",
+    workflows: [
+      "text_to_dialogue_background",
+      "concept_to_dialogue_background",
+      "masked_variant",
+    ],
+    approvedSourceKind: "approved_dialogue_background",
+    approvedSourceLabel: "Approved dialogue background source",
+  },
+} satisfies Record<AssetType, AssetControlConfig>;
 
-function isWorkflow(value: string): value is Workflow {
-  return workflows.some((workflow) => workflow === value);
+const approvedBaseWorkflows: readonly Workflow[] = ["expression_refine", "masked_variant"];
+
+function isAssetType(value: string): value is AssetType {
+  return value === "portrait" || value === "dialogue_background";
+}
+
+function isWorkflow(value: string, assetType: AssetType): value is Workflow {
+  return assetConfigs[assetType].workflows.some((workflow) => workflow === value);
 }
 
 function isJsonScalar(value: unknown): value is string | number | boolean {
@@ -103,26 +141,48 @@ export function ManifestControls({
   submitting,
   onSubmit,
 }: ManifestControlsProps) {
-  const [workflow, setWorkflow] = useState<Workflow>("text_to_portrait");
+  const [assetType, setAssetType] = useState<AssetType>(
+    () => assets.find(isAssetType) ?? "portrait",
+  );
+  const [workflow, setWorkflow] = useState<Workflow>(
+    () => assetConfigs[assets.find(isAssetType) ?? "portrait"].workflows[0],
+  );
   const [provider, setProvider] = useState(() => providers[0] ?? "");
   const [referencePack, setReferencePack] = useState("");
   const [referenceRevision, setReferenceRevision] = useState("");
   const [textSource, setTextSource] = useState("");
   const [conceptSource, setConceptSource] = useState("");
-  const [approvedPortraitSource, setApprovedPortraitSource] = useState("");
+  const [approvedAssetSource, setApprovedAssetSource] = useState("");
   const [parentAssetId, setParentAssetId] = useState("");
   const [maskPath, setMaskPath] = useState("");
   const [protectedRegions, setProtectedRegions] = useState("[]");
+  const [assetName, setAssetName] = useState("");
+  const [purpose, setPurpose] = useState("");
+  const [sourceKind, setSourceKind] = useState("");
+  const [sourceId, setSourceId] = useState("");
+  const [sourceRevision, setSourceRevision] = useState("");
+  const [licenseNote, setLicenseNote] = useState("");
+  const [sourceNote, setSourceNote] = useState("");
+  const [requestedDownstreamProfile, setRequestedDownstreamProfile] = useState<
+    "" | NonNullable<AssetMetadata["requested_downstream_profile"]>
+  >("");
   const [params, setParams] = useState("{}");
   const [error, setError] = useState<string | null>(null);
 
+  const assetConfig = assetConfigs[assetType];
   const referenceOptions = sortedReferences(references);
   const revisions = referenceOptions.filter((reference) => reference.id === referencePack);
   const usesApprovedBase = approvedBaseWorkflows.includes(workflow);
   const isRegistryReady =
-    assets.includes("portrait") &&
-    specs.includes("fe-gba-portrait-standard") &&
-    provider.length > 0;
+    assets.includes(assetType) && specs.includes(assetConfig.targetSpec) && provider.length > 0;
+
+  useEffect(() => {
+    const firstRegisteredAsset = assets.find(isAssetType);
+    if (firstRegisteredAsset !== undefined && !assets.includes(assetType)) {
+      setAssetType(firstRegisteredAsset);
+      setWorkflow(assetConfigs[firstRegisteredAsset].workflows[0]);
+    }
+  }, [assetType, assets]);
 
   useEffect(() => {
     if (provider === "" && providers[0]) {
@@ -144,7 +204,7 @@ export function ManifestControls({
       return;
     }
     if (!isRegistryReady) {
-      setError("Portrait, the standard target spec, and a provider are required.");
+      setError("The selected asset type, its target spec, and a provider are required.");
       return;
     }
     const revision = referenceRevision === "" ? null : Number(referenceRevision);
@@ -171,12 +231,47 @@ export function ManifestControls({
       return;
     }
 
+    let metadata: AssetMetadata | null = null;
+    if (assetType === "dialogue_background") {
+      const requiredMetadata = [
+        assetName,
+        purpose,
+        sourceKind,
+        sourceId,
+        sourceRevision,
+        licenseNote,
+        sourceNote,
+      ].map((value) => value.trim());
+      if (requiredMetadata.some((value) => value === "")) {
+        setError("Dialogue background metadata fields are required.");
+        return;
+      }
+      const assetNameError = portableStorageIdError(assetName);
+      if (assetNameError !== null) {
+        setError(`Asset name ${assetNameError}`);
+        return;
+      }
+      metadata = {
+        name: assetName,
+        purpose: purpose.trim(),
+        source: {
+          kind: sourceKind.trim(),
+          id: sourceId.trim(),
+          revision: sourceRevision.trim(),
+        },
+        license_note: licenseNote.trim(),
+        source_note: sourceNote.trim(),
+        requested_downstream_profile:
+          requestedDownstreamProfile === "" ? null : requestedDownstreamProfile,
+      };
+    }
+
     const sources: SourceSpec[] = [
       textSource.trim() === "" ? null : { kind: "text", ref: textSource.trim() },
       conceptSource.trim() === "" ? null : { kind: "concept_art", ref: conceptSource.trim() },
-      approvedPortraitSource.trim() === ""
+      approvedAssetSource.trim() === ""
         ? null
-        : { kind: "approved_portrait", ref: approvedPortraitSource.trim() },
+        : { kind: assetConfig.approvedSourceKind, ref: approvedAssetSource.trim() },
     ].filter((source): source is SourceSpec => source !== null);
 
     const edit =
@@ -186,8 +281,8 @@ export function ManifestControls({
     setError(null);
     onSubmit({
       version: "1.0",
-      asset_type: "portrait",
-      target_spec: "fe-gba-portrait-standard",
+      asset_type: assetType,
+      target_spec: assetConfig.targetSpec,
       workflow,
       provider,
       character_ref_pack: referencePack === "" ? null : referencePack,
@@ -195,7 +290,7 @@ export function ManifestControls({
       parent_asset_id: usesApprovedBase ? normalizedParent : null,
       sources,
       edit,
-      metadata: null,
+      metadata,
       params: parsedParams,
     });
   };
@@ -204,16 +299,40 @@ export function ManifestControls({
     <section aria-label="manifest-controls">
       <h2>Create job</h2>
       <label>
+        Asset type
+        <select
+          value={assetType}
+          onChange={(event) => {
+            if (isAssetType(event.target.value)) {
+              const nextAssetType = event.target.value;
+              setAssetType(nextAssetType);
+              setWorkflow(assetConfigs[nextAssetType].workflows[0]);
+              setApprovedAssetSource("");
+              setParentAssetId("");
+              setMaskPath("");
+              setProtectedRegions("[]");
+              setError(null);
+            }
+          }}
+        >
+          {assets.filter(isAssetType).map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
         Workflow
         <select
           value={workflow}
           onChange={(event) => {
-            if (isWorkflow(event.target.value)) {
+            if (isWorkflow(event.target.value, assetType)) {
               setWorkflow(event.target.value);
             }
           }}
         >
-          {workflows.map((option) => (
+          {assetConfig.workflows.map((option) => (
             <option key={option} value={option}>
               {option}
             </option>
@@ -282,10 +401,10 @@ export function ManifestControls({
         <input value={conceptSource} onChange={(event) => setConceptSource(event.target.value)} />
       </label>
       <label>
-        Approved portrait source
+        {assetConfig.approvedSourceLabel}
         <input
-          value={approvedPortraitSource}
-          onChange={(event) => setApprovedPortraitSource(event.target.value)}
+          value={approvedAssetSource}
+          onChange={(event) => setApprovedAssetSource(event.target.value)}
         />
       </label>
       {usesApprovedBase ? (
@@ -312,6 +431,59 @@ export function ManifestControls({
             />
           </label>
         </>
+      ) : null}
+      {assetType === "dialogue_background" ? (
+        <fieldset>
+          <legend>Dialogue background metadata</legend>
+          <label>
+            Asset name
+            <input value={assetName} onChange={(event) => setAssetName(event.target.value)} />
+          </label>
+          <label>
+            Purpose
+            <input value={purpose} onChange={(event) => setPurpose(event.target.value)} />
+          </label>
+          <label>
+            Source kind
+            <input value={sourceKind} onChange={(event) => setSourceKind(event.target.value)} />
+          </label>
+          <label>
+            Source id
+            <input value={sourceId} onChange={(event) => setSourceId(event.target.value)} />
+          </label>
+          <label>
+            Source revision
+            <input
+              value={sourceRevision}
+              onChange={(event) => setSourceRevision(event.target.value)}
+            />
+          </label>
+          <label>
+            License note
+            <input value={licenseNote} onChange={(event) => setLicenseNote(event.target.value)} />
+          </label>
+          <label>
+            Source note
+            <input value={sourceNote} onChange={(event) => setSourceNote(event.target.value)} />
+          </label>
+          <label>
+            Requested downstream profile
+            <select
+              value={requestedDownstreamProfile}
+              onChange={(event) => {
+                const value = event.target.value;
+                setRequestedDownstreamProfile(
+                  value === "fe8-dialogue-background-feimg2" ? value : "",
+                );
+              }}
+            >
+              <option value="">None</option>
+              <option value="fe8-dialogue-background-feimg2">
+                fe8-dialogue-background-feimg2
+              </option>
+            </select>
+          </label>
+        </fieldset>
       ) : null}
       <label>
         Parameters JSON

@@ -17,8 +17,11 @@ export const DEMO_CREATED_AT = "2026-07-24T00:00:00+00:00";
 export const DEMO_REVIEWED_AT = "2026-07-24T01:00:00+00:00";
 export const DEMO_PUBLISHED_AT = "2026-07-24T02:00:00+00:00";
 
-export const demoAssets: readonly string[] = ["portrait"];
-export const demoSpecs: readonly string[] = ["fe-gba-portrait-standard"];
+export const demoAssets: readonly string[] = ["portrait", "dialogue_background"];
+export const demoSpecs: readonly string[] = [
+  "fe-gba-portrait-standard",
+  "fe8-dialogue-background-source-240x160",
+];
 export const demoProviders: readonly string[] = ["fake"];
 
 export const demoManifest: Manifest = {
