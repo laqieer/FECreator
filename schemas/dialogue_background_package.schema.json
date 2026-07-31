@@ -121,6 +121,7 @@
     "reference_pack_rev": {
       "anyOf": [
         {
+          "minimum": 1,
           "type": "integer"
         },
         {
