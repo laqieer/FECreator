@@ -7,12 +7,13 @@ from pathlib import Path
 from typing import cast
 
 import httpx
+import numpy as np
 from mcp.types import CallToolResult
 from PIL import Image
 
 from fecreator.app import FeCreatorApp
 from fecreator.contracts.diagnostics import Diagnostic
-from fecreator.contracts.manifest import Manifest, SourceSpec
+from fecreator.contracts.manifest import AssetMetadata, Manifest, SourceIdentity, SourceSpec
 from fecreator.core.config import Settings
 from fecreator.interfaces import cli_json
 from fecreator.interfaces import static as static_module
@@ -20,6 +21,8 @@ from fecreator.interfaces.http_api import create_api
 from fecreator.interfaces.mcp_server import make_handlers
 from fecreator.jobs.model import JobState
 from fecreator.reporting.sanitize import as_object, sanitize_json
+
+pytest_plugins = ("tests.dialogue_background.conftest",)
 
 
 def _app(data_root: Path) -> FeCreatorApp:
@@ -166,6 +169,98 @@ def _manual_manifest() -> Manifest:
         workflow="text_to_portrait",
         provider="manual",
         sources=(SourceSpec(kind="text", ref="hero"),),
+    )
+
+
+def _manual_dialogue_background_manifest() -> Manifest:
+    return Manifest(
+        asset_type="dialogue_background",
+        target_spec="fe8-dialogue-background-source-240x160",
+        workflow="text_to_dialogue_background",
+        provider="manual",
+        metadata=AssetMetadata(
+            name="phantom_city",
+            purpose="Original phantom city",
+            source=SourceIdentity(kind="prompt", id="bg/phantom-city", revision="1"),
+            license_note="Original repository fixture.",
+            source_note="Generated from an original prompt.",
+        ),
+        sources=(SourceSpec(kind="text", ref="phantom city"),),
+        params={"width": 240, "height": 160},
+    )
+
+
+async def test_cli_mcp_and_http_preserve_truecolor_dialogue_background_candidates(
+    data_root: Path,
+    monkeypatch,
+    tmp_path: Path,
+    truecolor_background_sources: Path,
+) -> None:
+    source = truecolor_background_sources / "phantom_city.png"
+    with Image.open(source) as image:
+        assert image.mode == "RGB"
+        assert image.size == (240, 160)
+        assert np.unique(np.asarray(image).reshape(-1, 3), axis=0).shape[0] > 128
+
+    cli_app = _app(data_root / "cli")
+    mcp_app = _app(data_root / "mcp")
+    http_app = _app(data_root / "http")
+    cli_job = cli_app.create_job(_manual_dialogue_background_manifest())
+    mcp_job = mcp_app.create_job(_manual_dialogue_background_manifest())
+    cli_json.run(
+        cli_app,
+        ["plan-sources", "--job", cli_job.id, "--out", str(tmp_path / "cli-plan")],
+        io.StringIO(),
+    )
+    cli_submit = cli_json.run(
+        cli_app,
+        ["submit-sources", "--job", cli_job.id, "--sources", str(truecolor_background_sources)],
+        io.StringIO(),
+    )
+    cli_build = cli_json.run(cli_app, ["build", "--job", cli_job.id], io.StringIO())
+    mcp_plan = cast(
+        CallToolResult,
+        make_handlers(mcp_app)["plan_sources"](mcp_job.id, str(tmp_path / "mcp-plan")),
+    )
+    mcp_submit = cast(
+        CallToolResult,
+        make_handlers(mcp_app)["submit_sources"](mcp_job.id, str(truecolor_background_sources)),
+    )
+    mcp_build = cast(CallToolResult, make_handlers(mcp_app)["build_asset"](mcp_job.id))
+
+    async with _client(http_app, monkeypatch) as client:
+        created = await client.post(
+            "/api/jobs",
+            json=_manual_dialogue_background_manifest().model_dump(mode="json"),
+        )
+        http_job_id = created.json()["id"]
+        http_plan = await client.post(f"/api/jobs/{http_job_id}/plan-sources")
+        http_submit = await client.post(
+            f"/api/jobs/{http_job_id}/sources",
+            files=[("files", ("phantom_city.png", source.read_bytes(), "image/png"))],
+        )
+
+    http_build = http_app.build(http_job_id)
+
+    assert cli_submit == cli_build == 0
+    assert mcp_plan.isError is False
+    assert mcp_submit.isError is False
+    assert mcp_build.isError is False
+    assert created.status_code == 201
+    assert http_plan.status_code == http_submit.status_code == 200
+    assert http_build.ok is True
+    assert all(
+        app.get_job(job_id).state is JobState.WAITING_FOR_REVIEW
+        for app, job_id in (
+            (cli_app, cli_job.id),
+            (mcp_app, mcp_job.id),
+            (http_app, http_job_id),
+        )
+    )
+    _assert_matching_files(
+        data_root / "cli" / "jobs" / cli_job.id / "candidate" / "package",
+        data_root / "mcp" / "jobs" / mcp_job.id / "candidate" / "package",
+        data_root / "http" / "jobs" / http_job_id / "candidate" / "package",
     )
 
 

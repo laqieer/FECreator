@@ -370,6 +370,8 @@ def test_operation_enumeration_is_frozen() -> None:
     assert tuple(member.value for member in Operation) == (
         "import_concept",
         "create_neutral",
+        "create_dialogue_background",
+        "import_dialogue_background_concept",
         "refine_expression",
         "variant_masked_edit",
         "export_spec",
@@ -412,8 +414,11 @@ def test_job_state_enumeration_is_frozen() -> None:
 def test_registered_assets_specs_and_providers_are_frozen(data_root: Path) -> None:
     app = FeCreatorApp(Settings(data_root=data_root))
 
-    assert app.list_assets() == [ASSET_TYPE_ID]
-    assert app.list_specs() == [TARGET_SPEC_ID]
+    assert app.list_assets() == ["dialogue_background", "portrait"]
+    assert app.list_specs() == [
+        "fe-gba-portrait-standard",
+        "fe8-dialogue-background-source-240x160",
+    ]
     assert app.list_providers() == ["command", "fake", "manual", "mcp-client"]
 
 

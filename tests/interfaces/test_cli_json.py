@@ -9,7 +9,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 
 import fecreator.cli as cli_module
 from fecreator import __version__
@@ -27,6 +29,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TASK9_PLAN = (
     REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-24-fecreator-providers-interfaces.md"
 )
+
+pytest_plugins = ("tests.dialogue_background.conftest",)
 
 
 def _app(data_root: Path) -> FeCreatorApp:
@@ -85,13 +89,120 @@ def _run_cli(data_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _dialogue_background_manifest_payload() -> dict[str, object]:
+    return {
+        "asset_type": "dialogue_background",
+        "target_spec": "fe8-dialogue-background-source-240x160",
+        "workflow": "text_to_dialogue_background",
+        "provider": "manual",
+        "metadata": {
+            "name": "phantom_city",
+            "purpose": "Original phantom city",
+            "source": {"kind": "prompt", "id": "bg/phantom-city", "revision": "1"},
+            "license_note": "Original repository fixture.",
+            "source_note": "Generated from an original prompt.",
+        },
+        "sources": [{"kind": "text", "ref": "phantom city"}],
+        "params": {"width": 240, "height": 160},
+    }
+
+
+def test_cli_manual_dialogue_background_completes_from_truecolor_sources(
+    data_root: Path,
+    tmp_path: Path,
+    truecolor_background_sources: Path,
+) -> None:
+    source = truecolor_background_sources / "phantom_city.png"
+    with Image.open(source) as image:
+        assert image.mode == "RGB"
+        assert image.size == (240, 160)
+        assert np.unique(np.asarray(image).reshape(-1, 3), axis=0).shape[0] > 128
+
+    manifest = tmp_path / "dialogue-background-manifest.json"
+    manifest.write_text(json.dumps(_dialogue_background_manifest_payload()), encoding="utf-8")
+    app = _app(data_root)
+
+    def run_json(*argv: str) -> tuple[int, object]:
+        out = io.StringIO()
+        return run(app, list(argv), out), json.loads(out.getvalue())
+
+    create_rc, created = run_json("job", "create", "--manifest", str(manifest))
+    job_id = created["id"]
+    plan_rc, plan = run_json("job", "plan-sources", job_id)
+    staged_plan = tmp_path / "source-plan"
+    write_plan_rc, _ = run_json("plan-sources", "--job", job_id, "--out", str(staged_plan))
+    submit_rc, submitted = run_json(
+        "submit-sources", "--job", job_id, "--sources", str(truecolor_background_sources)
+    )
+    build_rc, built = run_json("build", "--job", job_id)
+    status_rc, waiting = run_json("job", "status", job_id)
+    approve_rc, approval = run_json("job", "approve", job_id, "--actor", "reviewer")
+    finalize_rc, finalized = run_json("job", "finalize", job_id)
+    completed_rc, completed = run_json("job", "status", job_id)
+    artifact_rc, png_artifact = run_json("job", "artifact", job_id, "package/phantom_city.png")
+    manifest_artifact_rc, manifest_artifact = run_json(
+        "job", "artifact", job_id, "package/phantom_city.manifest.json"
+    )
+    report_rc, report = run_json("job", "report", job_id)
+    bundle_rc, bundle = run_json("job", "bundle", job_id)
+
+    assert (
+        create_rc
+        == plan_rc
+        == write_plan_rc
+        == submit_rc
+        == build_rc
+        == status_rc
+        == approve_rc
+        == finalize_rc
+        == completed_rc
+        == artifact_rc
+        == manifest_artifact_rc
+        == report_rc
+        == bundle_rc
+        == 0
+    )
+    assert plan["expected_filenames"] == ["phantom_city.png"]
+    assert staged_plan.is_dir()
+    assert submitted["state"] == "waiting_for_sources"
+    assert built["ok"] is True
+    assert waiting["state"] == "waiting_for_review"
+    assert approval["decision"] == "approved"
+    assert finalized["ok"] is True
+    assert completed["state"] == "completed"
+    assert {
+        png_artifact["path"],
+        manifest_artifact["path"],
+    } == {"package/phantom_city.png", "package/phantom_city.manifest.json"}
+    assert report["manifest"]["asset_type"] == "dialogue_background"
+    assert report["manifest"]["workflow"] == "text_to_dialogue_background"
+    assert report["manifest"]["target_spec"] == "fe8-dialogue-background-source-240x160"
+    assert {node["operation"] for node in report["lineage"]} == {
+        "create_dialogue_background",
+        "export_spec",
+    }
+    assert {entry["path"] for entry in bundle if entry["path"].startswith("package/")} == {
+        "package/phantom_city.png",
+        "package/phantom_city.manifest.json",
+    }
+    compat_rc, compat = run_json("job", "bundle-file", job_id, "compat.json")
+    assert compat_rc == 0
+    assert json.loads(base64.b64decode(compat["content_base64"]))["external_adapter"] == {
+        "status": "not_run",
+        "profile": None,
+    }
+
+
 def test_list_specs_json(data_root: Path) -> None:
     out = io.StringIO()
 
     rc = run(_app(data_root), ["list-specs"], out)
 
     assert rc == 0
-    assert json.loads(out.getvalue()) == ["fe-gba-portrait-standard"]
+    assert json.loads(out.getvalue()) == [
+        "fe-gba-portrait-standard",
+        "fe8-dialogue-background-source-240x160",
+    ]
 
 
 def test_validate_missing_sheet(data_root: Path) -> None:
@@ -361,7 +472,10 @@ def test_main_writes_single_json_newline(
     assert rc == 0
     assert captured.err == ""
     assert captured.out.count("\n") == 1
-    assert json.loads(captured.out) == ["fe-gba-portrait-standard"]
+    assert json.loads(captured.out) == [
+        "fe-gba-portrait-standard",
+        "fe8-dialogue-background-source-240x160",
+    ]
 
 
 def test_main_version_does_not_require_data_root(

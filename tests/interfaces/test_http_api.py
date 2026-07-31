@@ -1,20 +1,27 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
+import numpy as np
 import pytest
+from fastapi.testclient import TestClient
+from PIL import Image
 
 import fecreator.interfaces.http_api as http_api
 from fecreator.app import FeCreatorApp
 from fecreator.contracts.lineage import LineageNode, Operation
 from fecreator.contracts.manifest import Manifest
 from fecreator.core.config import Settings
+from fecreator.core.hashing import sha256_file
 from fecreator.interfaces import static as static_module
 from fecreator.interfaces.http_api import create_api
 from fecreator.lineage.store import LineageStore
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
+
+pytest_plugins = ("tests.dialogue_background.conftest",)
 
 
 def _app(data_root: Path) -> FeCreatorApp:
@@ -42,12 +49,97 @@ def _manifest_payload() -> dict[str, object]:
     }
 
 
+def _dialogue_background_manifest_payload() -> dict[str, object]:
+    return {
+        "asset_type": "dialogue_background",
+        "target_spec": "fe8-dialogue-background-source-240x160",
+        "workflow": "text_to_dialogue_background",
+        "provider": "manual",
+        "metadata": {
+            "name": "phantom_city",
+            "purpose": "Original phantom city",
+            "source": {"kind": "prompt", "id": "bg/phantom-city", "revision": "1"},
+            "license_note": "Original repository fixture.",
+            "source_note": "Generated from an original prompt.",
+        },
+        "sources": [{"kind": "text", "ref": "phantom city"}],
+        "params": {"width": 240, "height": 160},
+    }
+
+
+def test_http_manual_dialogue_background_completes_from_truecolor_upload(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    truecolor_background_sources: Path,
+) -> None:
+    source = truecolor_background_sources / "phantom_city.png"
+    with Image.open(source) as image:
+        assert image.mode == "RGB"
+        assert image.size == (240, 160)
+        assert np.unique(np.asarray(image).reshape(-1, 3), axis=0).shape[0] > 128
+
+    app = _app(data_root)
+    monkeypatch.setattr(static_module, "web_dir", lambda: None)
+    with TestClient(create_api(app)) as client:
+        created = client.post("/api/jobs", json=_dialogue_background_manifest_payload())
+        job_id = created.json()["id"]
+        plan = client.post(f"/api/jobs/{job_id}/plan-sources")
+        submitted = client.post(
+            f"/api/jobs/{job_id}/sources",
+            files=[("files", ("phantom_city.png", source.read_bytes(), "image/png"))],
+        )
+        built = app.build(job_id)
+        waiting = client.get(f"/api/jobs/{job_id}")
+        approval = client.post(f"/api/jobs/{job_id}/approve", json={"actor": "reviewer"})
+        finalized = client.post(f"/api/jobs/{job_id}/finalize")
+        completed = client.get(f"/api/jobs/{job_id}")
+        png_artifact = client.get(f"/api/jobs/{job_id}/artifacts/package/phantom_city.png")
+        manifest_artifact = client.get(
+            f"/api/jobs/{job_id}/artifacts/package/phantom_city.manifest.json"
+        )
+        report = client.get(f"/api/jobs/{job_id}/report")
+        bundle = client.get(f"/api/jobs/{job_id}/bundle")
+        compat = client.get(f"/api/jobs/{job_id}/bundle/compat.json")
+
+    assert created.status_code == 201
+    assert plan.status_code == 200
+    assert plan.json()["expected_filenames"] == ["phantom_city.png"]
+    assert submitted.status_code == 200
+    assert submitted.json()["state"] == "waiting_for_sources"
+    assert built.ok is True
+    assert waiting.json()["state"] == "waiting_for_review"
+    assert approval.status_code == 200
+    assert approval.json()["decision"] == "approved"
+    assert finalized.status_code == 200
+    assert finalized.json()["ok"] is True
+    assert completed.json()["state"] == "completed"
+    assert png_artifact.status_code == manifest_artifact.status_code == 200
+    workspace = data_root / "jobs" / job_id / "package"
+    package_manifest = json.loads(manifest_artifact.content)
+    assert package_manifest["png_sha256"] == sha256_file(workspace / "phantom_city.png")
+    assert png_artifact.content == (workspace / "phantom_city.png").read_bytes()
+    assert report.status_code == 200
+    assert report.json()["manifest"]["asset_type"] == "dialogue_background"
+    assert {node["operation"] for node in report.json()["lineage"]} == {
+        "create_dialogue_background",
+        "export_spec",
+    }
+    assert {entry["path"] for entry in bundle.json() if entry["path"].startswith("package/")} == {
+        "package/phantom_city.png",
+        "package/phantom_city.manifest.json",
+    }
+    assert json.loads(compat.content)["external_adapter"] == {"status": "not_run", "profile": None}
+
+
 async def test_specs_endpoint(data_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     async with _client(data_root, monkeypatch) as client:
         resp = await client.get("/api/specs")
 
     assert resp.status_code == 200
-    assert resp.json() == ["fe-gba-portrait-standard"]
+    assert resp.json() == [
+        "fe-gba-portrait-standard",
+        "fe8-dialogue-background-source-240x160",
+    ]
 
 
 async def test_create_and_get_job(data_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
