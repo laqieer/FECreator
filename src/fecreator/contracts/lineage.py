@@ -24,6 +24,8 @@ class Region(BaseModel):
 class Operation(StrEnum):
     IMPORT_CONCEPT = "import_concept"
     CREATE_NEUTRAL = "create_neutral"
+    CREATE_DIALOGUE_BACKGROUND = "create_dialogue_background"
+    IMPORT_DIALOGUE_BACKGROUND_CONCEPT = "import_dialogue_background_concept"
     REFINE_EXPRESSION = "refine_expression"
     VARIANT_MASKED_EDIT = "variant_masked_edit"
     EXPORT_SPEC = "export_spec"
