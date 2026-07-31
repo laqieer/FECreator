@@ -22,14 +22,12 @@ from fecreator.interfaces.cli_json import build_parser, run
 from fecreator.jobs.model import Job
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
-from tests.dialogue_background.conftest import assert_delivered_truecolor_background_png
+from tests.fixtures.dialogue_background import assert_delivered_truecolor_background_png
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TASK9_PLAN = (
     REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-24-fecreator-providers-interfaces.md"
 )
-
-pytest_plugins = ("tests.dialogue_background.conftest",)
 
 
 def _app(data_root: Path) -> FeCreatorApp:

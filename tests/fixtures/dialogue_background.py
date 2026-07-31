@@ -12,6 +12,7 @@ def assert_delivered_truecolor_background_png(content: bytes) -> None:
     with Image.open(BytesIO(content)) as image:
         assert image.mode == "RGB"
         assert image.size == (240, 160)
+        assert "transparency" not in image.info
         assert np.unique(np.asarray(image).reshape(-1, 3), axis=0).shape[0] > 128
 
 

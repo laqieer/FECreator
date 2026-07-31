@@ -20,9 +20,7 @@ from fecreator.interfaces.http_api import create_api
 from fecreator.lineage.store import LineageStore
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
-from tests.dialogue_background.conftest import assert_delivered_truecolor_background_png
-
-pytest_plugins = ("tests.dialogue_background.conftest",)
+from tests.fixtures.dialogue_background import assert_delivered_truecolor_background_png
 
 
 def _app(data_root: Path) -> FeCreatorApp:
@@ -106,11 +104,13 @@ def test_http_manual_dialogue_background_completes_from_truecolor_upload(
     assert submitted.json()["state"] == "waiting_for_sources"
     assert built.status_code == 200
     assert built.json()["ok"] is True
+    assert waiting.status_code == 200
     assert waiting.json()["state"] == "waiting_for_review"
     assert approval.status_code == 200
     assert approval.json()["decision"] == "approved"
     assert finalized.status_code == 200
     assert finalized.json()["ok"] is True
+    assert completed.status_code == 200
     assert completed.json()["state"] == "completed"
     assert png_artifact.status_code == manifest_artifact.status_code == 200
     workspace = data_root / "jobs" / job_id / "package"

@@ -17,9 +17,7 @@ from fecreator.interfaces.mcp_server import TOOL_NAMES, build_mcp, make_handlers
 from fecreator.jobs.model import Job
 from fecreator.references.model import ReferencePack
 from fecreator.references.store import ReferencePackStore
-from tests.dialogue_background.conftest import assert_delivered_truecolor_background_png
-
-pytest_plugins = ("tests.dialogue_background.conftest",)
+from tests.fixtures.dialogue_background import assert_delivered_truecolor_background_png
 
 
 def _app(data_root: Path) -> FeCreatorApp:
