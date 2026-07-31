@@ -1,8 +1,10 @@
 # FEBuilderGBA interoperability
 
 FECreator exports `fe-gba-portrait-standard` packages that FEBuilderGBA can import.
-This document describes how that compatibility is *evidenced*, and the three levels
-of proof are deliberately kept apart:
+This document describes how that portrait compatibility is *evidenced*, and the
+three levels of proof are deliberately kept apart. The optional external CLI adapter
+below validates portrait packages only; the dialogue-background source workflow is
+scoped separately:
 
 | Level | What it proves | Runs in CI | Needs FEBuilderGBA | Needs a ROM |
 | --- | --- | --- | --- | --- |
@@ -18,8 +20,10 @@ never replace, weaken, or substitute for it.
 `fe8-dialogue-background-source-240x160` is an opaque 240×160 **source**
 contract, not a FE8 engine package. It accepts RGB, fully opaque RGBA, or indexed
 PNG without color-count, palette-index, palette-bank, tile, TSA, or JASC-palette
-limits. FECreator neither runs nor validates downstream conversion at this stage,
-and it has no built-in external FEBuilder or expansion adapter.
+limits. FECreator neither runs nor validates dialogue downstream conversion at this
+stage, and it ships no adapter for this dialogue decreasecolor/TSA profile. That
+absence does not change the existing portrait external CLI validation described
+below.
 
 The optional `fe8-dialogue-background-feimg2` downstream profile begins outside
 FECreator with the Issue #2 command:

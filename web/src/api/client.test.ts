@@ -448,7 +448,6 @@ test("http client surfaces structured diagnostics for non-ok responses", async (
       }),
     ],
   });
-
 });
 
 test("buildJob posts to the encoded job build route and preserves API errors", async () => {

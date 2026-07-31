@@ -67,7 +67,9 @@ Cross-field rules (all fail loudly, never silently normalize):
 1. `character_ref_pack_rev` requires `character_ref_pack`.
 2. `edit` is only accepted when `workflow == "masked_variant"`.
 3. `parent_asset_id` is **required** for `expression_refine` and `masked_variant`,
-   and **rejected** for `text_to_portrait` and `concept_to_portrait`. It names the
+   and **rejected** for all originating workflows: portrait
+   `text_to_portrait`/`concept_to_portrait` and dialogue-background
+   `text_to_dialogue_background`/`concept_to_dialogue_background`. It names the
    approved portrait or dialogue background a derived candidate is built from, and
    the build promotes it into `LineageNode.parents`, so
    `list_lineage_ancestors()` returns the approved base. A blank or whitespace-only
@@ -160,14 +162,21 @@ PNG are accepted. The source contract intentionally has **no** color-count,
 palette-index, palette-bank, tile, TSA, JASC-palette, compression, or ROM limit.
 It fails closed for invalid geometry, non-opaque/corrupt PNGs, malformed or
 hash-mismatched package metadata, unsafe paths, and missing required
-source/license lineage. Lower-48-pixel composition guidance is warning-level.
+source/license lineage. The lower-48-pixel composition guidance is prompt and
+source-planning guidance only; it produces no validator diagnostic.
 
 `fe8-dialogue-background-feimg2` is an optional requested downstream profile,
-not a source-validator rule. Optional downstream evidence may record an
-FEBuilder command/result and reduced-image hash, palette/bank report, and
-two-run TSA hashes; an explicitly configured external adapter failing prevents
-that compatibility bundle from publishing. No built-in external FEBuilder or
-expansion adapter exists, and an unconfigured optional adapter is `not_run`.
+not a source-validator rule. A dialogue-background bundle writes exactly this
+compatibility payload: `source` (`"deterministic_dialogue_background_source_package"`),
+`status` (`"passed"`), `algorithm` (`"sha256"`), `package_files`
+(source-package relative paths and SHA-256 hashes), and `external_adapter`
+(`{status, profile}`). The current writer records `external_adapter.status` as
+`not_run` and `profile` from the requested downstream profile; it records no
+FEBuilder command or result, reduced-image hash, palette/bank report, or TSA
+hashes. The configured `febuilder_cli` is the existing portrait-package validator
+and is refused for a dialogue-background source package. No adapter for the
+dialogue decreasecolor/TSA profile ships in v1; any future dedicated adapter is
+outside this contract.
 
 ## 6. Workflow and provider capability semantics
 

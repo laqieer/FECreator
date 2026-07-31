@@ -583,30 +583,17 @@ export function demoClient(): ApiClient {
       return clone(approval);
     },
     buildJob: async (jobId) => {
-      const state = getState(jobId);
-      const report = state.report;
-      if (!report) {
-        return {
-          job_id: jobId,
-          ok: false,
-          artifacts: [],
-          diagnostics: [
-            {
-              code: "DEMO_BUILD_UNAVAILABLE",
-              severity: "error",
-              message: "Demo builds are available only for the seeded portrait fixture.",
-            },
-          ],
-          lineage_id: null,
-        };
+      const state = ensureState(jobId, "waiting_for_review");
+      const candidate = state.candidate;
+      if (!candidate) {
+        throw new Error(`Demo job ${jobId} has no candidate.`);
       }
-      const finalStage = report.stages.find((stage) => stage.stage === "finalize");
       return {
         job_id: jobId,
-        ok: finalStage?.ok ?? false,
-        artifacts: clone(finalStage?.artifacts ?? []),
-        diagnostics: clone(report.diagnostics),
-        lineage_id: report.lineage.at(-1)?.asset_id ?? null,
+        ok: true,
+        artifacts: clone(candidate.artifacts),
+        diagnostics: clone(candidate.diagnostics),
+        lineage_id: candidate.lineage_id,
       };
     },
     finalizeJob: async (jobId) => {

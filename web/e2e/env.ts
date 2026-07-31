@@ -47,8 +47,8 @@ export function removeDataRoot(): void {
   rmSync(dataRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 
-// Generation is deliberately not exposed over HTTP, so the browser flow drives
-// the provider stage through the same CLI entry point a local operator uses.
+// HTTP exposes POST /api/jobs/{job_id}/build. This helper still uses the CLI to
+// prepare candidate state for e2e flows that do not exercise that HTTP mutation.
 export function buildCandidate(jobId: string): void {
   const result = spawnSync(pythonCommand, ["-m", "fecreator", "build", "--job", jobId], {
     cwd: repoRoot,

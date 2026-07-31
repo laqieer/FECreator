@@ -244,7 +244,34 @@ test("createJob and validate fail closed on malformed demo inputs", async () => 
   await expect(client.validate("wrong", "pkg")).rejects.toThrow("Demo spec wrong is not registered.");
 });
 
-test("demo stays portrait-only while satisfying the build client contract offline", async () => {
+test("buildJob returns the candidate result and leaves an unreviewed job waiting", async () => {
+  const fetchSpy = vi.fn();
+  const webSocketSpy = vi.fn();
+  vi.stubGlobal("fetch", fetchSpy);
+  vi.stubGlobal("WebSocket", webSocketSpy);
+  const client = demoClient();
+  const created = await client.createJob(validManifest);
+  await client.planSources(created.id);
+  await client.submitSources(created.id, [
+    new File(["candidate-bytes"], "neutral.png", { type: "image/png" }),
+  ]);
+  const candidate = await client.getJobCandidate(created.id);
+
+  await expect(client.buildJob(created.id)).resolves.toEqual({
+    job_id: created.id,
+    ok: true,
+    artifacts: candidate.artifacts,
+    diagnostics: candidate.diagnostics,
+    lineage_id: candidate.lineage_id,
+  });
+  await expect(client.getJob(created.id)).resolves.toMatchObject({
+    state: "waiting_for_review",
+  });
+  expect(fetchSpy).not.toHaveBeenCalled();
+  expect(webSocketSpy).not.toHaveBeenCalled();
+});
+
+test("demo stays portrait-only and offline", async () => {
   const fetchSpy = vi.fn();
   const webSocketSpy = vi.fn();
   vi.stubGlobal("fetch", fetchSpy);
@@ -267,9 +294,6 @@ test("demo stays portrait-only while satisfying the build client contract offlin
 
   await expect(client.createJob(dialogueManifest)).rejects.toThrow(
     "Demo manifest asset_type must be portrait.",
-  );
-  await expect(client.buildJob("demo-portrait-neutral")).resolves.toEqual(
-    expect.objectContaining({ job_id: "demo-portrait-neutral", ok: true }),
   );
   expect(fetchSpy).not.toHaveBeenCalled();
   expect(webSocketSpy).not.toHaveBeenCalled();
